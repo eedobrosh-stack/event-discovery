@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event Discovery</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>Event Discovery</h1>
+        <p>Find events across categories and cities worldwide</p>
+    </header>
+
+    <main>
+        <section class="filters">
+            <div class="filter-row">
+                <div class="filter-group">
+                    <label for="categories">Event Categories</label>
+                    <select id="categories" multiple></select>
+                    <button id="select-all-btn" type="button">Select All</button>
+                </div>
+                <div class="filter-group">
+                    <label for="city">City</label>
+                    <select id="city">
+                        <option value="">All Cities</option>
+                    </select>
+                </div>
+            </div>
+            <div class="filter-row">
+                <div class="filter-group">
+                    <label for="start-date">From</label>
+                    <input type="date" id="start-date">
+                </div>
+                <div class="filter-group">
+                    <label for="end-date">To</label>
+                    <input type="date" id="end-date">
+                </div>
+                <div class="filter-group">
+                    <label for="search">Search</label>
+                    <input type="text" id="search" placeholder="Event name...">
+                </div>
+            </div>
+            <div class="filter-actions">
+                <button id="search-btn" type="button">Search Events</button>
+                <button id="export-ics-btn" type="button">Download ICS</button>
+                <button id="export-sheets-btn" type="button">Export to Google Sheet</button>
+            </div>
+        </section>
+
+        <section class="results">
+            <div id="stats"></div>
+            <table id="events-table">
+                <thead>
+                    <tr>
+                        <th>Event</th>
+                        <th>Artist</th>
+                        <th>YouTube</th>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>Venue</th>
+                        <th>Price</th>
+                        <th>Category</th>
+                        <th>Link</th>
+                    </tr>
+                </thead>
+                <tbody id="events-body"></tbody>
+            </table>
+            <button id="load-more-btn" type="button" style="display:none;">Load More</button>
+        </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js"></script>
+    <script src="/app.js"></script>
+</body>
+</html>

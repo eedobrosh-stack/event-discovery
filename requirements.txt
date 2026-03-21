@@ -1,0 +1,14 @@
+fastapi>=0.104
+uvicorn[standard]
+sqlalchemy>=2.0
+alembic
+pydantic>=2.0
+pydantic-settings
+httpx
+beautifulsoup4
+lxml
+apscheduler>=3.10
+icalendar
+google-api-python-client
+google-auth-oauthlib
+python-multipart
