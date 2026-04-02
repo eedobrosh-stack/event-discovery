@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: supercaly
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python start.py
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////var/data/events.db
+      - key: PYTHON_VERSION
+        value: "3.11"
+    disk:
+      name: supercaly-data
+      mountPath: /var/data
+      sizeGB: 1

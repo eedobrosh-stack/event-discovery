@@ -1,12 +1,49 @@
-let categoriesChoice;
+// Selected type/performer filters: [{kind, value, badge}]
+let selectedTypeFilters = [];
+let renderTypeChips = null; // set by setupTypeAutocomplete, used by artist click handler
 let offset = 0;
 const LIMIT = 50;
 
 document.addEventListener("DOMContentLoaded", async () => {
-    await loadCategories();
+    // Set default date range: today → today + 30 days
+    const today = new Date();
+    const future = new Date(today);
+    future.setDate(future.getDate() + 30);
+    const fmt = d => d.toISOString().split("T")[0];
+    document.getElementById("start-date").value = fmt(today);
+    document.getElementById("end-date").value = fmt(future);
+
+    setupTypeAutocomplete();
     await loadCities();
     bindEvents();
     await searchEvents();
+
+    // Collapse filter panel on table scroll, expand when back at top
+    const tableScroll = document.querySelector(".table-scroll");
+    const filters = document.querySelector(".filters");
+    let expandTimer = null;
+
+    tableScroll.addEventListener("scroll", () => {
+        if (tableScroll.scrollTop > 30) {
+            // Cancel any pending expand and collapse immediately
+            clearTimeout(expandTimer);
+            filters.classList.add("collapsed");
+        } else {
+            // Delay re-expansion slightly so the transition feels deliberate
+            clearTimeout(expandTimer);
+            expandTimer = setTimeout(() => {
+                filters.classList.remove("collapsed");
+            }, 120);
+        }
+    });
+
+    // Also re-expand when user clicks the collapsed bar
+    filters.addEventListener("click", () => {
+        if (filters.classList.contains("collapsed")) {
+            filters.classList.remove("collapsed");
+            tableScroll.scrollTop = 0;
+        }
+    });
 
     // Handle return from Google OAuth
     const params = new URLSearchParams(window.location.search);
@@ -19,33 +56,310 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 });
 
-async function loadCategories() {
-    const resp = await fetch("/api/event-types/categories");
-    const categories = await resp.json();
-    const sel = document.getElementById("categories");
-    categories.forEach(cat => {
-        const opt = document.createElement("option");
-        opt.value = cat;
-        opt.textContent = cat;
-        sel.appendChild(opt);
+function setupTypeAutocomplete() {
+    const input   = document.getElementById("type-search-input");
+    const list    = document.getElementById("type-suggestions");
+    const chipsEl = document.getElementById("type-chips");
+    let activeIdx = -1;
+    let debounceTimer = null;
+
+    renderTypeChips = function() { renderChips(); };
+
+    function renderChips() {
+        chipsEl.innerHTML = selectedTypeFilters.map((f, i) => `
+            <span class="type-chip type-chip--${f.kind}">
+                <span class="type-chip__badge">${f.badge}</span>
+                ${esc(f.value)}
+                <button class="type-chip__remove" data-idx="${i}" aria-label="Remove">×</button>
+            </span>
+        `).join("");
+        chipsEl.querySelectorAll(".type-chip__remove").forEach(btn => {
+            btn.addEventListener("click", e => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.idx);
+                selectedTypeFilters.splice(idx, 1);
+                renderChips();
+            });
+        });
+    }
+
+    function showSuggestions(items) {
+        if (!items.length) { list.hidden = true; return; }
+        activeIdx = -1;
+        list.innerHTML = items.map((item, i) =>
+            `<li data-idx="${i}" data-kind="${item.kind}" data-value="${esc(item.value)}" data-badge="${item.badge}">
+                <span class="sugg-badge sugg-badge--${item.kind}">${item.badge}</span>
+                ${esc(item.label)}
+            </li>`
+        ).join("");
+        list.hidden = false;
+    }
+
+    function selectItem(li) {
+        const kind  = li.dataset.kind;
+        const value = li.dataset.value;
+        const badge = li.dataset.badge;
+        // Avoid duplicates
+        if (!selectedTypeFilters.find(f => f.kind === kind && f.value === value)) {
+            selectedTypeFilters.push({ kind, value, badge });
+            renderChips();
+        }
+        input.value = "";
+        list.hidden = true;
+        list.innerHTML = "";
+        activeIdx = -1;
+    }
+
+    input.addEventListener("input", () => {
+        const q = input.value.trim();
+        clearTimeout(debounceTimer);
+        if (q.length < 3) { list.hidden = true; return; }
+        debounceTimer = setTimeout(async () => {
+            const resp = await fetch(`/api/suggestions?q=${encodeURIComponent(q)}`);
+            const items = await resp.json();
+            showSuggestions(items);
+        }, 200);
     });
-    categoriesChoice = new Choices(sel, {
-        removeItemButton: true,
-        placeholder: true,
-        placeholderValue: "Select categories...",
+
+    // mousedown prevents input blur before click fires
+    list.addEventListener("mousedown", e => e.preventDefault());
+    list.addEventListener("click", e => {
+        const li = e.target.closest("li");
+        if (li) selectItem(li);
+    });
+
+    input.addEventListener("keydown", e => {
+        const items = list.querySelectorAll("li");
+        if (!items.length) return;
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            activeIdx = Math.min(activeIdx + 1, items.length - 1);
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            activeIdx = Math.max(activeIdx - 1, 0);
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (activeIdx >= 0) {
+                selectItem(items[activeIdx]);
+            } else {
+                // Commit raw typed text as a free-text chip
+                const raw = input.value.trim();
+                if (raw.length >= 1) {
+                    if (!selectedTypeFilters.find(f => f.value === raw)) {
+                        selectedTypeFilters.push({ kind: "freetext", value: raw, badge: "Search" });
+                        renderChips();
+                    }
+                    input.value = "";
+                    list.hidden = true;
+                }
+            }
+            return;
+        } else if (e.key === "Escape") {
+            list.hidden = true; return;
+        } else if (e.key === "Backspace" && input.value === "" && selectedTypeFilters.length) {
+            selectedTypeFilters.pop();
+            renderChips();
+            return;
+        }
+        items.forEach((li, i) => li.classList.toggle("active", i === activeIdx));
+        if (activeIdx >= 0) items[activeIdx].scrollIntoView({ block: "nearest" });
+    });
+
+    // Hide dropdown when focus leaves the whole autocomplete wrap
+    const wrap = document.querySelector(".type-autocomplete-wrap");
+    wrap.addEventListener("focusout", e => {
+        if (!wrap.contains(e.relatedTarget)) {
+            setTimeout(() => { list.hidden = true; }, 100);
+        }
+    });
+
+    // Also hide on outside click
+    document.addEventListener("click", e => {
+        if (!wrap.contains(e.target)) {
+            list.hidden = true;
+        }
     });
 }
 
+let allCities = [];
+
 async function loadCities() {
     const resp = await fetch("/api/cities");
-    const cities = await resp.json();
-    const sel = document.getElementById("city");
-    cities.forEach(city => {
-        const opt = document.createElement("option");
-        opt.value = city.id;
-        opt.textContent = `${city.name}, ${city.country}`;
-        sel.appendChild(opt);
+    allCities = await resp.json();
+    setupCityAutocomplete();
+    detectUserCity();
+}
+
+async function detectUserCity() {
+    // Try IP-based detection first (no permission needed)
+    try {
+        const r = await fetch("https://ipapi.co/json/");
+        const geo = await r.json();
+        const cityName = geo.city || "";
+        const countryName = geo.country_name || "";
+        console.log("[GeoDetect] IP-based:", cityName, countryName);
+        if (cityName && applyCityMatch(cityName, countryName)) return;
+    } catch (e) {
+        console.warn("[GeoDetect] IP lookup failed:", e);
+    }
+
+    // Fallback: precise GPS (requires browser permission)
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(async pos => {
+        try {
+            const { latitude: lat, longitude: lon } = pos.coords;
+            const r = await fetch(
+                `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
+            );
+            const geo = await r.json();
+            const cityName = geo.city || geo.locality || "";
+            const countryName = geo.countryName || "";
+            console.log("[GeoDetect] GPS-based:", cityName, countryName);
+            applyCityMatch(cityName, countryName);
+        } catch (e) {
+            console.warn("[GeoDetect] GPS reverse-geocode failed:", e);
+        }
+    }, err => console.warn("[GeoDetect] GPS permission denied:", err));
+}
+
+function applyCityMatch(cityName, countryName) {
+    const q = cityName.toLowerCase().trim();
+    const qCountry = countryName.toLowerCase().trim();
+
+    // Score-based matching: exact name + country > exact name > partial
+    let best = null, bestScore = 0;
+    for (const c of allCities) {
+        const cName    = c.name.toLowerCase();
+        const cCountry = c.country.toLowerCase();
+        let score = 0;
+        if (cName === q)                        score += 100;
+        else if (cName.includes(q))             score += 50;
+        else if (q.includes(cName))             score += 30;
+        if (score > 0 && cCountry === qCountry) score += 20;
+        if (score > bestScore) { bestScore = score; best = c; }
+    }
+
+    if (best && bestScore >= 30) {
+        console.log("[GeoDetect] Matched:", best.name, best.country, "score:", bestScore);
+        document.getElementById("city-input").value = `${best.name}, ${best.country}`;
+        document.getElementById("city-id").value    = best.id;
+        updateCityClearBtn();
+        offset = 0;
+        document.getElementById("events-body").innerHTML = "";
+        searchEvents();
+        return true;
+    }
+    console.warn("[GeoDetect] No match found for:", cityName, countryName);
+    return false;
+}
+
+const GLOBAL_CITY = { id: "", name: "🌍 Global", country: "All Cities", label: "🌍 Global — All Cities" };
+
+function renderCityList(matches) {
+    const list = document.getElementById("city-suggestions");
+    list.innerHTML = matches.map(c =>
+        `<li data-id="${c.id}" data-label="${c.label || (c.name + ', ' + c.country)}">${c.label || (c.name + ', ' + c.country)}</li>`
+    ).join("");
+    list.hidden = matches.length === 0;
+}
+
+function updateCityClearBtn() {
+    const input  = document.getElementById("city-input");
+    const hidden = document.getElementById("city-id");
+    const btn    = document.getElementById("city-clear");
+    if (!btn) return;
+    // Show clear button whenever there's any text in the city field
+    btn.hidden = input.value.trim().length === 0;
+}
+
+function setupCityAutocomplete() {
+    const input  = document.getElementById("city-input");
+    const list   = document.getElementById("city-suggestions");
+    const hidden = document.getElementById("city-id");
+    const clearBtn = document.getElementById("city-clear");
+    let activeIdx = -1;
+
+    // Clear button — reset to Global (no filter)
+    if (clearBtn) {
+        clearBtn.addEventListener("click", () => {
+            input.value  = "";
+            hidden.value = "";
+            clearBtn.hidden = true;
+            list.hidden = true;
+            searchEvents();   // re-run search without city filter
+        });
+    }
+
+    input.addEventListener("focus", () => {
+        const q = input.value.trim().toLowerCase();
+        if (q.length < 3) {
+            renderCityList([GLOBAL_CITY]);
+            activeIdx = -1;
+        }
     });
+
+    input.addEventListener("input", () => {
+        const q = input.value.trim().toLowerCase();
+        hidden.value = "";           // clear selection when user types
+        activeIdx = -1;
+        updateCityClearBtn();
+
+        if (q.length < 3) {
+            renderCityList([GLOBAL_CITY]);
+            return;
+        }
+
+        const cityMatches = allCities.filter(c =>
+            `${c.name}, ${c.country}`.toLowerCase().includes(q)
+        ).slice(0, 10);
+
+        // Always show Global as first option
+        const matches = [GLOBAL_CITY, ...cityMatches];
+
+        renderCityList(matches);
+    });
+
+    list.addEventListener("click", e => {
+        const li = e.target.closest("li");
+        if (!li) return;
+        input.value  = li.dataset.label;
+        hidden.value = li.dataset.id;
+        list.innerHTML = "";
+        list.hidden = true;
+        updateCityClearBtn();
+    });
+
+    // Keyboard navigation
+    input.addEventListener("keydown", e => {
+        const items = list.querySelectorAll("li");
+        if (!items.length) return;
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            activeIdx = Math.min(activeIdx + 1, items.length - 1);
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            activeIdx = Math.max(activeIdx - 1, 0);
+        } else if (e.key === "Enter" && activeIdx >= 0) {
+            e.preventDefault();
+            items[activeIdx].click();
+            return;
+        } else if (e.key === "Escape") {
+            list.hidden = true; return;
+        }
+        items.forEach((li, i) => li.classList.toggle("active", i === activeIdx));
+        if (activeIdx >= 0) items[activeIdx].scrollIntoView({ block: "nearest" });
+    });
+
+    // Close on outside click
+    document.addEventListener("click", e => {
+        if (!e.target.closest(".city-autocomplete-wrap")) {
+            list.hidden = true;
+        }
+    });
+}
+
+function getSelectedCityId() {
+    return document.getElementById("city-id").value;
 }
 
 function bindEvents() {
@@ -55,37 +369,53 @@ function bindEvents() {
         searchEvents();
     });
 
-    document.getElementById("select-all-btn").addEventListener("click", () => {
-        const allSelected = categoriesChoice.getValue(true).length ===
-            categoriesChoice._store.choices.filter(c => !c.disabled).length;
-        if (allSelected) {
-            categoriesChoice.removeActiveItems();
-        } else {
-            categoriesChoice.removeActiveItems();
-            categoriesChoice._store.choices
-                .filter(c => !c.disabled)
-                .forEach(c => categoriesChoice.setChoiceByValue(c.value));
-        }
-    });
-
     document.getElementById("export-ics-btn").addEventListener("click", exportICS);
     document.getElementById("export-sheets-btn").addEventListener("click", exportSheets);
     document.getElementById("load-more-btn").addEventListener("click", searchEvents);
+    document.getElementById("subscribe-btn").addEventListener("click", openSubscribeModal);
+    document.getElementById("modal-close-btn").addEventListener("click", closeSubscribeModal);
+    document.getElementById("subscribe-modal").addEventListener("click", e => {
+        if (e.target === e.currentTarget) closeSubscribeModal();
+    });
+    document.getElementById("copy-url-btn").addEventListener("click", () => {
+        const input = document.getElementById("subscribe-url");
+        navigator.clipboard.writeText(input.value).then(() => {
+            const btn = document.getElementById("copy-url-btn");
+            btn.textContent = "Copied!";
+            setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+        });
+    });
+
+    document.getElementById("events-body").addEventListener("click", e => {
+        const cell = e.target.closest("[data-artist]");
+        if (!cell) return;
+        const artist = cell.dataset.artist;
+        selectedTypeFilters = [{ kind: "freetext", value: artist, badge: "Search" }];
+        if (renderTypeChips) renderTypeChips();
+        offset = 0;
+        document.getElementById("events-body").innerHTML = "";
+        searchEvents();
+    });
 }
 
 function getFilters() {
-    const cats = categoriesChoice.getValue(true);
-    const cityId = document.getElementById("city").value;
+    // All chip values (category, event_type, performer, freetext) become type_search terms
+    const chipTerms = selectedTypeFilters.map(f => f.value);
+    // Also pick up any uncommitted text still in the input (≥3 chars)
+    const rawText = document.getElementById("type-search-input").value.trim();
+    if (rawText.length >= 3 && !chipTerms.includes(rawText)) chipTerms.push(rawText);
+
+    const cityId    = getSelectedCityId();
     const startDate = document.getElementById("start-date").value;
-    const endDate = document.getElementById("end-date").value;
-    const search = document.getElementById("search").value;
-    return { cats, cityId, startDate, endDate, search };
+    const endDate   = document.getElementById("end-date").value;
+    const search    = document.getElementById("search").value;
+    return { typeSearch: chipTerms, cityId, startDate, endDate, search };
 }
 
 async function searchEvents() {
-    const { cats, cityId, startDate, endDate, search } = getFilters();
+    const { typeSearch, cityId, startDate, endDate, search } = getFilters();
     const params = new URLSearchParams();
-    if (cats.length) params.set("categories", cats.join(","));
+    if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (cityId) params.set("city_ids", cityId);
     if (startDate) params.set("start_date", startDate);
     if (endDate) params.set("end_date", endDate);
@@ -100,14 +430,22 @@ async function searchEvents() {
     events.forEach(ev => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-            <td>${esc(ev.name)}</td>
-            <td>${esc(ev.artist_name || "-")}</td>
+            <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">${esc(ev.name)}</a>` : esc(ev.name)}</td>
+            <td>${(() => { const a = ev.artist_name && ev.artist_name.toLowerCase() !== ev.name.toLowerCase() ? ev.artist_name : null; return a ? `<span class="artist-link" data-artist="${esc(a)}">${esc(a)}</span>` : "-"; })()}</td>
             <td>${ev.artist_youtube_channel ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">Watch</a>` : "-"}</td>
             <td>${ev.start_date || "-"}</td>
-            <td>${ev.start_time || "-"}</td>
-            <td>${esc(ev.venue_name || "-")}</td>
+            <td colspan="2" class="time-cell">
+              <div class="time-row">
+                <span class="time-val">${ev.start_time || "-"}</span>
+                <span class="time-sep">${ev.start_time && ev.end_time ? "–" : ""}</span>
+                <span class="time-val">${ev.end_time || ""}</span>
+              </div>
+              ${ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
+            </td>
+            <td>${ev.venue_website_url ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>` : esc(ev.venue_name || "-")}</td>
             <td>${ev.price ? `${ev.price_currency || "$"}${ev.price}` : "-"}</td>
             <td>${(ev.categories || []).join(", ") || "-"}</td>
+            <td>${(ev.event_types || []).join(", ") || "-"}</td>
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">Buy</a>` : "-"}</td>
         `;
         tbody.appendChild(tr);
@@ -119,9 +457,9 @@ async function searchEvents() {
 }
 
 async function exportICS() {
-    const { cats, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, cityId, startDate, endDate } = getFilters();
     const body = {};
-    if (cats.length) body.categories = cats;
+    if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (cityId) body.city_ids = [parseInt(cityId)];
     if (startDate) body.start_date = startDate;
     if (endDate) body.end_date = endDate;
@@ -142,9 +480,9 @@ async function exportICS() {
 }
 
 async function exportSheets() {
-    const { cats, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, cityId, startDate, endDate } = getFilters();
     const body = {};
-    if (cats.length) body.categories = cats;
+    if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (cityId) body.city_ids = [parseInt(cityId)];
     if (startDate) body.start_date = startDate;
     if (endDate) body.end_date = endDate;
@@ -188,4 +526,30 @@ function esc(str) {
     const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
+}
+
+function buildSubscribeUrl() {
+    const { typeSearch, cityId, startDate, endDate } = getFilters();
+    const params = new URLSearchParams();
+    if (typeSearch.length) params.set("type_search", typeSearch.join(","));
+    if (cityId) params.set("city_ids", cityId);
+    if (startDate) params.set("start_date", startDate);
+    if (endDate) params.set("end_date", endDate);
+    const path = `/api/export/subscribe?${params}`;
+    const httpsUrl = `${location.protocol}//${location.host}${path}`;
+    const webcalUrl = `webcal://${location.host}${path}`;
+    return { httpsUrl, webcalUrl };
+}
+
+function openSubscribeModal() {
+    const { httpsUrl, webcalUrl } = buildSubscribeUrl();
+    document.getElementById("webcal-link").href = webcalUrl;
+    document.getElementById("subscribe-url").value = httpsUrl;
+    document.getElementById("subscribe-modal").hidden = false;
+    document.body.style.overflow = "hidden";
+}
+
+function closeSubscribeModal() {
+    document.getElementById("subscribe-modal").hidden = true;
+    document.body.style.overflow = "";
 }

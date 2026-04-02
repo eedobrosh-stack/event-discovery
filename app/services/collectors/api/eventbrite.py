@@ -3,7 +3,7 @@ import httpx
 from datetime import date, datetime
 
 from app.config import settings
-from app.services.collectors.base import BaseCollector, RawEvent
+from app.services.collectors.base import BaseCollector, RawEvent, safe_time, default_end_time
 from app.services.collectors.category_mapper import map_category
 
 
@@ -26,7 +26,7 @@ class EventbriteCollector(BaseCollector):
                     "location.within": "50km",
                     "status": "live",
                     "order_by": "start_asc",
-                    "expand": "venue",
+                    "expand": "venue,ticket_availability,category",
                 },
                 headers={"Authorization": f"Bearer {settings.EVENTBRITE_TOKEN}"},
             )
@@ -76,9 +76,9 @@ class EventbriteCollector(BaseCollector):
         return RawEvent(
             name=event_name,
             start_date=start_dt.date(),
-            start_time=start_dt.strftime("%H:%M"),
+            start_time=safe_time(start_dt),
             end_date=end_dt.date() if end_dt else None,
-            end_time=end_dt.strftime("%H:%M") if end_dt else None,
+            end_time=safe_time(end_dt) if end_dt else None,
             description=ev.get("description", {}).get("text"),
             price=float(min_price["value"]) if min_price.get("value") else None,
             price_currency=min_price.get("currency", "USD"),

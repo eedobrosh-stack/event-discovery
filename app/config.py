@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     SEATGEEK_SECRET: str = ""
     PREDICTHQ_TOKEN: str = ""
     YOUTUBE_API_KEY: str = ""
+    BANDSINTOWN_APP_ID: str = ""
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""

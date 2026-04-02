@@ -1,10 +1,10 @@
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.database import get_db
-from app.models import Event, EventType, Venue, event_event_types
+from app.models import Event, EventType, Venue, Performer, event_event_types
 from app.schemas.event import EventOut
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -12,7 +12,8 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 
 @router.get("", response_model=List[EventOut])
 def list_events(
-    categories: Optional[str] = Query(None, description="Comma-separated category names"),
+    categories: Optional[str] = Query(None, description="Comma-separated category names (legacy)"),
+    type_search: Optional[str] = Query(None, description="Comma-separated terms; OR-searches event type name, category, and artist name"),
     city_ids: Optional[str] = Query(None, description="Comma-separated city IDs"),
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -21,11 +22,14 @@ def list_events(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
+    from sqlalchemy import or_
+
     query = db.query(Event).options(
         joinedload(Event.venue),
         selectinload(Event.event_types),
     )
 
+    # Legacy: exact category filter
     if categories:
         cat_list = [c.strip() for c in categories.split(",")]
         type_ids = (
@@ -39,11 +43,38 @@ def list_events(
             )
         )
 
+    # Broad OR search: type name ILIKE OR category ILIKE OR artist_name ILIKE
+    # Multiple terms are ANDed (each term must match at least one dimension)
+    if type_search:
+        from sqlalchemy import or_, and_, select
+        terms = [t.strip() for t in type_search.split(",") if t.strip()]
+        for term in terms:
+            like = f"%{term}%"
+            # Subquery: event IDs whose event_type name or category matches
+            type_matched_event_ids = (
+                select(event_event_types.c.event_id)
+                .join(EventType, EventType.id == event_event_types.c.event_type_id)
+                .where(or_(
+                    EventType.name.ilike(like),
+                    EventType.category.ilike(like),
+                ))
+                .scalar_subquery()
+            )
+            # Event matches if: type/category matches OR artist_name matches OR event name matches
+            query = query.filter(or_(
+                Event.id.in_(type_matched_event_ids),
+                Event.artist_name.ilike(like),
+                Event.name.ilike(like),
+            ))
+
     if city_ids:
         ids = [int(x.strip()) for x in city_ids.split(",")]
         query = query.join(Venue, Event.venue_id == Venue.id).filter(
             Venue.city_id.in_(ids)
         )
+
+    # Default: never show past events
+    query = query.filter(Event.start_date >= date.today())
 
     if start_date:
         query = query.filter(Event.start_date >= start_date)
@@ -62,6 +93,12 @@ def list_events(
     results = []
     for e in events:
         out = EventOut.model_validate(e)
-        out.categories = [et.category for et in e.event_types if et.category]
+        types = e.event_types or []
+        out.categories = list(dict.fromkeys(et.category for et in types if et.category))
+        out.event_types = [et.name for et in types if et.name]
+        if e.venue and e.venue.timezone:
+            out.venue_timezone = e.venue.timezone
+        if e.venue and e.venue.website_url:
+            out.venue_website_url = e.venue.website_url
         results.append(out)
     return results

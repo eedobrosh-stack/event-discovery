@@ -10,6 +10,13 @@ from app.services.collectors.api.eventbrite import EventbriteCollector
 from app.services.collectors.api.seatgeek import SeatGeekCollector
 from app.services.collectors.api.predicthq import PredictHQCollector
 from app.services.collectors.scrapers.nyc_venues import NYCVenueScraper
+from app.services.collectors.scrapers.tel_aviv_venues import TelAvivVenueScraper
+from app.services.collectors.scrapers.leaan import LeaanCollector
+from app.services.collectors.api.resident_advisor import ResidentAdvisorCollector
+from app.services.collectors.scrapers.dice import DiceCollector
+from app.services.collectors.scrapers.cameri import CameriCollector
+from app.services.collectors.scrapers.barby import BarbyCollector
+from app.services.collectors.scrapers.israel_sites import IsraelSitesCollector
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +26,13 @@ registry.register(EventbriteCollector())
 registry.register(SeatGeekCollector())
 registry.register(PredictHQCollector())
 registry.register(NYCVenueScraper())
+registry.register(TelAvivVenueScraper())
+registry.register(LeaanCollector())
+registry.register(ResidentAdvisorCollector())
+registry.register(DiceCollector())
+registry.register(CameriCollector())
+registry.register(BarbyCollector())
+registry.register(IsraelSitesCollector())
 
 
 async def collect_all_events():

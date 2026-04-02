@@ -3,6 +3,20 @@ import httpx
 from datetime import date
 
 from app.config import settings
+
+# Map full country names → ISO 2-letter codes for Ticketmaster API
+COUNTRY_ISO = {
+    "United States": "US", "United Kingdom": "GB", "Australia": "AU",
+    "Austria": "AT", "Belgium": "BE", "Canada": "CA", "Chile": "CL",
+    "Colombia": "CO", "Costa Rica": "CR", "Czechia": "CZ", "Denmark": "DK",
+    "Estonia": "EE", "Finland": "FI", "France": "FR", "Germany": "DE",
+    "Greece": "GR", "Hungary": "HU", "Iceland": "IS", "Ireland": "IE",
+    "Israel": "IL", "Italy": "IT", "Japan": "JP", "South Korea": "KR",
+    "Latvia": "LV", "Lithuania": "LT", "Mexico": "MX", "Netherlands": "NL",
+    "New Zealand": "NZ", "Norway": "NO", "Poland": "PL", "Portugal": "PT",
+    "Slovakia": "SK", "Slovenia": "SI", "Spain": "ES", "Sweden": "SE",
+    "Switzerland": "CH", "Turkey": "TR",
+}
 from app.services.collectors.base import BaseCollector, RawEvent
 from app.services.collectors.category_mapper import map_category
 
@@ -17,6 +31,7 @@ class TicketmasterCollector(BaseCollector):
         return bool(settings.TICKETMASTER_KEY)
 
     async def collect(self, city_name: str, country_code: str = "US", **kwargs) -> list[RawEvent]:
+        country_code = COUNTRY_ISO.get(country_code, country_code)
         events = []
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
@@ -27,6 +42,7 @@ class TicketmasterCollector(BaseCollector):
                     "countryCode": country_code,
                     "size": 200,
                     "sort": "date,asc",
+                    "includePriceRanges": "yes",
                 },
             )
             resp.raise_for_status()

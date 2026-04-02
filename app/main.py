@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import Base, engine
-from app.api import auth, cities, event_types, events, export, admin, venues
+from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
 from app.scheduler.jobs import collect_all_events, cleanup_past_events
 
 scheduler = AsyncIOScheduler()
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="Event Discovery Platform", lifespan=lifespan)
+app = FastAPI(title="Supercaly", lifespan=lifespan)
 
 # API routers
 app.include_router(auth.router)
@@ -49,6 +49,8 @@ app.include_router(events.router)
 app.include_router(export.router)
 app.include_router(admin.router)
 app.include_router(venues.router)
+app.include_router(stats.router)
+app.include_router(suggestions.router)
 
 # Serve frontend
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -1,12 +1,14 @@
-from typing import List
-from fastapi import APIRouter, Depends, Request
+from typing import List, Optional
+from datetime import date
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import Response
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.database import get_db
-from app.models import Event, EventType, Venue, event_event_types
+from app.models import Event, EventType, Venue, Performer, event_event_types
 from app.schemas.event import ExportRequest
-from app.services.export.ics_generator import generate_ics
+from app.services.export.ics_generator import generate_ics, generate_subscription_ics
 from app.services.export.google_sheets import export_to_sheets
 from app.api.auth import get_credentials, SESSION_COOKIE
 
@@ -36,12 +38,95 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
             Venue.city_id.in_(req.city_ids)
         )
 
+    # Default: never show past events
+    query = query.filter(Event.start_date >= date.today())
+
     if req.start_date:
         query = query.filter(Event.start_date >= req.start_date)
     if req.end_date:
         query = query.filter(Event.start_date <= req.end_date)
 
     return query.order_by(Event.start_date, Event.start_time).all()
+
+
+def _get_filtered_events_from_params(
+    db: Session,
+    type_search: Optional[str] = None,
+    city_ids: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> List[Event]:
+    """Shared filter logic for GET-based subscription endpoint."""
+    query = db.query(Event).options(
+        joinedload(Event.venue),
+        selectinload(Event.event_types),
+    )
+
+    if type_search:
+        terms = [t.strip() for t in type_search.split(",") if t.strip()]
+        for term in terms:
+            like = f"%{term}%"
+            type_matched_event_ids = (
+                select(event_event_types.c.event_id)
+                .join(EventType, EventType.id == event_event_types.c.event_type_id)
+                .where(or_(EventType.name.ilike(like), EventType.category.ilike(like)))
+                .scalar_subquery()
+            )
+            query = query.filter(or_(
+                Event.id.in_(type_matched_event_ids),
+                Event.artist_name.ilike(like),
+                Event.name.ilike(like),
+            ))
+
+    if city_ids:
+        ids = [int(x.strip()) for x in city_ids.split(",") if x.strip()]
+        query = query.join(Venue, Event.venue_id == Venue.id).filter(
+            Venue.city_id.in_(ids)
+        )
+
+    query = query.filter(Event.start_date >= date.today())
+    if start_date:
+        query = query.filter(Event.start_date >= start_date)
+    if end_date:
+        query = query.filter(Event.start_date <= end_date)
+
+    return query.order_by(Event.start_date, Event.start_time).all()
+
+
+def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db: Session) -> str:
+    """Build a human-readable calendar name from filter params."""
+    parts = []
+    if type_search:
+        terms = [t.strip().title() for t in type_search.split(",") if t.strip()]
+        parts.append(", ".join(terms))
+    if city_ids:
+        ids = [int(x.strip()) for x in city_ids.split(",") if x.strip()]
+        cities = db.query(Venue.physical_city).filter(
+            Venue.city_id.in_(ids)
+        ).distinct().limit(3).all()
+        city_names = [c[0] for c in cities if c[0]]
+        if city_names:
+            parts.append(", ".join(city_names))
+    return " · ".join(parts) + " – Supercaly" if parts else "Supercaly Events"
+
+
+@router.get("/subscribe")
+def subscribe_calendar(
+    type_search: Optional[str] = Query(None),
+    city_ids: Optional[str] = Query(None),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """Live calendar feed for subscriptions. Returns ICS with auto-refresh headers."""
+    events = _get_filtered_events_from_params(db, type_search, city_ids, start_date, end_date)
+    name = _subscription_label(type_search, city_ids, db)
+    ics_bytes = generate_subscription_ics(events, name=name)
+    return Response(
+        content=ics_bytes,
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'inline; filename="supercaly.ics"'},
+    )
 
 
 @router.post("/ics")

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.models import Event, Venue, City, EventType, event_event_types
-from app.services.collectors.base import BaseCollector, RawEvent
+from app.services.collectors.base import BaseCollector, RawEvent, default_end_time
 from app.services.youtube_lookup import lookup_youtube_video
 
 logger = logging.getLogger(__name__)
@@ -46,11 +46,39 @@ class CollectorRegistry:
         saved = 0
         for raw in raw_events:
             try:
+                # Skip events with no date — DB has NOT NULL constraint on start_date
+                if raw.start_date is None:
+                    logger.debug(f"Skipping undated event '{raw.name}' from {raw.source}")
+                    continue
+
                 # Dedup: check by source+source_id
                 existing = db.query(Event).filter_by(
                     scrape_source=raw.source, source_id=raw.source_id
                 ).first()
                 if existing:
+                    updated = False
+                    # Backfill price if missing
+                    if existing.price is None and raw.price is not None:
+                        existing.price = raw.price
+                        existing.price_currency = raw.price_currency
+                        updated = True
+                    # Backfill start_time if missing
+                    if existing.start_time is None and raw.start_time is not None:
+                        existing.start_time = raw.start_time
+                        updated = True
+                    # Backfill end_time if missing
+                    if existing.end_time is None and raw.end_time is not None:
+                        existing.end_time = raw.end_time
+                        existing.end_date = raw.end_date or existing.end_date
+                        updated = True
+                    # Compute end_time from start+2h if still missing
+                    if existing.end_time is None and existing.start_time is not None:
+                        existing.end_date, existing.end_time = default_end_time(
+                            existing.start_time, existing.start_date, existing.end_date
+                        )
+                        updated = True
+                    if updated:
+                        db.commit()
                     continue
 
                 # Cross-source dedup: same venue + date + similar name
@@ -67,14 +95,22 @@ class CollectorRegistry:
                 # Find or create venue
                 venue = self._find_or_create_venue(raw, city, db)
 
+                # Resolve end time: use scraped value, or default to start + 2h
+                end_date = raw.end_date
+                end_time = raw.end_time
+                if end_time is None and raw.start_time is not None:
+                    end_date, end_time = default_end_time(
+                        raw.start_time, raw.start_date, raw.end_date
+                    )
+
                 # Create event
                 event = Event(
                     name=raw.name,
                     artist_name=raw.artist_name,
                     start_date=raw.start_date,
                     start_time=raw.start_time,
-                    end_date=raw.end_date,
-                    end_time=raw.end_time,
+                    end_date=end_date,
+                    end_time=end_time,
                     purchase_link=raw.purchase_link,
                     price=raw.price,
                     price_currency=raw.price_currency,
@@ -141,6 +177,8 @@ class CollectorRegistry:
 
         venue = db.query(Venue).filter_by(name=raw.venue_name, city_id=city.id).first()
         if venue:
+            if raw.venue_website_url and not venue.website_url:
+                venue.website_url = raw.venue_website_url
             return venue
 
         venue = Venue(
@@ -152,6 +190,7 @@ class CollectorRegistry:
             physical_country=raw.venue_country or city.country,
             latitude=raw.venue_lat,
             longitude=raw.venue_lon,
+            website_url=raw.venue_website_url,
         )
         db.add(venue)
         db.flush()

@@ -34,7 +34,13 @@ async def lookup_youtube_video(artist_name: str) -> str | None:
     url = None
     try:
         if settings.YOUTUBE_API_KEY:
-            url = await _lookup_via_api(artist_name.strip())
+            try:
+                url = await _lookup_via_api(artist_name.strip())
+            except httpx.HTTPStatusError as api_err:
+                if api_err.response.status_code in (403, 429):
+                    logger.debug(f"YouTube API quota hit for '{artist_name}', falling back to scrape")
+                else:
+                    logger.warning(f"YouTube API error for '{artist_name}': {api_err}")
         if not url:
             url = await _lookup_via_scrape(artist_name.strip())
     except Exception as e:

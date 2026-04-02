@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supercaly – Coverage Stats</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        /* ── Stats page overrides ── */
+        .stats-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .stats-header h2 { margin: 0; font-size: 1.4rem; }
+
+        /* Summary cards */
+        .summary-cards {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 28px;
+        }
+        .card {
+            flex: 1;
+            min-width: 140px;
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 10px;
+            padding: 18px 22px;
+            text-align: center;
+        }
+        .card .card-num {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: var(--accent, #7c6af7);
+            line-height: 1;
+        }
+        .card .card-label {
+            font-size: 0.78rem;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            margin-top: 6px;
+        }
+
+        /* Search / filter bar */
+        .stats-controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .stats-controls input {
+            flex: 1;
+            min-width: 200px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border, #333);
+            background: var(--input-bg, #15151e);
+            color: inherit;
+            font-size: 0.9rem;
+        }
+        .stats-controls select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border, #333);
+            background: var(--input-bg, #15151e);
+            color: inherit;
+            font-size: 0.9rem;
+        }
+
+        /* Table */
+        .stats-table-wrap {
+            overflow-x: auto;
+            border-radius: 10px;
+            border: 1px solid var(--border, #333);
+        }
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        .stats-table thead th {
+            background: var(--card-bg, #1e1e2e);
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+            color: #aaa;
+            position: sticky;
+            top: 0;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+        }
+        .stats-table thead th:hover { color: #fff; }
+        .stats-table thead th .sort-icon { margin-left: 4px; opacity: .5; }
+        .stats-table thead th.sorted .sort-icon { opacity: 1; color: var(--accent, #7c6af7); }
+
+        .stats-table tbody tr { border-top: 1px solid var(--border, #2a2a3a); }
+        .stats-table tbody tr:hover { background: rgba(124,106,247,.07); }
+        .stats-table td { padding: 9px 14px; white-space: nowrap; }
+        .stats-table td.city-name { font-weight: 500; }
+        .stats-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        /* Coverage bar */
+        .bar-cell { min-width: 120px; }
+        .bar-wrap { display: flex; align-items: center; gap: 8px; }
+        .bar-bg {
+            flex: 1;
+            height: 6px;
+            background: var(--border, #333);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .bar-fill {
+            height: 100%;
+            background: var(--accent, #7c6af7);
+            border-radius: 3px;
+            transition: width .3s;
+        }
+        .bar-val { font-size: 0.78rem; color: #aaa; min-width: 28px; text-align: right; }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 20px;
+            font-size: 0.875rem;
+        }
+        .pagination button {
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: 1px solid var(--border, #333);
+            background: var(--card-bg, #1e1e2e);
+            color: inherit;
+            cursor: pointer;
+        }
+        .pagination button:disabled { opacity: .35; cursor: default; }
+        .pagination button:hover:not(:disabled) { border-color: var(--accent, #7c6af7); }
+        .pagination .page-info { color: #aaa; }
+
+        /* Back link */
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--accent, #7c6af7);
+            text-decoration: none;
+            font-size: 0.88rem;
+            margin-bottom: 20px;
+        }
+        .back-link:hover { text-decoration: underline; }
+
+        /* Loading / empty state */
+        #stats-loading { color: #aaa; padding: 40px 0; text-align: center; }
+        .empty-state { color: #aaa; text-align: center; padding: 30px; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Supercaly</h1>
+    <p>Find events across categories and cities worldwide</p>
+</header>
+
+<main style="padding: 24px;">
+    <a href="/" class="back-link">← Back to Events</a>
+
+    <div id="stats-loading">Loading coverage data…</div>
+    <div id="stats-content" hidden>
+
+        <div class="stats-header">
+            <h2>📡 Coverage Stats</h2>
+            <span id="last-updated" style="color:#aaa; font-size:.8rem;"></span>
+        </div>
+
+        <div class="summary-cards">
+            <div class="card">
+                <div class="card-num" id="sum-cities">–</div>
+                <div class="card-label">Cities covered</div>
+            </div>
+            <div class="card">
+                <div class="card-num" id="sum-venues">–</div>
+                <div class="card-label">Venues indexed</div>
+            </div>
+            <div class="card">
+                <div class="card-num" id="sum-events">–</div>
+                <div class="card-label">Upcoming events</div>
+            </div>
+        </div>
+
+        <div class="stats-controls">
+            <input type="text" id="city-search" placeholder="🔍  Filter by city or country…">
+            <select id="sort-by">
+                <option value="venues">Sort by Venues</option>
+                <option value="events">Sort by Events</option>
+                <option value="city">Sort by City A–Z</option>
+                <option value="country">Sort by Country A–Z</option>
+            </select>
+            <select id="sort-dir">
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+            </select>
+        </div>
+
+        <div class="stats-table-wrap">
+            <table class="stats-table">
+                <thead>
+                    <tr>
+                        <th data-col="rank">#</th>
+                        <th data-col="city">City</th>
+                        <th data-col="country">Country</th>
+                        <th data-col="venues" class="sorted">Venues <span class="sort-icon">↓</span></th>
+                        <th data-col="events">Events <span class="sort-icon"></span></th>
+                        <th class="bar-cell">Venue share</th>
+                        <th data-col="earliest">Earliest event</th>
+                        <th data-col="latest">Latest event</th>
+                    </tr>
+                </thead>
+                <tbody id="stats-body"></tbody>
+            </table>
+        </div>
+
+        <div class="pagination">
+            <button id="prev-btn" disabled>‹ Prev</button>
+            <span class="page-info" id="page-info"></span>
+            <button id="next-btn">Next ›</button>
+        </div>
+    </div>
+</main>
+
+<script>
+    const PAGE_SIZE = 50;
+    let allData = [];
+    let filtered = [];
+    let currentPage = 0;
+    let sortCol = 'venues';
+    let sortDir = 'desc';
+    let maxVenues = 1;
+
+    async function load() {
+        try {
+            const res = await fetch('/api/stats/cities');
+            const json = await res.json();
+
+            // Summary cards
+            document.getElementById('sum-cities').textContent = json.summary.cities.toLocaleString();
+            document.getElementById('sum-venues').textContent = json.summary.venues.toLocaleString();
+            document.getElementById('sum-events').textContent = json.summary.events.toLocaleString();
+            document.getElementById('last-updated').textContent =
+                'Updated ' + new Date().toLocaleString();
+
+            allData = json.cities;
+            maxVenues = Math.max(...allData.map(r => r.venues), 1);
+
+            document.getElementById('stats-loading').hidden = true;
+            document.getElementById('stats-content').hidden = false;
+
+            applyFilters();
+        } catch (e) {
+            document.getElementById('stats-loading').textContent = 'Failed to load stats: ' + e.message;
+        }
+    }
+
+    function applyFilters() {
+        const q = document.getElementById('city-search').value.toLowerCase().trim();
+        filtered = allData.filter(r =>
+            !q || r.city.toLowerCase().includes(q) || r.country.toLowerCase().includes(q)
+        );
+        sortData();
+    }
+
+    function sortData() {
+        const col = document.getElementById('sort-by').value;
+        const dir = document.getElementById('sort-dir').value === 'asc' ? 1 : -1;
+        filtered.sort((a, b) => {
+            let va = a[col] ?? '', vb = b[col] ?? '';
+            if (typeof va === 'string') return dir * va.localeCompare(vb);
+            return dir * (va - vb);
+        });
+        currentPage = 0;
+        render();
+    }
+
+    function render() {
+        const start = currentPage * PAGE_SIZE;
+        const page = filtered.slice(start, start + PAGE_SIZE);
+        const tbody = document.getElementById('stats-body');
+
+        if (page.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No cities match your search.</td></tr>';
+        } else {
+            tbody.innerHTML = page.map((r, i) => {
+                const rank = start + i + 1;
+                const pct = Math.round((r.venues / maxVenues) * 100);
+                const earliest = r.earliest || '–';
+                const latest = r.latest || '–';
+                return `
+                <tr>
+                    <td class="num" style="color:#666">${rank}</td>
+                    <td class="city-name">${esc(r.city)}</td>
+                    <td>${esc(r.country)}</td>
+                    <td class="num"><strong>${r.venues.toLocaleString()}</strong></td>
+                    <td class="num">${r.events.toLocaleString()}</td>
+                    <td class="bar-cell">
+                        <div class="bar-wrap">
+                            <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+                            <span class="bar-val">${pct}%</span>
+                        </div>
+                    </td>
+                    <td style="color:#aaa">${esc(earliest)}</td>
+                    <td style="color:#aaa">${esc(latest)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+        document.getElementById('page-info').textContent =
+            `Page ${currentPage + 1} of ${Math.max(totalPages, 1)}  (${filtered.length.toLocaleString()} cities)`;
+        document.getElementById('prev-btn').disabled = currentPage === 0;
+        document.getElementById('next-btn').disabled = currentPage >= totalPages - 1;
+
+        // Update sorted header highlight
+        document.querySelectorAll('.stats-table thead th').forEach(th => {
+            th.classList.remove('sorted');
+            const icon = th.querySelector('.sort-icon');
+            if (icon) icon.textContent = '';
+        });
+        const activeCol = document.getElementById('sort-by').value;
+        document.querySelectorAll('.stats-table thead th').forEach(th => {
+            if (th.dataset.col === activeCol) {
+                th.classList.add('sorted');
+                const icon = th.querySelector('.sort-icon');
+                if (icon) icon.textContent = document.getElementById('sort-dir').value === 'desc' ? '↓' : '↑';
+            }
+        });
+    }
+
+    function esc(str) {
+        return String(str)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Column header click → sort
+    document.querySelectorAll('.stats-table thead th[data-col]').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.col;
+            const sortByEl = document.getElementById('sort-by');
+            const sortDirEl = document.getElementById('sort-dir');
+            // map col to select option if present
+            const opt = sortByEl.querySelector(`option[value="${col}"]`);
+            if (opt) {
+                if (sortByEl.value === col) {
+                    sortDirEl.value = sortDirEl.value === 'desc' ? 'asc' : 'desc';
+                } else {
+                    sortByEl.value = col;
+                    sortDirEl.value = 'desc';
+                }
+                sortData();
+            }
+        });
+    });
+
+    document.getElementById('city-search').addEventListener('input', applyFilters);
+    document.getElementById('sort-by').addEventListener('change', sortData);
+    document.getElementById('sort-dir').addEventListener('change', sortData);
+    document.getElementById('prev-btn').addEventListener('click', () => { currentPage--; render(); window.scrollTo(0,0); });
+    document.getElementById('next-btn').addEventListener('click', () => { currentPage++; render(); window.scrollTo(0,0); });
+
+    load();
+</script>
+</body>
+</html>

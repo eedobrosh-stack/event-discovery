@@ -3,7 +3,7 @@ import httpx
 from datetime import date, datetime
 
 from app.config import settings
-from app.services.collectors.base import BaseCollector, RawEvent
+from app.services.collectors.base import BaseCollector, RawEvent, safe_time, default_end_time
 from app.services.collectors.category_mapper import map_category
 
 
@@ -76,9 +76,9 @@ class PredictHQCollector(BaseCollector):
         return RawEvent(
             name=ev.get("title", "Untitled Event"),
             start_date=start_dt.date(),
-            start_time=start_dt.strftime("%H:%M"),
+            start_time=safe_time(start_dt),
             end_date=end_dt.date() if end_dt else None,
-            end_time=end_dt.strftime("%H:%M") if end_dt else None,
+            end_time=safe_time(end_dt) if end_dt else None,
             description=ev.get("description"),
             venue_name=ev.get("entities", [{}])[0].get("name") if ev.get("entities") else None,
             venue_lat=lat,

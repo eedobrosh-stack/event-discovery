@@ -52,3 +52,10 @@ async def trigger_scrape(
         "collection_stats": all_stats,
         "youtube_enriched": youtube_count,
     }
+
+
+@router.post("/enrich-youtube")
+async def enrich_youtube(db: Session = Depends(get_db)):
+    """Enrich all events that have an artist but no YouTube link."""
+    enriched = await registry.enrich_youtube(db)
+    return {"message": f"YouTube enrichment complete", "enriched": enriched}

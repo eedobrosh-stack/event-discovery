@@ -17,6 +17,8 @@ class EventOut(BaseModel):
     price_currency: Optional[str] = None
     venue_id: Optional[int] = None
     venue_name: Optional[str] = None
+    venue_website_url: Optional[str] = None
+    venue_timezone: Optional[str] = None
     image_url: Optional[str] = None
     is_online: bool = False
     scrape_source: Optional[str] = None
@@ -24,8 +26,18 @@ class EventOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     categories: List[str] = []
+    event_types: List[str] = []
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "arbitrary_types_allowed": True}
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        # Prevent Pydantic from touching the ORM relationship named 'event_types'
+        data = {
+            c.key: getattr(obj, c.key)
+            for c in obj.__table__.columns
+        } if hasattr(obj, "__table__") else obj
+        return super().model_validate(data, **kwargs)
 
 
 class ExportRequest(BaseModel):

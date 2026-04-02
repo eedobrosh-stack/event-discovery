@@ -7,7 +7,18 @@ EVENT_TYPES = [
     {"name": "Short-Form Improv", "category": "Comedy", "keywords": "improv, short-form, whose line"},
     {"name": "Long-Form Improv", "category": "Comedy", "keywords": "improv, long-form, narrative"},
     {"name": "Musical Improv", "category": "Comedy", "keywords": "improv, musical, comedy"},
-    # Music
+    # Music — Popular genres
+    {"name": "Jazz Concert", "category": "Music", "keywords": "jazz, bebop, swing, blues, jazz club"},
+    {"name": "Hip-Hop / Rap Concert", "category": "Music", "keywords": "hip-hop, hip hop, rap, trap, drill"},
+    {"name": "Rock Concert", "category": "Music", "keywords": "rock, punk, metal, indie rock, alternative, grunge"},
+    {"name": "Pop Concert", "category": "Music", "keywords": "pop concert, pop music, pop show"},
+    {"name": "Electronic / DJ Set", "category": "Music", "keywords": "dj set, dj, electronic, edm, techno, house music, rave, club night, dnb, drum and bass, ambient"},
+    {"name": "R&B / Soul Concert", "category": "Music", "keywords": "r&b, soul, neo-soul, motown, funk"},
+    {"name": "Country Concert", "category": "Music", "keywords": "country, bluegrass, americana, folk"},
+    {"name": "Latin Concert", "category": "Music", "keywords": "latin, salsa, reggaeton, cumbia, bachata, merengue"},
+    {"name": "Reggae / Calypso Concert", "category": "Music", "keywords": "reggae, calypso, dancehall, ska"},
+    {"name": "Gospel Concert", "category": "Music", "keywords": "gospel, christian music, worship concert"},
+    # Music — Classical
     {"name": "Symphony Orchestral Performances", "category": "Music", "keywords": "symphony, orchestra, classical"},
     {"name": "Pops Concerts", "category": "Music", "keywords": "pops, orchestra, classical"},
     {"name": "Concerto Performances", "category": "Music", "keywords": "concerto, classical, orchestra"},
@@ -46,7 +57,10 @@ EVENT_TYPES = [
     {"name": "Multi-Disciplinary Arts Festivals", "category": "Festival", "keywords": "arts festival, multi-disciplinary"},
     {"name": "Theater Festivals", "category": "Festival", "keywords": "theater festival, arts"},
     {"name": "Literary Festivals", "category": "Festival", "keywords": "literary festival, books"},
-    # Art
+    # Art — Theatre
+    {"name": "Broadway Show", "category": "Art", "keywords": "broadway, off-broadway, musical theatre, musical theater, west end"},
+    {"name": "Play / Drama", "category": "Art", "keywords": "play, drama, theatre, staged reading, one-act"},
+    # Art — Galleries
     {"name": "Commercial Gallery Exhibitions", "category": "Art", "keywords": "gallery, commercial, art exhibition"},
     {"name": "Artist-Run Space Exhibitions", "category": "Art", "keywords": "artist-run, gallery, art exhibition"},
     {"name": "Cooperative Gallery Exhibitions", "category": "Art", "keywords": "cooperative, gallery, art exhibition"},
