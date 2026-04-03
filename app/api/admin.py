@@ -6,8 +6,32 @@ from sqlalchemy import func
 from app.database import get_db
 from app.models import Event, Venue, City, EventType
 from app.scheduler.jobs import registry
+from app.seed.cities import CITIES
+from app.seed.event_types import EVENT_TYPES
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@router.post("/seed")
+def seed_database(db: Session = Depends(get_db)):
+    """Seed cities and event types if not already present."""
+    cities_added = 0
+    for c in CITIES:
+        exists = db.query(City).filter(City.name == c["name"], City.country == c["country"]).first()
+        if not exists:
+            db.add(City(**c))
+            cities_added += 1
+    db.commit()
+
+    types_added = 0
+    for t in EVENT_TYPES:
+        exists = db.query(EventType).filter(EventType.name == t["name"]).first()
+        if not exists:
+            db.add(EventType(**t))
+            types_added += 1
+    db.commit()
+
+    return {"cities_added": cities_added, "event_types_added": types_added}
 
 
 @router.get("/stats")
