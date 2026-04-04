@@ -7,7 +7,7 @@ import httpx
 
 from app.database import get_db, engine
 from app.models import Event, Venue, City, EventType
-from app.scheduler.jobs import registry
+from app.scheduler.jobs import registry, collect_venue_websites
 from app.seed.cities import CITIES
 from app.seed.event_types import EVENT_TYPES
 from app.config import settings
@@ -123,6 +123,13 @@ async def _search_venue_url(client, name, city, country, api_key):
     except Exception:
         pass
     return None
+
+
+@router.post("/scrape-venue-websites")
+async def scrape_venue_websites():
+    """Manually trigger venue website scraping for all venues with a known URL."""
+    await collect_venue_websites()
+    return {"message": "Venue website scrape complete"}
 
 
 @router.post("/enrich-venues-tm")
