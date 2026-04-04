@@ -163,6 +163,75 @@
         /* Loading / empty state */
         #stats-loading { color: #aaa; padding: 40px 0; text-align: center; }
         .empty-state { color: #aaa; text-align: center; padding: 30px; }
+
+        /* Add Venue section */
+        .add-venue-section {
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 10px;
+            padding: 20px 24px;
+            margin-bottom: 28px;
+        }
+        .add-venue-section h3 {
+            margin: 0 0 16px;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+        .add-venue-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+        .add-venue-field {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            flex: 1;
+            min-width: 200px;
+        }
+        .add-venue-field label {
+            font-size: 0.75rem;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+        }
+        .add-venue-field input {
+            padding: 8px 12px;
+            background: var(--bg, #12121f);
+            border: 1px solid var(--border, #333);
+            border-radius: 6px;
+            color: inherit;
+            font-size: 0.9rem;
+        }
+        .add-venue-field input:focus {
+            outline: none;
+            border-color: var(--accent, #7c6af7);
+        }
+        .btn-add-venue {
+            padding: 8px 20px;
+            background: var(--accent, #7c6af7);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            white-space: nowrap;
+            align-self: flex-end;
+        }
+        .btn-add-venue:hover { opacity: .85; }
+        .btn-add-venue:disabled { opacity: .45; cursor: default; }
+        #venue-result {
+            margin-top: 12px;
+            font-size: 0.88rem;
+            padding: 10px 14px;
+            border-radius: 6px;
+            display: none;
+        }
+        #venue-result.success { background: rgba(100,200,100,.12); color: #7dda7d; border: 1px solid rgba(100,200,100,.25); }
+        #venue-result.error   { background: rgba(220,80,80,.12);  color: #f08080; border: 1px solid rgba(220,80,80,.25); }
+        #venue-result.info    { background: rgba(124,106,247,.12); color: #b0a4ff; border: 1px solid rgba(124,106,247,.25); }
     </style>
 </head>
 <body>
@@ -195,6 +264,27 @@
                 <div class="card-num" id="sum-events">–</div>
                 <div class="card-label">Upcoming events</div>
             </div>
+        </div>
+
+        <!-- Add Venue Events -->
+        <div class="add-venue-section">
+            <h3>➕ Add Events from Venue Website</h3>
+            <div class="add-venue-row">
+                <div class="add-venue-field" style="flex:2; min-width:280px;">
+                    <label for="venue-url">Venue Website URL</label>
+                    <input type="url" id="venue-url" placeholder="https://www.example-venue.com/events/" />
+                </div>
+                <div class="add-venue-field">
+                    <label for="venue-name-input">Venue Name <span style="color:#666">(optional)</span></label>
+                    <input type="text" id="venue-name-input" placeholder="Auto-detected" />
+                </div>
+                <div class="add-venue-field">
+                    <label for="venue-city-input">City <span style="color:#666">(optional)</span></label>
+                    <input type="text" id="venue-city-input" placeholder="e.g. Tel Aviv" />
+                </div>
+                <button class="btn-add-venue" id="add-venue-btn">Scan Venue</button>
+            </div>
+            <div id="venue-result"></div>
         </div>
 
         <div class="stats-controls">
@@ -376,6 +466,57 @@
     document.getElementById('next-btn').addEventListener('click', () => { currentPage++; render(); window.scrollTo(0,0); });
 
     load();
+
+    // ── Add-venue handler ──────────────────────────────────────────────────
+    document.getElementById('add-venue-btn').addEventListener('click', async () => {
+        const url   = document.getElementById('venue-url').value.trim();
+        const name  = document.getElementById('venue-name-input').value.trim();
+        const city  = document.getElementById('venue-city-input').value.trim();
+        const btn   = document.getElementById('add-venue-btn');
+        const res   = document.getElementById('venue-result');
+
+        if (!url) {
+            res.className = 'error';
+            res.textContent = 'Please enter a venue website URL.';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Scanning…';
+        res.className = 'info';
+        res.textContent = 'Fetching venue page and scanning for events…';
+
+        try {
+            const params = new URLSearchParams({ venue_url: url });
+            if (name) params.append('venue_name', name);
+            if (city) params.append('city_name', city);
+
+            const r = await fetch('/api/admin/scrape-venue-url?' + params.toString(), {
+                method: 'POST',
+            });
+            const data = await r.json();
+
+            if (!r.ok) {
+                res.className = 'error';
+                res.textContent = '⚠️ ' + (data.detail || data.message || 'Server error');
+            } else if (data.events_saved > 0) {
+                res.className = 'success';
+                res.textContent = `✅ ${data.message}  (Venue: ${data.venue_name}, City: ${data.city || '—'})`;
+            } else if (data.events_found > 0) {
+                res.className = 'info';
+                res.textContent = `ℹ️ ${data.message}  (all events were already in the database)`;
+            } else {
+                res.className = 'error';
+                res.textContent = `❌ ${data.message}`;
+            }
+        } catch (e) {
+            res.className = 'error';
+            res.textContent = '⚠️ Request failed: ' + e.message;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Scan Venue';
+        }
+    });
 </script>
 </body>
 </html>

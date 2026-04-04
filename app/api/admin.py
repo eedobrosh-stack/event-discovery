@@ -9,6 +9,7 @@ from app.database import get_db, engine
 from app.models import Event, Venue, City, EventType
 from app.scheduler.jobs import registry, collect_venue_websites
 from app.services.dedup import dedup_events
+from app.services.collectors.scrapers.venue_websites import scrape_venue_website
 from app.seed.cities import CITIES
 from app.seed.event_types import EVENT_TYPES
 from app.config import settings
@@ -124,6 +125,68 @@ async def _search_venue_url(client, name, city, country, api_key):
     except Exception:
         pass
     return None
+
+
+@router.post("/scrape-venue-url")
+async def scrape_venue_url(
+    venue_url: str,
+    venue_name: Optional[str] = None,
+    city_name: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Scrape events from a specific venue URL and save them to the DB."""
+    import httpx
+    from bs4 import BeautifulSoup
+
+    # Auto-detect venue name from page title if not provided
+    if not venue_name:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(venue_url, follow_redirects=True,
+                    headers={"User-Agent": "Supercaly/1.0"})
+                soup = BeautifulSoup(resp.text, "lxml")
+                og_site = soup.find("meta", property="og:site_name")
+                title_tag = soup.find("title")
+                venue_name = (
+                    (og_site["content"] if og_site and og_site.get("content") else None)
+                    or (title_tag.string.split(" - ")[0].split(" | ")[0].strip() if title_tag and title_tag.string else None)
+                    or venue_url
+                )
+        except Exception:
+            venue_name = venue_url
+
+    # Resolve city
+    city = None
+    if city_name:
+        city = db.query(City).filter(City.name.ilike(f"%{city_name}%")).first()
+    if not city:
+        city = db.query(City).filter(City.name == "Tel Aviv").first()
+    if not city:
+        city = db.query(City).first()
+
+    venue_city = city.name if city else ""
+    venue_country = city.country if city else ""
+
+    # Run scraper
+    sem = asyncio.Semaphore(1)
+    async with httpx.AsyncClient() as client:
+        raw_events = await scrape_venue_website(
+            client, sem, venue_name, venue_city, venue_country, venue_url
+        )
+
+    if not raw_events:
+        return {"venue_name": venue_name, "events_found": 0, "events_saved": 0,
+                "message": "No events found. The site may require JavaScript or use an unsupported format."}
+
+    saved = registry._save_events(raw_events, city, db) if city else 0
+
+    return {
+        "venue_name": venue_name,
+        "city": venue_city,
+        "events_found": len(raw_events),
+        "events_saved": saved,
+        "message": f"Found {len(raw_events)} events, saved {saved} new ones.",
+    }
 
 
 @router.post("/dedup")
