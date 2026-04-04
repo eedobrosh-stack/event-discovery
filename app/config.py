@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/auth/google/callback"
 
     # Scheduling
-    SCRAPE_INTERVAL_HOURS: int = 6
+    SCRAPE_INTERVAL_HOURS: int = 12
     CLEANUP_DAYS_AGO: int = 7
     RATE_LIMIT_PER_SECOND: int = 2
 

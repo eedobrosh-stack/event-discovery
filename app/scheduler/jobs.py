@@ -35,15 +35,33 @@ registry.register(BarbyCollector())
 registry.register(IsraelSitesCollector())
 
 
+PRIORITY_CITIES = [
+    "New York", "Tel Aviv", "London", "Los Angeles", "Chicago",
+    "San Francisco", "Berlin", "Paris", "Toronto", "Sydney",
+]
+
+
 async def collect_all_events():
-    """Run all collectors for all cities."""
+    """Run all collectors for priority cities only to avoid memory spikes."""
     db = SessionLocal()
     try:
-        cities = db.query(City).all()
+        cities = db.query(City).filter(City.name.in_(PRIORITY_CITIES)).all()
+        if not cities:
+            # Fallback: scrape up to 10 cities that already have events
+            cities = (
+                db.query(City)
+                .join(City.events)
+                .group_by(City.id)
+                .limit(10)
+                .all()
+            )
         for city in cities:
             logger.info(f"Collecting events for {city.name}...")
-            stats = await registry.collect_all(city, db)
-            logger.info(f"{city.name} stats: {stats}")
+            try:
+                stats = await registry.collect_all(city, db)
+                logger.info(f"{city.name} stats: {stats}")
+            except Exception as e:
+                logger.error(f"Error collecting {city.name}: {e}")
     finally:
         db.close()
 
