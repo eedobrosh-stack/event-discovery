@@ -1,5 +1,21 @@
 // Selected type/performer filters: [{kind, value, badge}]
 let selectedTypeFilters = [];
+
+function formatPrice(amount, currency) {
+    if (!amount) return "-";
+    const code = (currency || "USD").toUpperCase();
+    try {
+        return new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: code,
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+        }).format(Math.round(amount));
+    } catch {
+        // Fallback for unrecognised currency codes
+        return `${code} ${Math.round(amount)}`;
+    }
+}
 let renderTypeChips = null; // set by setupTypeAutocomplete, used by artist click handler
 let offset = 0;
 const LIMIT = 50;
@@ -443,7 +459,7 @@ async function searchEvents() {
               ${ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
             </td>
             <td>${ev.venue_website_url ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>` : esc(ev.venue_name || "-")}</td>
-            <td>${ev.price ? `${ev.price_currency || "$"}${ev.price}` : "-"}</td>
+            <td>${formatPrice(ev.price, ev.price_currency)}</td>
             <td>${(ev.categories || []).join(", ") || "-"}</td>
             <td>${(ev.event_types || []).join(", ") || "-"}</td>
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">Buy</a>` : "-"}</td>
