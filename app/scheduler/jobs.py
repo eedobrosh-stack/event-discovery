@@ -20,6 +20,7 @@ from app.services.collectors.scrapers.cameri import CameriCollector
 from app.services.collectors.scrapers.barby import BarbyCollector
 from app.services.collectors.scrapers.israel_sites import IsraelSitesCollector
 from app.services.collectors.scrapers.smarticket import SmartticketCollector
+from app.services.collectors.scrapers.hatarbut import HatarbutCollector
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ registry.register(CameriCollector())
 registry.register(BarbyCollector())
 registry.register(IsraelSitesCollector())
 registry.register(SmartticketCollector())
+registry.register(HatarbutCollector())
 
 
 PRIORITY_CITIES = [
