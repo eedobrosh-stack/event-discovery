@@ -6,6 +6,7 @@ from app.models import City, Event, Venue
 from app.config import settings
 from app.services.collectors.registry import CollectorRegistry
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
+from app.services.dedup import dedup_events
 from app.services.collectors.api.ticketmaster import TicketmasterCollector
 from app.services.collectors.api.eventbrite import EventbriteCollector
 from app.services.collectors.api.seatgeek import SeatGeekCollector
@@ -113,6 +114,16 @@ async def collect_venue_websites():
         )
     except Exception as e:
         logger.error(f"Venue website scraper error: {e}")
+    finally:
+        db.close()
+
+
+def run_dedup():
+    """Weekly cross-source deduplication job."""
+    db = SessionLocal()
+    try:
+        result = dedup_events(db)
+        logger.info(f"Scheduled dedup: {result}")
     finally:
         db.close()
 

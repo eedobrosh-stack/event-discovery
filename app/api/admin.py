@@ -8,6 +8,7 @@ import httpx
 from app.database import get_db, engine
 from app.models import Event, Venue, City, EventType
 from app.scheduler.jobs import registry, collect_venue_websites
+from app.services.dedup import dedup_events
 from app.seed.cities import CITIES
 from app.seed.event_types import EVENT_TYPES
 from app.config import settings
@@ -123,6 +124,13 @@ async def _search_venue_url(client, name, city, country, api_key):
     except Exception:
         pass
     return None
+
+
+@router.post("/dedup")
+def run_dedup(db: Session = Depends(get_db)):
+    """Remove duplicate events across sources. Safe to run anytime."""
+    result = dedup_events(db)
+    return result
 
 
 @router.post("/scrape-venue-websites")

@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup
 
 scheduler = AsyncIOScheduler()
 
@@ -36,6 +36,12 @@ async def lifespan(app: FastAPI):
         collect_venue_websites,
         CronTrigger(hour=4, minute=0),   # daily at 4am UTC, after cleanup
         id="collect_venue_websites",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_dedup,
+        CronTrigger(day_of_week="sun", hour=5, minute=0),  # weekly Sunday 5am UTC
+        id="dedup_events",
         replace_existing=True,
     )
     scheduler.start()
