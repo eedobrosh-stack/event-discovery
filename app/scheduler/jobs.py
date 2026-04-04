@@ -21,10 +21,16 @@ from app.services.collectors.scrapers.israel_sites import IsraelSitesCollector
 logger = logging.getLogger(__name__)
 
 registry = CollectorRegistry()
-registry.register(TicketmasterCollector())
-registry.register(EventbriteCollector())
-registry.register(SeatGeekCollector())
-registry.register(PredictHQCollector())
+# Only register collectors that have credentials or are credential-free scrapers
+if settings.TICKETMASTER_KEY:
+    registry.register(TicketmasterCollector())
+if settings.EVENTBRITE_TOKEN:
+    registry.register(EventbriteCollector())
+if settings.SEATGEEK_CLIENT_ID:
+    registry.register(SeatGeekCollector())
+if settings.PREDICTHQ_TOKEN:
+    registry.register(PredictHQCollector())
+# Credential-free scrapers — always register
 registry.register(NYCVenueScraper())
 registry.register(TelAvivVenueScraper())
 registry.register(LeaanCollector())
