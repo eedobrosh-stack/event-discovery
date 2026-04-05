@@ -29,11 +29,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("start-date").value = fmt(today);
     document.getElementById("end-date").value = fmt(future);
 
-    setupTypeAutocomplete();
-    await loadCities();
-    bindEvents();
-
-    // Pre-fill from homepage search params
+    // Read URL params from homepage BEFORE loadCities so geo-detection is skipped correctly
     const urlParams = new URLSearchParams(window.location.search);
     const typeKind  = urlParams.get("type_kind");
     const typeValue = urlParams.get("type_value");
@@ -41,18 +37,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     const cityId    = urlParams.get("city_id");
     const cityLabel = urlParams.get("city");
 
+    // Set flag early so detectUserCity() (called inside loadCities) sees it immediately
+    if (cityId) window._citySetFromParams = true;
+
+    setupTypeAutocomplete();
+    await loadCities();
+    bindEvents();
+
+    // Apply type filter from homepage
     if (typeKind && typeValue) {
         selectedTypeFilters.push({ kind: typeKind, value: typeValue, badge: typeBadge || "Search" });
         if (renderTypeChips) renderTypeChips();
     }
+    // Apply city from homepage (loadCities won't have overwritten it due to the flag)
     if (cityId && cityLabel) {
         document.getElementById("city-input").value = cityLabel;
         document.getElementById("city-id").value    = cityId;
         updateCityClearBtn();
     }
-
-    // If arriving from homepage with a city, skip geo-detection
-    if (cityId) window._citySetFromParams = true;
 
     await searchEvents();
 
@@ -235,6 +237,8 @@ async function detectUserCity() {
     try {
         const r = await fetch("https://ipapi.co/json/");
         const geo = await r.json();
+        // Re-check after async fetch — params may have been applied while we were waiting
+        if (window._citySetFromParams) return;
         const cityName = geo.city || "";
         const countryName = geo.country_name || "";
         console.log("[GeoDetect] IP-based:", cityName, countryName);
