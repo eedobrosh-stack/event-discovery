@@ -6,7 +6,7 @@ import asyncio
 import httpx
 
 from app.database import get_db, engine
-from app.models import Event, Venue, City, EventType
+from app.models import Event, Venue, City, EventType, PendingVenue
 from app.scheduler.jobs import registry, collect_venue_websites
 from app.services.dedup import dedup_events
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
@@ -138,9 +138,24 @@ async def scrape_venue_url(
     city_name: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Scrape events from a specific venue URL and save them to the DB."""
+    """Scrape events from a specific venue URL and save them to the DB.
+    Every submission is logged to pending_venues; failed ones stay as 'failed'
+    so the background agent can pick them up and build a custom parser.
+    """
     import httpx
     from bs4 import BeautifulSoup
+    from datetime import datetime
+
+    # Log this submission immediately as "pending"
+    pending = PendingVenue(
+        url=venue_url,
+        venue_name=venue_name,
+        city_name=city_name,
+        status="pending",
+    )
+    db.add(pending)
+    db.commit()
+    db.refresh(pending)
 
     # Known platforms supply their own venue name — skip HTML pre-fetch for them
     _known_platform = any(p in venue_url for p in ("goshow.co.il", "smarticket.co.il"))
@@ -189,15 +204,29 @@ async def scrape_venue_url(
             raw_events = await scrape_venue_website(
                 client, sem, venue_name, venue_city, venue_country, venue_url
             )
+
     # Pick up auto-detected venue name from first event if not provided
     if raw_events and not venue_name:
         venue_name = raw_events[0].venue_name
 
+    # Update the pending record with the outcome
     if not raw_events:
+        pending.status = "failed"
+        pending.events_found = 0
+        pending.events_saved = 0
+        pending.agent_notes = "Generic scraper found 0 events — needs custom parser."
+        pending.handled_at = datetime.utcnow()
+        db.commit()
         return {"venue_name": venue_name, "events_found": 0, "events_saved": 0,
-                "message": "No events found. The site may require JavaScript or use an unsupported format."}
+                "message": "No events found — flagged for the background agent to handle."}
 
     saved = registry._save_events(raw_events, city, db) if city else 0
+    pending.status = "success" if saved > 0 else "partial"
+    pending.venue_name = venue_name
+    pending.events_found = len(raw_events)
+    pending.events_saved = saved
+    pending.handled_at = datetime.utcnow()
+    db.commit()
 
     return {
         "venue_name": venue_name,
@@ -206,6 +235,39 @@ async def scrape_venue_url(
         "events_saved": saved,
         "message": f"Found {len(raw_events)} events, saved {saved} new ones.",
     }
+
+
+@router.get("/pending-venues")
+def list_pending_venues(status: Optional[str] = "failed", db: Session = Depends(get_db)):
+    """Return venue submissions that need attention. Default: status=failed."""
+    q = db.query(PendingVenue)
+    if status:
+        q = q.filter(PendingVenue.status == status)
+    venues = q.order_by(PendingVenue.created_at.desc()).limit(50).all()
+    return [
+        {
+            "id": v.id, "url": v.url, "venue_name": v.venue_name,
+            "city_name": v.city_name, "status": v.status,
+            "events_found": v.events_found, "events_saved": v.events_saved,
+            "agent_notes": v.agent_notes, "created_at": str(v.created_at),
+        }
+        for v in venues
+    ]
+
+
+@router.post("/pending-venues/{venue_id}/resolve")
+def resolve_pending_venue(venue_id: int, notes: str = "", db: Session = Depends(get_db)):
+    """Mark a pending venue as resolved (called by the agent after handling it)."""
+    from datetime import datetime
+    v = db.query(PendingVenue).filter(PendingVenue.id == venue_id).first()
+    if not v:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Pending venue not found")
+    v.status = "resolved"
+    v.agent_notes = notes
+    v.handled_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/dedup")
