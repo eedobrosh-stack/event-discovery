@@ -3,119 +3,228 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Supercaly</title>
-    <link rel="stylesheet" href="/style.css?v=6">
+    <title>Supercaly — Find Events Worldwide</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #08081a;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ── Logo ── */
+        .home-center {
+            width: 100%;
+            max-width: 740px;
+            padding: 2rem;
+            text-align: center;
+        }
+
+        .logo {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 1rem;
+            user-select: none;
+        }
+        .logo-mark {
+            font-size: 2rem;
+            color: #7c6af7;
+            line-height: 1;
+            margin-bottom: 0.15rem;
+            filter: drop-shadow(0 0 14px rgba(124,106,247,0.7));
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { filter: drop-shadow(0 0 10px rgba(124,106,247,0.5)); }
+            50%       { filter: drop-shadow(0 0 22px rgba(124,106,247,0.9)); }
+        }
+        .logo-wordmark {
+            font-size: 5rem;
+            font-weight: 800;
+            letter-spacing: -3px;
+            line-height: 1;
+        }
+        .logo-super { color: #ffffff; }
+        .logo-caly  { color: #7c6af7; }
+
+        .tagline {
+            font-size: 0.82rem;
+            color: rgba(255,255,255,0.35);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 3rem;
+        }
+
+        /* ── Search area ── */
+        .search-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 1.2rem;
+        }
+
+        .search-field { flex: 1; position: relative; }
+        .search-field--wide { flex: 2; }
+
+        .search-input {
+            width: 100%;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.11);
+            border-radius: 14px;
+            padding: 15px 20px;
+            font-size: 1rem;
+            color: #fff;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+        }
+        .search-input::placeholder { color: rgba(255,255,255,0.28); }
+        .search-input:focus {
+            border-color: rgba(124,106,247,0.7);
+            background: rgba(124,106,247,0.07);
+            box-shadow: 0 0 0 3px rgba(124,106,247,0.14);
+        }
+
+        /* City clear button */
+        .city-wrap { position: relative; }
+        .city-clear {
+            position: absolute;
+            right: 14px; top: 50%;
+            transform: translateY(-50%);
+            background: none; border: none;
+            color: rgba(255,255,255,0.3);
+            font-size: 1.1rem; cursor: pointer;
+            padding: 2px 4px; line-height: 1;
+            transition: color 0.15s;
+        }
+        .city-clear:hover { color: rgba(255,255,255,0.75); }
+
+        /* ── Dropdowns ── */
+        .suggestions-list {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0; right: 0;
+            background: #14142a;
+            border: 1px solid rgba(255,255,255,0.09);
+            border-radius: 14px;
+            box-shadow: 0 10px 36px rgba(0,0,0,0.5);
+            list-style: none;
+            padding: 6px 0;
+            z-index: 200;
+            max-height: 280px;
+            overflow-y: auto;
+            text-align: left;
+        }
+        .suggestions-list li {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 0.92rem;
+            color: rgba(255,255,255,0.8);
+            transition: background 0.12s;
+        }
+        .suggestions-list li:hover,
+        .suggestions-list li.active { background: rgba(124,106,247,0.18); }
+
+        .sugg-badge {
+            font-size: 0.6rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.04em;
+            padding: 1px 5px; border-radius: 8px; flex-shrink: 0;
+        }
+        .sugg-badge--category   { background: #1e3a5f; color: #60a5fa; }
+        .sugg-badge--event_type { background: #3b1f5e; color: #c084fc; }
+        .sugg-badge--performer  { background: #1a3a2a; color: #4ade80; }
+
+        /* ── Search button ── */
+        .search-btn {
+            background: #7c6af7;
+            color: #fff;
+            border: none;
+            border-radius: 14px;
+            padding: 15px 48px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+            box-shadow: 0 4px 24px rgba(124,106,247,0.38);
+        }
+        .search-btn:hover {
+            background: #6b58f0;
+            box-shadow: 0 6px 28px rgba(124,106,247,0.55);
+        }
+        .search-btn:active { transform: scale(0.98); }
+
+        /* ── Footer links ── */
+        .home-links {
+            margin-top: 3rem;
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+        }
+        .home-links a {
+            color: rgba(255,255,255,0.28);
+            text-decoration: none;
+            font-size: 0.8rem;
+            transition: color 0.2s;
+        }
+        .home-links a:hover { color: rgba(255,255,255,0.65); }
+
+        /* ── Responsive ── */
+        @media (max-width: 560px) {
+            .logo-wordmark { font-size: 3.2rem; letter-spacing: -1.5px; }
+            .search-row { flex-direction: column; }
+            .search-field--wide { flex: 1; }
+            .search-btn { width: 100%; padding: 15px; }
+        }
+    </style>
 </head>
 <body>
-    <header>
-        <h1>Supercaly</h1>
-        <p>Find events across categories and cities worldwide</p>
-        <nav style="margin-top:8px;">
-            <a href="/stats.html" style="color:#7c6af7; font-size:.85rem; text-decoration:none;">
-                📡 Coverage Stats
-            </a>
-        </nav>
-    </header>
+<div class="home-center">
 
-    <main>
-        <section class="filters">
-            <div class="filter-row">
-                <div class="filter-group filter-group--wide">
-                    <label for="type-search-input">Search Event Type OR Performer</label>
-                    <div class="type-autocomplete-wrap">
-                        <div id="type-chips" class="type-chips"></div>
-                        <input type="text" id="type-search-input"
-                               placeholder="e.g. Bradford James, Dance, Jazz..."
-                               autocomplete="off">
-                        <ul id="type-suggestions" hidden></ul>
-                    </div>
-                </div>
-                <div class="filter-group">
-                    <label for="city-input">City</label>
-                    <div class="city-autocomplete-wrap">
-                        <input type="text" id="city-input" placeholder="Type a city name..." autocomplete="off">
-                        <button type="button" id="city-clear" class="city-clear-btn" title="Clear city (show all)" hidden>×</button>
-                        <ul id="city-suggestions" hidden></ul>
-                        <input type="hidden" id="city-id">
-                    </div>
-                </div>
-            </div>
-            <div class="filter-row">
-                <div class="filter-group">
-                    <label for="start-date">From</label>
-                    <input type="date" id="start-date">
-                </div>
-                <div class="filter-group">
-                    <label for="end-date">To</label>
-                    <input type="date" id="end-date">
-                </div>
-                <div class="filter-group">
-                    <label for="search">Search</label>
-                    <input type="text" id="search" placeholder="Event name...">
-                </div>
-            </div>
-            <div class="filter-actions">
-                <button id="search-btn" type="button">Search Events</button>
-                <button id="export-ics-btn" type="button">Download ICS</button>
-                <button id="subscribe-btn" type="button" class="btn-subscribe">📅 Subscribe to Calendar</button>
-                <button id="export-sheets-btn" type="button">Export to Google Sheet</button>
-            </div>
-        </section>
-
-        <section class="results">
-            <div id="stats"></div>
-            <div class="table-scroll">
-                <table id="events-table">
-                    <thead>
-                        <tr>
-                            <th>Event</th>
-                            <th>Artist</th>
-                            <th>YouTube</th>
-                            <th>Date</th>
-                            <th colspan="2">Time</th>
-                            <th>Venue</th>
-                            <th>Price</th>
-                            <th>Category</th>
-                            <th>Type</th>
-                            <th>Link</th>
-                        </tr>
-                    </thead>
-                    <tbody id="events-body"></tbody>
-                </table>
-            </div>
-            <button id="load-more-btn" type="button" style="display:none;">Load More</button>
-        </section>
-    </main>
-
-    <!-- Subscribe Modal -->
-    <div id="subscribe-modal" class="modal-overlay" hidden>
-        <div class="modal-box">
-            <button class="modal-close" id="modal-close-btn" aria-label="Close">×</button>
-            <h2 class="modal-title">📅 Subscribe to Calendar</h2>
-            <p class="modal-desc">Your calendar app will automatically pick up new events matching your current filters — no action needed after subscribing.</p>
-
-            <div class="modal-section">
-                <label class="modal-label">Apple Calendar (iOS / macOS)</label>
-                <a id="webcal-link" href="#" class="btn-webcal">Open in Apple Calendar</a>
-                <p class="modal-hint">Click the button above — your device will prompt you to subscribe.</p>
-            </div>
-
-            <div class="modal-section">
-                <label class="modal-label">Google Calendar / Outlook / Other</label>
-                <div class="copy-row">
-                    <input id="subscribe-url" class="copy-input" readonly>
-                    <button id="copy-url-btn" class="btn-copy">Copy</button>
-                </div>
-                <p class="modal-hint">
-                    <strong>Google Calendar:</strong> Other calendars → + → From URL → paste<br>
-                    <strong>Outlook:</strong> Add calendar → From internet → paste
-                </p>
-            </div>
-
-            <p class="modal-refresh">🔄 Calendar refreshes every 6 hours automatically.</p>
+    <!-- Logo -->
+    <div class="logo">
+        <span class="logo-mark">✦</span>
+        <div class="logo-wordmark">
+            <span class="logo-super">Super</span><span class="logo-caly">caly</span>
         </div>
     </div>
+    <p class="tagline">Discover events &middot; music &middot; art &middot; sports</p>
 
-    <script src="/app.js?v=9"></script>
+    <!-- Search -->
+    <div class="search-row">
+        <!-- Type / Performer -->
+        <div class="search-field search-field--wide">
+            <input type="text" id="home-type-input" class="search-input"
+                   placeholder="Search artist, genre, event type…" autocomplete="off">
+            <ul id="home-type-suggestions" class="suggestions-list" hidden></ul>
+        </div>
+        <!-- City -->
+        <div class="search-field city-wrap">
+            <input type="text" id="home-city-input" class="search-input"
+                   placeholder="City…" autocomplete="off">
+            <button type="button" id="home-city-clear" class="city-clear" hidden>×</button>
+            <ul id="home-city-suggestions" class="suggestions-list" hidden></ul>
+            <input type="hidden" id="home-city-id">
+        </div>
+    </div>
+    <div>
+        <button id="home-search-btn" class="search-btn" type="button">Search Events</button>
+    </div>
+
+    <!-- Links -->
+    <div class="home-links">
+        <a href="/results.html">Browse All Events</a>
+        <a href="/stats.html">📡 Coverage Stats</a>
+    </div>
+
+</div>
+<script src="/home.js"></script>
 </body>
 </html>

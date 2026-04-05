@@ -32,6 +32,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupTypeAutocomplete();
     await loadCities();
     bindEvents();
+
+    // Pre-fill from homepage search params
+    const urlParams = new URLSearchParams(window.location.search);
+    const typeKind  = urlParams.get("type_kind");
+    const typeValue = urlParams.get("type_value");
+    const typeBadge = urlParams.get("type_badge");
+    const cityId    = urlParams.get("city_id");
+    const cityLabel = urlParams.get("city");
+
+    if (typeKind && typeValue) {
+        selectedTypeFilters.push({ kind: typeKind, value: typeValue, badge: typeBadge || "Search" });
+        if (renderTypeChips) renderTypeChips();
+    }
+    if (cityId && cityLabel) {
+        document.getElementById("city-input").value = cityLabel;
+        document.getElementById("city-id").value    = cityId;
+        updateCityClearBtn();
+    }
+
+    // If arriving from homepage with a city, skip geo-detection
+    if (cityId) window._citySetFromParams = true;
+
     await searchEvents();
 
     // Collapse filter panel on table scroll, expand when back at top
@@ -207,6 +229,8 @@ async function loadCities() {
 }
 
 async function detectUserCity() {
+    // Skip if city was pre-filled from homepage URL params
+    if (window._citySetFromParams) return;
     // Try IP-based detection first (no permission needed)
     try {
         const r = await fetch("https://ipapi.co/json/");

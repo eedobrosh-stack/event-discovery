@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supercaly — Events</title>
+    <link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+    <header>
+        <h1>Supercaly</h1>
+        <p>Find events across categories and cities worldwide</p>
+        <nav style="margin-top:8px; display:flex; gap:1.2rem;">
+            <a href="/" style="color:#7c6af7; font-size:.85rem; text-decoration:none;">← Home</a>
+            <a href="/stats.html" style="color:#7c6af7; font-size:.85rem; text-decoration:none;">📡 Coverage Stats</a>
+        </nav>
+    </header>
+
+    <main>
+        <section class="filters">
+            <div class="filter-row">
+                <div class="filter-group filter-group--wide">
+                    <label for="type-search-input">Search Event Type OR Performer</label>
+                    <div class="type-autocomplete-wrap">
+                        <div id="type-chips" class="type-chips"></div>
+                        <input type="text" id="type-search-input"
+                               placeholder="e.g. Bradford James, Dance, Jazz..."
+                               autocomplete="off">
+                        <ul id="type-suggestions" hidden></ul>
+                    </div>
+                </div>
+                <div class="filter-group">
+                    <label for="city-input">City</label>
+                    <div class="city-autocomplete-wrap">
+                        <input type="text" id="city-input" placeholder="Type a city name..." autocomplete="off">
+                        <button type="button" id="city-clear" class="city-clear-btn" title="Clear city (show all)" hidden>×</button>
+                        <ul id="city-suggestions" hidden></ul>
+                        <input type="hidden" id="city-id">
+                    </div>
+                </div>
+            </div>
+            <div class="filter-row">
+                <div class="filter-group">
+                    <label for="start-date">From</label>
+                    <input type="date" id="start-date">
+                </div>
+                <div class="filter-group">
+                    <label for="end-date">To</label>
+                    <input type="date" id="end-date">
+                </div>
+                <div class="filter-group">
+                    <label for="search">Search</label>
+                    <input type="text" id="search" placeholder="Event name...">
+                </div>
+            </div>
+            <div class="filter-actions">
+                <button id="search-btn" type="button">Search Events</button>
+                <button id="export-ics-btn" type="button">Download ICS</button>
+                <button id="subscribe-btn" type="button" class="btn-subscribe">📅 Subscribe to Calendar</button>
+                <button id="export-sheets-btn" type="button">Export to Google Sheet</button>
+            </div>
+        </section>
+
+        <section class="results">
+            <div id="stats"></div>
+            <div class="table-scroll">
+                <table id="events-table">
+                    <thead>
+                        <tr>
+                            <th>Event</th>
+                            <th>Artist</th>
+                            <th>YouTube</th>
+                            <th>Date</th>
+                            <th colspan="2">Time</th>
+                            <th>Venue</th>
+                            <th>Price</th>
+                            <th>Category</th>
+                            <th>Type</th>
+                            <th>Link</th>
+                        </tr>
+                    </thead>
+                    <tbody id="events-body"></tbody>
+                </table>
+            </div>
+            <button id="load-more-btn" type="button" style="display:none;">Load More</button>
+        </section>
+    </main>
+
+    <!-- Subscribe Modal -->
+    <div id="subscribe-modal" class="modal-overlay" hidden>
+        <div class="modal-box">
+            <button class="modal-close" id="modal-close-btn" aria-label="Close">×</button>
+            <h2 class="modal-title">📅 Subscribe to Calendar</h2>
+            <p class="modal-desc">Your calendar app will automatically pick up new events matching your current filters — no action needed after subscribing.</p>
+
+            <div class="modal-section">
+                <label class="modal-label">Apple Calendar (iOS / macOS)</label>
+                <a id="webcal-link" href="#" class="btn-webcal">Open in Apple Calendar</a>
+                <p class="modal-hint">Click the button above — your device will prompt you to subscribe.</p>
+            </div>
+
+            <div class="modal-section">
+                <label class="modal-label">Google Calendar / Outlook / Other</label>
+                <div class="copy-row">
+                    <input id="subscribe-url" class="copy-input" readonly>
+                    <button id="copy-url-btn" class="btn-copy">Copy</button>
+                </div>
+                <p class="modal-hint">
+                    <strong>Google Calendar:</strong> Other calendars → + → From URL → paste<br>
+                    <strong>Outlook:</strong> Add calendar → From internet → paste
+                </p>
+            </div>
+
+            <p class="modal-refresh">🔄 Calendar refreshes every 6 hours automatically.</p>
+        </div>
+    </div>
+
+    <script src="/app.js?v=9"></script>
+</body>
+</html>
