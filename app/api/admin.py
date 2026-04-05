@@ -11,6 +11,7 @@ from app.scheduler.jobs import registry, collect_venue_websites
 from app.services.dedup import dedup_events
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
 from app.services.collectors.scrapers.goshow import parse_goshow_venue_page
+from app.services.collectors.scrapers.smarticket import parse_smarticket_venue_url
 from app.seed.cities import CITIES
 from app.seed.event_types import EVENT_TYPES
 from app.config import settings
@@ -141,8 +142,11 @@ async def scrape_venue_url(
     import httpx
     from bs4 import BeautifulSoup
 
-    # Auto-detect venue name from page title if not provided
-    if not venue_name:
+    # Known platforms supply their own venue name — skip HTML pre-fetch for them
+    _known_platform = any(p in venue_url for p in ("goshow.co.il", "smarticket.co.il"))
+
+    # Auto-detect venue name from page title for generic URLs
+    if not venue_name and not _known_platform:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(venue_url, follow_redirects=True,
@@ -176,14 +180,18 @@ async def scrape_venue_url(
             raw_events = await parse_goshow_venue_page(
                 venue_url, client, venue_name, venue_city, venue_country
             )
-            # Update venue_name from scraper result if it was auto-detected
-            if raw_events and not venue_name:
-                venue_name = raw_events[0].venue_name
+        elif "smarticket.co.il" in venue_url:
+            raw_events = await parse_smarticket_venue_url(
+                venue_url, client, venue_name, venue_city, venue_country
+            )
         else:
             sem = asyncio.Semaphore(1)
             raw_events = await scrape_venue_website(
                 client, sem, venue_name, venue_city, venue_country, venue_url
             )
+    # Pick up auto-detected venue name from first event if not provided
+    if raw_events and not venue_name:
+        venue_name = raw_events[0].venue_name
 
     if not raw_events:
         return {"venue_name": venue_name, "events_found": 0, "events_saved": 0,
