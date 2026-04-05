@@ -10,6 +10,7 @@ from app.models import Event, Venue, City, EventType
 from app.scheduler.jobs import registry, collect_venue_websites
 from app.services.dedup import dedup_events
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
+from app.services.collectors.scrapers.goshow import parse_goshow_venue_page
 from app.seed.cities import CITIES
 from app.seed.event_types import EVENT_TYPES
 from app.config import settings
@@ -169,12 +170,20 @@ async def scrape_venue_url(
     venue_city = city.name if city else ""
     venue_country = city.country if city else ""
 
-    # Run scraper
-    sem = asyncio.Semaphore(1)
+    # Run scraper — use platform-specific parsers when URL is recognised
     async with httpx.AsyncClient() as client:
-        raw_events = await scrape_venue_website(
-            client, sem, venue_name, venue_city, venue_country, venue_url
-        )
+        if "goshow.co.il" in venue_url:
+            raw_events = await parse_goshow_venue_page(
+                venue_url, client, venue_name, venue_city, venue_country
+            )
+            # Update venue_name from scraper result if it was auto-detected
+            if raw_events and not venue_name:
+                venue_name = raw_events[0].venue_name
+        else:
+            sem = asyncio.Semaphore(1)
+            raw_events = await scrape_venue_website(
+                client, sem, venue_name, venue_city, venue_country, venue_url
+            )
 
     if not raw_events:
         return {"venue_name": venue_name, "events_found": 0, "events_saved": 0,
