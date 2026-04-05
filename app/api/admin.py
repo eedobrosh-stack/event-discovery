@@ -1,5 +1,5 @@
 from typing import Optional, List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 import asyncio
@@ -54,33 +54,35 @@ def get_stats(db: Session = Depends(get_db)):
     }
 
 
+async def _run_scrape(city_ids: Optional[List[int]]):
+    """Background scrape job — opens its own DB session so it outlives the request."""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        if city_ids:
+            cities = db.query(City).filter(City.id.in_(city_ids)).all()
+        else:
+            cities = db.query(City).filter(City.name == "New York").all()
+            if not cities:
+                cities = db.query(City).limit(1).all()
+        for city in cities:
+            stats = await registry.collect_all(city, db)
+            import logging
+            logging.getLogger(__name__).info(f"Scrape done for {city.name}: {stats}")
+    finally:
+        db.close()
+
+
 @router.post("/scrape")
 async def trigger_scrape(
+    background_tasks: BackgroundTasks,
     sources: Optional[List[str]] = None,
     city_ids: Optional[List[int]] = None,
-    db: Session = Depends(get_db),
 ):
-    # Resolve cities — default to NYC (id=1) if none specified
-    if city_ids:
-        cities = db.query(City).filter(City.id.in_(city_ids)).all()
-    else:
-        cities = db.query(City).filter(City.name == "New York").all()
-        if not cities:
-            cities = db.query(City).limit(1).all()
-
-    all_stats = {}
-    for city in cities:
-        stats = await registry.collect_all(city, db)
-        all_stats[city.name] = stats
-
-    # YouTube enrichment
-    youtube_count = await registry.enrich_youtube(db)
-
-    return {
-        "message": "Scrape complete",
-        "collection_stats": all_stats,
-        "youtube_enriched": youtube_count,
-    }
+    """Kick off a scrape in the background and return immediately."""
+    background_tasks.add_task(_run_scrape, city_ids)
+    label = f"city_ids={city_ids}" if city_ids else "New York (default)"
+    return {"message": f"Scrape started in background for {label}"}
 
 
 @router.post("/enrich-youtube")
