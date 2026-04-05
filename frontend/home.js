@@ -187,38 +187,40 @@ function navigateToResults() {
     const cityInput = document.getElementById("home-city-input");
     const cityId    = document.getElementById("home-city-id").value;
 
-    const params = new URLSearchParams();
+    const state = {};
 
     // Type / performer filter
     const typeVal = typeInput.value.trim();
     if (selectedType) {
-        params.set("type_kind",  selectedType.kind);
-        params.set("type_value", selectedType.value);
-        params.set("type_badge", selectedType.badge);
+        state.typeKind  = selectedType.kind;
+        state.typeValue = selectedType.value;
+        state.typeBadge = selectedType.badge;
     } else if (typeVal) {
-        params.set("type_kind",  "freetext");
-        params.set("type_value", typeVal);
-        params.set("type_badge", "Search");
+        state.typeKind  = "freetext";
+        state.typeValue = typeVal;
+        state.typeBadge = "Search";
     }
 
-    // City filter
+    // City filter — prefer explicitly selected ID, then try text match
     if (cityId) {
-        params.set("city_id", cityId);
-        params.set("city", cityInput.value.trim());
+        state.cityId    = cityId;
+        state.cityLabel = cityInput.value.trim();
     } else if (cityInput.value.trim()) {
-        // Try to match from loaded list
         const q = cityInput.value.trim().toLowerCase();
         const match = allCities.find(c =>
             c.name.toLowerCase() === q ||
             `${c.name}, ${c.country}`.toLowerCase() === q
         );
         if (match) {
-            params.set("city_id", match.id);
-            params.set("city", `${match.name}, ${match.country}`);
+            state.cityId    = String(match.id);
+            state.cityLabel = `${match.name}, ${match.country}`;
         }
     }
 
-    window.location.href = "/results.html" + (params.toString() ? "?" + params.toString() : "");
+    if (Object.keys(state).length) {
+        sessionStorage.setItem("supercaly_search", JSON.stringify(state));
+    }
+    window.location.href = "/results.html";
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

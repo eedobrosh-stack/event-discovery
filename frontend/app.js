@@ -29,30 +29,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("start-date").value = fmt(today);
     document.getElementById("end-date").value = fmt(future);
 
-    // Read URL params from homepage BEFORE loadCities so geo-detection is skipped correctly
-    const urlParams = new URLSearchParams(window.location.search);
-    const typeKind  = urlParams.get("type_kind");
-    const typeValue = urlParams.get("type_value");
-    const typeBadge = urlParams.get("type_badge");
-    const cityId    = urlParams.get("city_id");
-    const cityLabel = urlParams.get("city");
+    // Read search state passed from the homepage via sessionStorage
+    const homeSearch = JSON.parse(sessionStorage.getItem("supercaly_search") || "null");
+    if (homeSearch) sessionStorage.removeItem("supercaly_search");
 
-    // Set flag early so detectUserCity() (called inside loadCities) sees it immediately
-    if (cityId) window._citySetFromParams = true;
+    // Set flag BEFORE loadCities so detectUserCity() skips geo-detection
+    if (homeSearch?.cityId) window._citySetFromParams = true;
 
     setupTypeAutocomplete();
     await loadCities();
     bindEvents();
 
-    // Apply type filter from homepage
-    if (typeKind && typeValue) {
-        selectedTypeFilters.push({ kind: typeKind, value: typeValue, badge: typeBadge || "Search" });
+    // Apply filters from homepage
+    if (homeSearch?.typeValue) {
+        selectedTypeFilters.push({
+            kind:  homeSearch.typeKind  || "freetext",
+            value: homeSearch.typeValue,
+            badge: homeSearch.typeBadge || "Search",
+        });
         if (renderTypeChips) renderTypeChips();
     }
-    // Apply city from homepage (loadCities won't have overwritten it due to the flag)
-    if (cityId && cityLabel) {
-        document.getElementById("city-input").value = cityLabel;
-        document.getElementById("city-id").value    = cityId;
+    if (homeSearch?.cityId && homeSearch?.cityLabel) {
+        document.getElementById("city-input").value = homeSearch.cityLabel;
+        document.getElementById("city-id").value    = homeSearch.cityId;
         updateCityClearBtn();
     }
 
