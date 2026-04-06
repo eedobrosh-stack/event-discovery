@@ -128,10 +128,10 @@ class CollectorRegistry:
                 db.add(event)
                 db.flush()
 
-                # Assign categories
+                # Assign categories / event types
                 if raw.raw_categories:
                     for cat_name in raw.raw_categories:
-                        et = db.query(EventType).filter_by(category=cat_name).first()
+                        et = self._resolve_event_type(cat_name, raw, db)
                         if et and et not in event.event_types:
                             event.event_types.append(et)
 
@@ -143,6 +143,70 @@ class CollectorRegistry:
 
         db.commit()
         return saved
+
+    # Venue-name keywords → preferred event type name
+    _VENUE_TYPE_HINTS: list[tuple[str, str]] = [
+        ("jazz",        "Jazz Concert"),
+        ("rock",        "Rock Concert"),
+        ("hip hop",     "Hip-Hop / Rap Concert"),
+        ("hip-hop",     "Hip-Hop / Rap Concert"),
+        ("comedy",      "Comedy Show"),
+        ("opera",       "Fully Staged Opera"),
+        ("symphony",    "Symphony Orchestral Performances"),
+        ("orchestra",   "Symphony Orchestral Performances"),
+        ("philharmon",  "Symphony Orchestral Performances"),
+        ("electronic",  "Electronic / DJ Set"),
+        ("techno",      "Electronic / DJ Set"),
+        ("pop",         "Pop Concert"),
+        ("latin",       "Latin Concert"),
+        ("gospel",      "Gospel Concert"),
+        ("country",     "Country Concert"),
+        ("blues",       "R&B / Soul Concert"),
+        ("soul",        "R&B / Soul Concert"),
+        ("r&b",         "R&B / Soul Concert"),
+        ("reggae",      "Reggae / Calypso Concert"),
+    ]
+
+    # Generic fallback type per broad category (avoids grabbing .first() randomly)
+    _CATEGORY_FALLBACK: dict[str, str] = {
+        "Music":    "Concert",
+        "Art":      "Art Exhibition",
+        "Comedy":   "Comedy Show",
+        "Dance":    "Dance Performance",
+        "Film":     "Film Screening",
+        "Fitness":  "Sports Event",
+        "Festival": "Festival",
+        "Food & Drink": "Food & Drink Event",
+        "Technology": "Tech Conference",
+    }
+
+    def _resolve_event_type(self, category: str, raw: "RawEvent", db: Session) -> "EventType | None":
+        """
+        Pick the most specific EventType for this category by checking venue
+        name / type keywords, then falling back to the generic type for the
+        category instead of taking a random .first().
+        """
+        # 1. Try to match venue name against keyword hints
+        venue_text = " ".join(filter(None, [
+            raw.venue_name or "",
+            raw.venue_city or "",
+        ])).lower()
+
+        for keyword, preferred_type_name in self._VENUE_TYPE_HINTS:
+            if keyword in venue_text:
+                et = db.query(EventType).filter_by(name=preferred_type_name).first()
+                if et:
+                    return et
+
+        # 2. Use a sensible generic fallback for the category
+        fallback_name = self._CATEGORY_FALLBACK.get(category)
+        if fallback_name:
+            et = db.query(EventType).filter_by(name=fallback_name).first()
+            if et:
+                return et
+
+        # 3. Last resort: any type in the category
+        return db.query(EventType).filter_by(category=category).first()
 
     async def enrich_youtube(self, db: Session) -> int:
         """Fill in YouTube video URLs for events that have an artist but no YouTube link."""
