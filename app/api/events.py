@@ -107,5 +107,9 @@ def list_events(
             out.venue_timezone = e.venue.timezone
         if e.venue and e.venue.website_url:
             out.venue_website_url = e.venue.website_url
+        if e.venue and e.venue.physical_city:
+            out.venue_city = e.venue.physical_city
+        if e.venue and e.venue.physical_country:
+            out.venue_country = e.venue.physical_country
         results.append(out)
     return results

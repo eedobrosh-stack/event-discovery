@@ -17,6 +17,8 @@ class EventOut(BaseModel):
     price_currency: Optional[str] = None
     venue_id: Optional[int] = None
     venue_name: Optional[str] = None
+    venue_city: Optional[str] = None
+    venue_country: Optional[str] = None
     venue_website_url: Optional[str] = None
     venue_timezone: Optional[str] = None
     image_url: Optional[str] = None

@@ -485,7 +485,14 @@ async function searchEvents() {
               </div>
               ${ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
             </td>
-            <td>${ev.venue_website_url ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>` : esc(ev.venue_name || "-")}</td>
+            <td>
+              ${ev.venue_website_url
+                ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>`
+                : esc(ev.venue_name || "-")}
+              ${!getSelectedCityId() && (ev.venue_city || ev.venue_country)
+                ? `<div class="venue-location">${esc([ev.venue_city, ev.venue_country].filter(Boolean).join(", "))}</div>`
+                : ""}
+            </td>
             <td>${formatPrice(ev.price, ev.price_currency)}</td>
             <td>${(ev.categories || []).join(", ") || "-"}</td>
             <td>${(ev.event_types || []).join(", ") || "-"}</td>
