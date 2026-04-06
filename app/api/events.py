@@ -10,24 +10,9 @@ from app.schemas.event import EventOut
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 
-@router.get("", response_model=List[EventOut])
-def list_events(
-    categories: Optional[str] = Query(None, description="Comma-separated category names (legacy)"),
-    type_search: Optional[str] = Query(None, description="Comma-separated terms; OR-searches event type name, category, and artist name"),
-    city_ids: Optional[str] = Query(None, description="Comma-separated city IDs"),
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    search: Optional[str] = None,
-    limit: int = Query(50, le=500),
-    offset: int = 0,
-    db: Session = Depends(get_db),
-):
-    from sqlalchemy import or_
-
-    query = db.query(Event).options(
-        joinedload(Event.venue),
-        selectinload(Event.event_types),
-    )
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search):
+    """Shared filter logic used by both list and count endpoints."""
+    from sqlalchemy import or_, select
 
     # Legacy: exact category filter
     if categories:
@@ -43,24 +28,16 @@ def list_events(
             )
         )
 
-    # Broad OR search: type name ILIKE OR category ILIKE OR artist_name ILIKE
-    # Multiple terms are ANDed (each term must match at least one dimension)
     if type_search:
-        from sqlalchemy import or_, and_, select
         terms = [t.strip() for t in type_search.split(",") if t.strip()]
         for term in terms:
             like = f"%{term}%"
-            # Subquery: event IDs whose event_type name or category matches
             type_matched_event_ids = (
                 select(event_event_types.c.event_id)
                 .join(EventType, EventType.id == event_event_types.c.event_type_id)
-                .where(or_(
-                    EventType.name.ilike(like),
-                    EventType.category.ilike(like),
-                ))
+                .where(or_(EventType.name.ilike(like), EventType.category.ilike(like)))
                 .scalar_subquery()
             )
-            # Event matches if: type/category matches OR artist_name matches OR event name matches OR venue name matches
             venue_matched_event_ids = (
                 select(Event.id)
                 .join(Venue, Event.venue_id == Venue.id)
@@ -80,15 +57,54 @@ def list_events(
             Venue.city_id.in_(ids)
         )
 
-    # Default: never show past events
     query = query.filter(Event.start_date >= date.today())
-
     if start_date:
         query = query.filter(Event.start_date >= start_date)
     if end_date:
         query = query.filter(Event.start_date <= end_date)
     if search:
         query = query.filter(Event.name.ilike(f"%{search}%"))
+
+    return query
+
+
+@router.get("/count")
+def count_events(
+    categories: Optional[str] = Query(None),
+    type_search: Optional[str] = Query(None),
+    city_ids: Optional[str] = Query(None),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import func
+    query = _build_filter_query(
+        db, db.query(func.count(Event.id.distinct())),
+        categories, type_search, city_ids, start_date, end_date, search
+    )
+    return {"total": query.scalar() or 0}
+
+
+@router.get("", response_model=List[EventOut])
+def list_events(
+    categories: Optional[str] = Query(None, description="Comma-separated category names (legacy)"),
+    type_search: Optional[str] = Query(None, description="Comma-separated terms; OR-searches event type name, category, and artist name"),
+    city_ids: Optional[str] = Query(None, description="Comma-separated city IDs"),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    search: Optional[str] = None,
+    limit: int = Query(50, le=500),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    base_query = db.query(Event).options(
+        joinedload(Event.venue),
+        selectinload(Event.event_types),
+    )
+    query = _build_filter_query(
+        db, base_query, categories, type_search, city_ids, start_date, end_date, search
+    )
 
     events = (
         query.order_by(Event.start_date, Event.start_time)

@@ -455,6 +455,8 @@ function getFilters() {
     return { typeSearch: chipTerms, cityId, startDate, endDate, search };
 }
 
+let totalEvents = null; // total matching count from /api/events/count
+
 async function searchEvents() {
     const { typeSearch, cityId, startDate, endDate, search } = getFilters();
     const params = new URLSearchParams();
@@ -463,6 +465,19 @@ async function searchEvents() {
     if (startDate) params.set("start_date", startDate);
     if (endDate) params.set("end_date", endDate);
     if (search) params.set("search", search);
+
+    // Fetch total count on the first page (offset === 0)
+    if (offset === 0) {
+        totalEvents = null;
+        fetch(`/api/events/count?${params}`)
+            .then(r => r.json())
+            .then(({ total }) => {
+                totalEvents = total;
+                updateStats(document.getElementById("events-body").children.length);
+            })
+            .catch(() => {});
+    }
+
     params.set("limit", LIMIT);
     params.set("offset", offset);
 
@@ -502,8 +517,26 @@ async function searchEvents() {
     });
 
     offset += events.length;
-    document.getElementById("stats").textContent = `Showing ${tbody.children.length} events`;
-    document.getElementById("load-more-btn").style.display = events.length === LIMIT ? "" : "none";
+    updateStats(tbody.children.length);
+    const hasMore = events.length === LIMIT;
+    const btn = document.getElementById("load-more-btn");
+    btn.style.display = hasMore ? "" : "none";
+    if (hasMore && totalEvents !== null) {
+        const remaining = Math.min(totalEvents - offset, LIMIT);
+        btn.textContent = `Load Next ${remaining} Events`;
+    } else {
+        btn.textContent = "Load More";
+    }
+}
+
+function updateStats(shown) {
+    const total = totalEvents;
+    if (total !== null) {
+        document.getElementById("stats").textContent =
+            `Showing ${shown} of ${total.toLocaleString()} events`;
+    } else {
+        document.getElementById("stats").textContent = `Showing ${shown} events`;
+    }
 }
 
 async function exportICS() {
