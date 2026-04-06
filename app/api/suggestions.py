@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import EventType, Performer
+from app.models import EventType, Performer, Venue
 
 router = APIRouter(prefix="/api/suggestions", tags=["suggestions"])
 
@@ -54,5 +54,17 @@ def get_suggestions(
     )
     for name, type_name in performers:
         results.append({"kind": "performer", "value": name, "label": name, "badge": "Artist"})
+
+    # 4. Venues
+    venues = (
+        db.query(Venue.name, Venue.physical_city)
+        .filter(Venue.name.ilike(q_like))
+        .distinct()
+        .limit(5)
+        .all()
+    )
+    for name, city in venues:
+        label = f"{name} — {city}" if city else name
+        results.append({"kind": "venue", "value": name, "label": label, "badge": "Venue"})
 
     return results[:limit]

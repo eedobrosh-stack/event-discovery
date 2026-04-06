@@ -60,11 +60,18 @@ def list_events(
                 ))
                 .scalar_subquery()
             )
-            # Event matches if: type/category matches OR artist_name matches OR event name matches
+            # Event matches if: type/category matches OR artist_name matches OR event name matches OR venue name matches
+            venue_matched_event_ids = (
+                select(Event.id)
+                .join(Venue, Event.venue_id == Venue.id)
+                .where(Venue.name.ilike(like))
+                .scalar_subquery()
+            )
             query = query.filter(or_(
                 Event.id.in_(type_matched_event_ids),
                 Event.artist_name.ilike(like),
                 Event.name.ilike(like),
+                Event.id.in_(venue_matched_event_ids),
             ))
 
     if city_ids:

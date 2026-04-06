@@ -295,6 +295,7 @@ a:hover { text-decoration: underline; }
 .type-chip--event_type { background: #f3e8ff; color: #6b21a8; }
 .type-chip--performer  { background: #e8fdf5; color: #065f46; }
 .type-chip--freetext   { background: #fff7e6; color: #92400e; }
+.type-chip--venue      { background: #fde8f0; color: #9d174d; }
 
 .type-chip__badge {
     font-size: 0.65rem;
