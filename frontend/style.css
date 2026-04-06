@@ -100,8 +100,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     flex: 0 0 auto;
     min-width: unset;
     display: flex;
-    align-items: flex-end;
-    padding-bottom: 0;
+    align-items: center;
+    padding-top: 1.2rem;
 }
 
 .search-btn-purple {
