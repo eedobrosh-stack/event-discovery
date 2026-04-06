@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.models import Event, Venue, City, EventType, event_event_types
-from app.services.collectors.base import BaseCollector, RawEvent, default_end_time
+from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name
 from app.services.youtube_lookup import lookup_youtube_video
 
 logger = logging.getLogger(__name__)
@@ -103,10 +103,13 @@ class CollectorRegistry:
                         raw.start_time, raw.start_date, raw.end_date
                     )
 
+                # Infer artist from name if not explicitly provided
+                artist_name = raw.artist_name or infer_artist_from_name(raw.name)
+
                 # Create event
                 event = Event(
                     name=raw.name,
-                    artist_name=raw.artist_name,
+                    artist_name=artist_name,
                     start_date=raw.start_date,
                     start_time=raw.start_time,
                     end_date=end_date,
