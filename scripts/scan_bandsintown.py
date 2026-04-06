@@ -161,15 +161,26 @@ def save_event(db, parsed: dict, performer: Performer) -> bool:
     db.add(event)
     db.flush()
 
-    # Assign event type from performer's known category
-    if performer.category and performer.event_type_name:
+    # Assign event type: prefer venue-name signal over performer's stored type,
+    # since performer data can be stale or over-specific (e.g. Lady Gaga ≠ Jazz)
+    from app.services.collectors.registry import CollectorRegistry
+    from app.services.collectors.base import RawEvent
+    from datetime import date as _date
+    _dummy_raw = RawEvent(
+        name=parsed.get("name", ""),
+        start_date=parsed.get("start_date") or _date.today(),
+        venue_name=parsed.get("venue_name") or "",
+        venue_city=parsed.get("venue_city") or "",
+        source="bandsintown",
+        source_id="",
+    )
+    _reg = CollectorRegistry()
+    et = _reg._resolve_event_type(performer.category or "Music", _dummy_raw, db)
+    if et is None and performer.event_type_name:
+        # Fall back to performer's stored type if venue gave us nothing useful
         et = db.query(EventType).filter_by(name=performer.event_type_name).first()
-        if et:
-            event.event_types.append(et)
-    elif performer.category:
-        et = db.query(EventType).filter_by(category=performer.category).first()
-        if et:
-            event.event_types.append(et)
+    if et:
+        event.event_types.append(et)
 
     return True
 
