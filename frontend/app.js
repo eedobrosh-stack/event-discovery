@@ -33,8 +33,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     const homeSearch = JSON.parse(sessionStorage.getItem("supercaly_search") || "null");
     if (homeSearch) sessionStorage.removeItem("supercaly_search");
 
-    // Set flag BEFORE loadCities so detectUserCity() skips geo-detection
-    if (homeSearch?.cityId) window._citySetFromParams = true;
+    // Set flag BEFORE loadCities so detectUserCity() skips geo-detection.
+    // Suppress if user came from homepage at all — they made an explicit city
+    // choice (including Global / blank), so geo-detection should not override.
+    if (homeSearch?._fromHome) window._citySetFromParams = true;
 
     setupTypeAutocomplete();
     await loadCities();

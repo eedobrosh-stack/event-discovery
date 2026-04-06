@@ -217,9 +217,10 @@ function navigateToResults() {
         }
     }
 
-    if (Object.keys(state).length) {
-        sessionStorage.setItem("supercaly_search", JSON.stringify(state));
-    }
+    // Always write state so results page knows it came from the homepage
+    // (even if empty — signals "user explicitly chose Global / no city")
+    state._fromHome = true;
+    sessionStorage.setItem("supercaly_search", JSON.stringify(state));
     window.location.href = "/results.html";
 }
 
