@@ -107,15 +107,16 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     color: #fff;
     border: none;
     border-radius: 10px;
-    padding: 0.55rem 1.4rem;
-    font-size: 0.95rem;
+    padding: 0.5rem 1.4rem;
+    font-size: 0.9rem;
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
-    box-shadow: 0 4px 18px rgba(124,106,247,0.35);
+    outline: none;
+    box-shadow: 0 0 14px rgba(124,106,247,0.3);
     transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
 }
-.search-btn-purple:hover { background: #6b58f0; box-shadow: 0 6px 24px rgba(124,106,247,0.5); }
+.search-btn-purple:hover { background: #6b58f0; box-shadow: 0 0 22px rgba(124,106,247,0.5); }
 .search-btn-purple:active { transform: scale(0.98); }
 
 .filter-actions {
