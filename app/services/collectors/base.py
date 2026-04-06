@@ -16,28 +16,59 @@ _ENSEMBLE_SUFFIXES = re.compile(
 )
 # Suffixes that explicitly mean the artist is NOT performing
 _NO_ARTIST_SUFFIXES = re.compile(
-    r"\b(Tribute|Memorial|Festival|Night|Evening|Showcase|Session|Workshop)\b",
+    r"\b(Tribute|Memorial|Festival|Night|Evening|Showcase|Session|Workshop|"
+    r"Party|Tour|Exhibition|Museum|Cruise|Brunch|Show|Dance)\b",
     re.IGNORECASE,
 )
+# "Artist @ Venue"
+_AT_VENUE = re.compile(r"^(.+?)\s+@\s+.+$")
+# "X b2b Y"
+_B2B = re.compile(r"^([A-Za-z0-9 _\-'&\.]+?)\s+[Bb]2[Bb]\s+.+$")
+# "Promoter presents: SingleHeadliner" (no commas = one act)
+_PRESENTS = re.compile(r"^.+?\s+presents?:\s+([A-Za-z][^,&+/\n]{2,40})$", re.IGNORECASE)
+_JUNK = re.compile(r"[?]{3,}|\|\s*\w+\s+\d+|-Wait\b", re.IGNORECASE)
 
 
 def infer_artist_from_name(name: str) -> str | None:
     """
     Try to extract an artist/bandleader name from an event title.
-    e.g. "Yonatan Riklis Trio" → "Yonatan Riklis"
-         "Chick Corea Tribute" → None  (tribute, not the real artist)
+    e.g. "Yonatan Riklis Trio"           → "Yonatan Riklis"
+         "Ben Poole @ Railway Inn"        → "Ben Poole"
+         "X presents: SingleAct"         → "SingleAct"
+         "Chick Corea Tribute"           → None  (tribute, not the real artist)
     """
     if not name:
         return None
-    # Bail if the name signals a tribute / festival / generic event
-    if _NO_ARTIST_SUFFIXES.search(name):
+    name = name.strip()
+    if _NO_ARTIST_SUFFIXES.search(name) or _JUNK.search(name):
         return None
-    m = _ENSEMBLE_SUFFIXES.match(name.strip())
+
+    # 1. "Name Trio/Quartet/Band/…"
+    m = _ENSEMBLE_SUFFIXES.match(name)
     if m:
         candidate = m.group(1).strip()
-        # Sanity-check: must look like a name (2+ chars, not all caps acronym)
         if len(candidate) >= 2:
             return candidate
+
+    # 2. "Artist @ Venue"
+    m = _AT_VENUE.match(name)
+    if m:
+        candidate = m.group(1).strip()
+        if 2 <= len(candidate) <= 55 and not _NO_ARTIST_SUFFIXES.search(candidate):
+            return candidate
+
+    # 3. "Promoter presents: SingleAct"
+    m = _PRESENTS.match(name)
+    if m:
+        candidate = m.group(1).strip()
+        if 2 <= len(candidate) <= 40:
+            return candidate
+
+    # 4. "A b2b B" — keep full string as the artist credit
+    m = _B2B.match(name)
+    if m:
+        return name
+
     return None
 
 
