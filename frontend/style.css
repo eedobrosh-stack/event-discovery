@@ -99,9 +99,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 .filter-group--btn {
     flex: 0 0 auto;
     min-width: unset;
-    display: flex;
-    align-items: center;
-    padding-top: 1.2rem;
+    align-self: flex-end;
 }
 
 .search-btn-purple {
