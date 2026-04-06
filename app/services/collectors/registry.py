@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
-from app.models import Event, Venue, City, EventType, event_event_types
+from app.models import Event, Venue, City, EventType, Performer, event_event_types
 from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name
 from app.services.youtube_lookup import lookup_youtube_video
 
@@ -106,6 +106,17 @@ class CollectorRegistry:
                 # Infer artist from name if not explicitly provided
                 artist_name = raw.artist_name or infer_artist_from_name(raw.name)
 
+                # If still no artist, check if the event name IS a known performer
+                matched_performer = None
+                if not artist_name:
+                    matched_performer = (
+                        db.query(Performer)
+                        .filter(Performer.name.ilike(raw.name.strip()))
+                        .first()
+                    )
+                    if matched_performer:
+                        artist_name = matched_performer.name
+
                 # Create event
                 event = Event(
                     name=raw.name,
@@ -134,6 +145,11 @@ class CollectorRegistry:
                         et = self._resolve_event_type(cat_name, raw, db)
                         if et and et not in event.event_types:
                             event.event_types.append(et)
+                elif matched_performer and matched_performer.category:
+                    # No raw categories — use the matched performer's known type
+                    et = self._resolve_event_type(matched_performer.category, raw, db)
+                    if et and et not in event.event_types:
+                        event.event_types.append(et)
 
                 saved += 1
             except Exception as e:
