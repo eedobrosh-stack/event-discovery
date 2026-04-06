@@ -21,50 +21,50 @@ def get_suggestions(
       - Performer names   (badge: "Artist")
     """
     q_like = f"%{q}%"
-    results = []
+    PER_TYPE = 3
 
     # 1. Categories (distinct values)
     cats = (
         db.query(EventType.category)
         .filter(EventType.category.ilike(q_like))
         .distinct()
-        .limit(4)
+        .limit(PER_TYPE)
         .all()
     )
-    for (cat,) in cats:
-        results.append({"kind": "category", "value": cat, "label": cat, "badge": "Category"})
+    categories = [{"kind": "category", "value": cat, "label": cat, "badge": "Category"} for (cat,) in cats]
 
     # 2. Event types
     types = (
         db.query(EventType.name, EventType.category)
         .filter(EventType.name.ilike(q_like))
         .distinct()
-        .limit(5)
+        .limit(PER_TYPE)
         .all()
     )
-    for name, cat in types:
-        results.append({"kind": "event_type", "value": name, "label": name, "badge": "Type"})
+    event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"} for name, _ in types]
 
     # 3. Performers / Artists
     performers = (
         db.query(Performer.name, Performer.event_type_name)
         .filter(Performer.name.ilike(q_like))
-        .limit(6)
+        .limit(PER_TYPE)
         .all()
     )
-    for name, type_name in performers:
-        results.append({"kind": "performer", "value": name, "label": name, "badge": "Artist"})
+    artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"} for name, _ in performers]
 
     # 4. Venues
     venues = (
         db.query(Venue.name, Venue.physical_city)
         .filter(Venue.name.ilike(q_like))
         .distinct()
-        .limit(5)
+        .limit(PER_TYPE)
         .all()
     )
-    for name, city in venues:
-        label = f"{name} — {city}" if city else name
-        results.append({"kind": "venue", "value": name, "label": label, "badge": "Venue"})
+    venue_results = [
+        {"kind": "venue", "value": name, "label": f"{name} — {city}" if city else name, "badge": "Venue"}
+        for name, city in venues
+    ]
 
+    # Interleave so all types get representation before the cap
+    results = categories + event_types + artists + venue_results
     return results[:limit]
