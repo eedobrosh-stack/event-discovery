@@ -90,28 +90,31 @@ async def collect_venue_websites():
             .all()
         )
         logger.info(f"Venue website scraper: {len(venues)} venues to scan")
-        sem = asyncio.Semaphore(8)
+        sem = asyncio.Semaphore(3)
         total_found = 0
         total_saved = 0
+        BATCH = 10  # process in small batches to keep memory usage low
 
         async with httpx.AsyncClient() as client:
-            tasks = [
-                scrape_venue_website(
-                    client, sem,
-                    v.name, v.physical_city or "", v.physical_country or "",
-                    v.website_url,
-                )
-                for v in venues
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i in range(0, len(venues), BATCH):
+                batch = venues[i:i + BATCH]
+                tasks = [
+                    scrape_venue_website(
+                        client, sem,
+                        v.name, v.physical_city or "", v.physical_country or "",
+                        v.website_url,
+                    )
+                    for v in batch
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for venue, result in zip(venues, results):
-            if isinstance(result, Exception) or not result:
-                continue
-            total_found += len(result)
-            if venue.city:
-                saved = registry._save_events(result, venue.city, db)
-                total_saved += saved
+                for venue, result in zip(batch, results):
+                    if isinstance(result, Exception) or not result:
+                        continue
+                    total_found += len(result)
+                    if venue.city:
+                        saved = registry._save_events(result, venue.city, db)
+                        total_saved += saved
 
         logger.info(
             f"Venue website scraper done: {total_found} events found, {total_saved} saved"
