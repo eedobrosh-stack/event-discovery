@@ -18,14 +18,12 @@ scheduler = AsyncIOScheduler()
 
 def _run_migrations():
     """Apply incremental schema changes that create_all() won't handle."""
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        # Add venues.default_event_type_id if missing
-        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(venues)"))]
-        if "default_event_type_id" not in cols:
-            conn.execute(text(
-                "ALTER TABLE venues ADD COLUMN default_event_type_id INTEGER REFERENCES event_types(id)"
-            ))
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    existing_cols = [c["name"] for c in insp.get_columns("venues")]
+    if "default_event_type_id" not in existing_cols:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE venues ADD COLUMN default_event_type_id INTEGER"))
             conn.commit()
 
 
