@@ -46,7 +46,8 @@ def get_suggestions(
     )
     event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"} for name, _ in types]
 
-    # 3. Performers / Artists — only those with at least one event
+    # 3. Performers / Artists
+    # Primary: Performer records that have at least one matching event
     performers = (
         db.query(Performer.name)
         .filter(
@@ -58,7 +59,29 @@ def get_suggestions(
         .limit(PER_TYPE)
         .all()
     )
-    artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"} for (name,) in performers]
+    performer_names_lower = {name.lower() for (name,) in performers}
+
+    # Fallback: artist_names from events directly (catches artists with no Performer record)
+    event_artists = (
+        db.query(Event.artist_name)
+        .filter(
+            Event.artist_name.isnot(None),
+            Event.artist_name.ilike(q_like),
+        )
+        .distinct()
+        .limit(PER_TYPE)
+        .all()
+    )
+    # Merge, avoiding duplicates already covered by Performer records
+    for (name,) in event_artists:
+        if name and name.lower() not in performer_names_lower:
+            performers.append((name,))
+            performer_names_lower.add(name.lower())
+
+    artists = [
+        {"kind": "performer", "value": name, "label": name, "badge": "Artist"}
+        for (name,) in performers[:PER_TYPE]
+    ]
 
     # 4. Venues — only those with at least one event
     venues = (
