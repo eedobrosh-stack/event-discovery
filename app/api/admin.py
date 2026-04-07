@@ -91,6 +91,22 @@ async def trigger_scrape(
     return {"message": f"Scrape started in background for {label}"}
 
 
+@router.post("/scrape/venuepilot")
+async def scrape_venuepilot(db: Session = Depends(get_db)):
+    """Run only the VenuePilot collector synchronously and return stats immediately."""
+    from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
+    collector = VenuePilotCollector()
+    all_stats = {}
+    for city_name in ["San Francisco", "Berkeley"]:
+        city = db.query(City).filter(City.name == city_name).first()
+        if not city:
+            continue
+        raw_events = await collector.collect(city_name)
+        saved = registry._save_events(raw_events, city, db)
+        all_stats[city_name] = {"fetched": len(raw_events), "saved": saved}
+    return {"venuepilot": all_stats}
+
+
 @router.post("/enrich-youtube")
 async def enrich_youtube(db: Session = Depends(get_db)):
     """Enrich all events that have an artist but no YouTube link."""
