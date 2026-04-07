@@ -415,6 +415,7 @@ function bindEvents() {
     });
 
     document.getElementById("export-ics-btn").addEventListener("click", exportICS);
+    document.getElementById("export-csv-btn").addEventListener("click", exportCSV);
     document.getElementById("export-sheets-btn").addEventListener("click", exportSheets);
     document.getElementById("load-more-btn").addEventListener("click", searchEvents);
     document.getElementById("subscribe-btn").addEventListener("click", openSubscribeModal);
@@ -562,6 +563,32 @@ async function exportICS() {
     a.download = "events.ics";
     a.click();
     URL.revokeObjectURL(url);
+}
+
+async function exportCSV() {
+    const btn = document.getElementById("export-csv-btn");
+    btn.disabled = true;
+    btn.textContent = "Downloading...";
+    try {
+        const resp = await fetch("/api/export/csv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildExportRequest()),
+        });
+        if (!resp.ok) { alert("CSV export failed."); return; }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "supercaly_events.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        alert("CSV export failed: " + err.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Download CSV";
+    }
 }
 
 async function exportSheets() {

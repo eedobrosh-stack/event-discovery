@@ -1,7 +1,9 @@
+import csv
+import io
 from typing import List, Optional
 from datetime import date
 from fastapi import APIRouter, Depends, Request, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -137,6 +139,44 @@ def export_ics(req: ExportRequest, db: Session = Depends(get_db)):
         content=ics_bytes,
         media_type="text/calendar",
         headers={"Content-Disposition": "attachment; filename=events.ics"},
+    )
+
+
+@router.post("/csv")
+def export_csv(req: ExportRequest, db: Session = Depends(get_db)):
+    events = _get_filtered_events(req, db)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Event", "Artist", "Date", "Start Time", "End Time",
+        "Venue", "City", "Country", "Price", "Currency",
+        "Category", "Type", "Link", "YouTube",
+    ])
+    for e in events:
+        venue = e.venue
+        writer.writerow([
+            e.name,
+            e.artist_name or "",
+            str(e.start_date) if e.start_date else "",
+            e.start_time or "",
+            e.end_time or "",
+            e.venue_name or "",
+            (venue.physical_city if venue else "") or "",
+            (venue.physical_country if venue else "") or "",
+            e.price if e.price is not None else "",
+            e.price_currency or "",
+            ", ".join(t.category for t in e.event_types) if e.event_types else "",
+            ", ".join(t.name for t in e.event_types) if e.event_types else "",
+            e.purchase_link or "",
+            e.artist_youtube_channel or "",
+        ])
+
+    content = buf.getvalue()
+    return Response(
+        content=content.encode("utf-8-sig"),  # utf-8-sig adds BOM for Excel compatibility
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=supercaly_events.csv"},
     )
 
 
