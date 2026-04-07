@@ -131,7 +131,8 @@ function setupCityAutocomplete() {
         clearBtn.hidden = !input.value.trim();
         if (q.length < 2) { renderList([GLOBAL_CITY]); return; }
         const matches = matchCities(q);
-        renderList(matches.length ? matches : [GLOBAL_CITY]);
+        // Always keep Global as the first option so it's never hidden by city matches
+        renderList([GLOBAL_CITY, ...matches]);
     });
 
     list.addEventListener("mousedown", e => e.preventDefault());
