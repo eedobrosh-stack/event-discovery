@@ -33,10 +33,17 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
                 .where(or_(EventType.name.ilike(like), EventType.category.ilike(like)))
                 .scalar_subquery()
             )
+            venue_matched_event_ids = (
+                select(Event.id)
+                .join(Venue, Event.venue_id == Venue.id)
+                .where(Venue.name.ilike(like))
+                .scalar_subquery()
+            )
             query = query.filter(or_(
                 Event.id.in_(type_matched_event_ids),
                 Event.artist_name.ilike(like),
                 Event.name.ilike(like),
+                Event.id.in_(venue_matched_event_ids),
             ))
 
     if req.categories:
@@ -52,9 +59,15 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
         )
 
     if req.city_ids:
-        query = query.join(Venue, Event.venue_id == Venue.id).filter(
-            Venue.city_id.in_(req.city_ids)
+        # Use a subquery instead of a direct JOIN to avoid conflicting with
+        # the joinedload(Event.venue) eager-load join already on this query.
+        city_matched_event_ids = (
+            select(Event.id)
+            .join(Venue, Event.venue_id == Venue.id)
+            .where(Venue.city_id.in_(req.city_ids))
+            .scalar_subquery()
         )
+        query = query.filter(Event.id.in_(city_matched_event_ids))
 
     # Default: never show past events
     query = query.filter(Event.start_date >= date.today())

@@ -48,6 +48,9 @@ def get_suggestions(
 
     # 3. Performers / Artists
     # Primary: Performer records that have at least one matching event
+    # Use a higher fetch limit so fallback names can still appear even when
+    # several primary Performer records fill the early slots.
+    ARTIST_LIMIT = PER_TYPE * 2  # fetch up to 6 primary, cap display at 5
     performers = (
         db.query(Performer.name)
         .filter(
@@ -56,7 +59,7 @@ def get_suggestions(
               .filter(func.lower(Event.artist_name) == func.lower(Performer.name))
               .exists(),
         )
-        .limit(PER_TYPE)
+        .limit(ARTIST_LIMIT)
         .all()
     )
     performer_names_lower = {name.lower() for (name,) in performers}
@@ -69,7 +72,7 @@ def get_suggestions(
             Event.artist_name.ilike(q_like),
         )
         .distinct()
-        .limit(PER_TYPE)
+        .limit(ARTIST_LIMIT)
         .all()
     )
     # Merge, avoiding duplicates already covered by Performer records
@@ -80,7 +83,7 @@ def get_suggestions(
 
     artists = [
         {"kind": "performer", "value": name, "label": name, "badge": "Artist"}
-        for (name,) in performers[:PER_TYPE]
+        for (name,) in performers[:PER_TYPE + 2]  # allow up to 5, so fallback always has room
     ]
 
     # 4. Venues — only those with at least one event
