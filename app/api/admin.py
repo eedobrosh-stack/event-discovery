@@ -1,12 +1,16 @@
+import csv
+import io
+from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 import asyncio
 import httpx
 
 from app.database import get_db, engine
-from app.models import Event, Venue, City, EventType, PendingVenue
+from app.models import Event, Venue, City, EventType, PendingVenue, Performer, ScanLog
 from app.scheduler.jobs import registry, collect_venue_websites
 from app.services.dedup import dedup_events
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
@@ -430,3 +434,225 @@ async def enrich_venues_tm():
         "search_venues_updated": updated_search,
         "total": updated_tm + updated_search,
     }
+
+
+# ── Admin Dashboard: CSV Exports ─────────────────────────────────────────────
+
+def _csv_response(rows, headers, filename):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(headers)
+    w.writerows(rows)
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/export/venues")
+def export_venues(db: Session = Depends(get_db)):
+    rows = db.query(
+        Venue.id, Venue.name, Venue.physical_city, Venue.physical_country,
+        Venue.website_url, Venue.street_address, Venue.venue_type,
+        Venue.latitude, Venue.longitude, Venue.created_at,
+    ).all()
+    return _csv_response(rows,
+        ["id", "name", "city", "country", "website_url", "address", "type",
+         "latitude", "longitude", "created_at"],
+        "venues.csv")
+
+
+@router.get("/export/performers")
+def export_performers(db: Session = Depends(get_db)):
+    rows = db.query(
+        Performer.id, Performer.name, Performer.category,
+        Performer.event_type_name, Performer.genres,
+        Performer.source, Performer.confidence, Performer.looked_up_at,
+    ).all()
+    return _csv_response(rows,
+        ["id", "name", "category", "event_type", "genres",
+         "source", "confidence", "looked_up_at"],
+        "performers.csv")
+
+
+@router.get("/export/cities")
+def export_cities(db: Session = Depends(get_db)):
+    rows = db.query(
+        City.id, City.name, City.country, City.state,
+        City.timezone, City.latitude, City.longitude,
+    ).all()
+    return _csv_response(rows,
+        ["id", "name", "country", "state", "timezone", "latitude", "longitude"],
+        "cities.csv")
+
+
+@router.get("/export/events")
+def export_events_admin(
+    source: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(
+        Event.id, Event.name, Event.artist_name, Event.start_date,
+        Event.start_time, Event.venue_name, Event.scrape_source,
+        Event.price, Event.price_currency, Event.purchase_link,
+        Event.artist_youtube_channel, Event.created_at,
+    )
+    if source:
+        q = q.filter(Event.scrape_source == source)
+    rows = q.order_by(Event.start_date).all()
+    return _csv_response(rows,
+        ["id", "name", "artist", "date", "time", "venue", "source",
+         "price", "currency", "link", "youtube", "created_at"],
+        "events.csv")
+
+
+# ── Admin Dashboard: Scan Logs ────────────────────────────────────────────────
+
+@router.get("/scan-logs")
+def get_scan_logs(limit: int = 100, job: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(ScanLog).order_by(ScanLog.started_at.desc())
+    if job:
+        q = q.filter(ScanLog.job_name == job)
+    logs = q.limit(limit).all()
+    return [
+        {
+            "id": l.id, "job_name": l.job_name, "detail": l.detail,
+            "started_at": str(l.started_at), "finished_at": str(l.finished_at),
+            "events_found": l.events_found, "events_saved": l.events_saved,
+            "status": l.status, "notes": l.notes,
+        }
+        for l in logs
+    ]
+
+
+# ── Admin Dashboard: Bulk Uploads (staged, no immediate scraping) ─────────────
+
+@router.post("/upload/venues")
+async def upload_venues(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    CSV columns: url, venue_name (opt), city (opt)
+    Each row is staged as a PendingVenue with status='queued'.
+    """
+    content = (await file.read()).decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    added = 0
+    skipped = 0
+    for row in reader:
+        url = (row.get("url") or "").strip()
+        if not url:
+            skipped += 1
+            continue
+        existing = db.query(PendingVenue).filter(PendingVenue.url == url).first()
+        if existing:
+            skipped += 1
+            continue
+        db.add(PendingVenue(
+            url=url,
+            venue_name=(row.get("venue_name") or "").strip() or None,
+            city_name=(row.get("city") or "").strip() or None,
+            status="queued",
+        ))
+        added += 1
+    db.commit()
+    return {"queued": added, "skipped_duplicates": skipped}
+
+
+@router.post("/upload/artists")
+async def upload_artists(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    CSV column: artist_name
+    Adds new Performer records with confidence=0 for later enrichment.
+    """
+    content = (await file.read()).decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    added = 0
+    skipped = 0
+    for row in reader:
+        name = (row.get("artist_name") or "").strip()
+        if not name:
+            skipped += 1
+            continue
+        norm = name.lower().strip()
+        existing = db.query(Performer).filter(Performer.normalized_name == norm).first()
+        if existing:
+            skipped += 1
+            continue
+        db.add(Performer(name=name, normalized_name=norm, source="manual", confidence=0.0))
+        added += 1
+    db.commit()
+    return {"added": added, "skipped_duplicates": skipped}
+
+
+@router.post("/upload/cities")
+async def upload_cities(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    CSV columns: name, country, state (opt), timezone (opt)
+    Directly seeds City records.
+    """
+    content = (await file.read()).decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    added = 0
+    skipped = 0
+    for row in reader:
+        name = (row.get("name") or "").strip()
+        country = (row.get("country") or "").strip()
+        if not name or not country:
+            skipped += 1
+            continue
+        existing = db.query(City).filter(
+            City.name == name, City.country == country
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+        db.add(City(
+            name=name,
+            country=country,
+            state=(row.get("state") or "").strip() or None,
+            timezone=(row.get("timezone") or "").strip() or None,
+        ))
+        added += 1
+    db.commit()
+    return {"added": added, "skipped_duplicates": skipped}
+
+
+@router.post("/upload/events")
+async def upload_events(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    CSV columns: name, artist_name (opt), start_date (YYYY-MM-DD),
+                 start_time (opt, HH:MM), venue_name (opt), city (opt),
+                 price (opt), purchase_link (opt)
+    Directly imports Event records.
+    """
+    from datetime import date as date_type
+    content = (await file.read()).decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    added = 0
+    skipped = 0
+    for row in reader:
+        name = (row.get("name") or "").strip()
+        start_date_str = (row.get("start_date") or "").strip()
+        if not name or not start_date_str:
+            skipped += 1
+            continue
+        try:
+            start_date = date_type.fromisoformat(start_date_str)
+        except ValueError:
+            skipped += 1
+            continue
+        price_str = (row.get("price") or "").strip()
+        price = float(price_str) if price_str else None
+        db.add(Event(
+            name=name,
+            artist_name=(row.get("artist_name") or "").strip() or None,
+            start_date=start_date,
+            start_time=(row.get("start_time") or "").strip() or None,
+            venue_name=(row.get("venue_name") or "").strip() or None,
+            price=price,
+            purchase_link=(row.get("purchase_link") or "").strip() or None,
+            scrape_source="manual_upload",
+        ))
+        added += 1
+    db.commit()
+    return {"added": added, "skipped": skipped}

@@ -1,8 +1,8 @@
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 from app.database import SessionLocal
-from app.models import City, Event, Venue
+from app.models import City, Event, Venue, ScanLog
 from app.config import settings
 from app.services.collectors.registry import CollectorRegistry
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
@@ -59,7 +59,6 @@ async def collect_all_events():
     try:
         cities = db.query(City).filter(City.name.in_(PRIORITY_CITIES)).all()
         if not cities:
-            # Fallback: scrape up to 10 cities that already have events
             cities = (
                 db.query(City)
                 .join(City.events)
@@ -69,11 +68,24 @@ async def collect_all_events():
             )
         for city in cities:
             logger.info(f"Collecting events for {city.name}...")
+            log = ScanLog(job_name="collect_events", detail=city.name, status="running")
+            db.add(log)
+            db.commit()
+            db.refresh(log)
             try:
                 stats = await registry.collect_all(city, db)
                 logger.info(f"{city.name} stats: {stats}")
+                log.status = "success"
+                log.events_found = sum(v.get("found", 0) for v in stats.values() if isinstance(v, dict))
+                log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
+                log.notes = str(stats)
             except Exception as e:
                 logger.error(f"Error collecting {city.name}: {e}")
+                log.status = "failed"
+                log.notes = str(e)
+            finally:
+                log.finished_at = datetime.utcnow()
+                db.commit()
     finally:
         db.close()
 
@@ -83,6 +95,10 @@ async def collect_venue_websites():
     import asyncio
     import httpx
     db = SessionLocal()
+    log = ScanLog(job_name="venue_websites", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
     try:
         venues = (
             db.query(Venue)
@@ -93,7 +109,7 @@ async def collect_venue_websites():
         sem = asyncio.Semaphore(3)
         total_found = 0
         total_saved = 0
-        BATCH = 10  # process in small batches to keep memory usage low
+        BATCH = 10
 
         async with httpx.AsyncClient() as client:
             for i in range(0, len(venues), BATCH):
@@ -107,7 +123,6 @@ async def collect_venue_websites():
                     for v in batch
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-
                 for venue, result in zip(batch, results):
                     if isinstance(result, Exception) or not result:
                         continue
@@ -116,32 +131,60 @@ async def collect_venue_websites():
                         saved = registry._save_events(result, venue.city, db)
                         total_saved += saved
 
-        logger.info(
-            f"Venue website scraper done: {total_found} events found, {total_saved} saved"
-        )
+        logger.info(f"Venue website scraper done: {total_found} found, {total_saved} saved")
+        log.status = "success"
+        log.events_found = total_found
+        log.events_saved = total_saved
+        log.detail = f"{len(venues)} venues scanned"
     except Exception as e:
         logger.error(f"Venue website scraper error: {e}")
+        log.status = "failed"
+        log.notes = str(e)
     finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
         db.close()
 
 
 def run_dedup():
     """Weekly cross-source deduplication job."""
     db = SessionLocal()
+    log = ScanLog(job_name="dedup", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
     try:
         result = dedup_events(db)
         logger.info(f"Scheduled dedup: {result}")
+        log.status = "success"
+        log.notes = str(result)
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
     finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
         db.close()
 
 
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()
+    log = ScanLog(job_name="cleanup", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
     try:
         cutoff = date.today() - timedelta(days=settings.CLEANUP_DAYS_AGO)
         deleted = db.query(Event).filter(Event.start_date < cutoff).delete()
         db.commit()
         logger.info(f"Cleaned up {deleted} past events")
+        log.status = "success"
+        log.notes = f"Deleted {deleted} events older than {cutoff}"
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
     finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
         db.close()

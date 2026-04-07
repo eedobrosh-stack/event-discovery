@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supercaly Admin</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #222; }
+
+        header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+        header h1 { font-size: 1.3rem; }
+        header span { opacity: 0.5; font-size: 0.85rem; }
+        header a { color: #a78bfa; font-size: 0.85rem; text-decoration: none; margin-left: auto; }
+
+        .tabs { background: #fff; border-bottom: 2px solid #e5e7eb; display: flex; gap: 0; padding: 0 2rem; }
+        .tab-btn { padding: 0.85rem 1.4rem; border: none; background: none; cursor: pointer; font-size: 0.9rem; color: #666; border-bottom: 3px solid transparent; margin-bottom: -2px; font-weight: 500; }
+        .tab-btn.active { color: #7c6af7; border-bottom-color: #7c6af7; }
+        .tab-btn:hover:not(.active) { color: #333; background: #f9f9f9; }
+
+        .content { max-width: 1300px; margin: 0 auto; padding: 2rem; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* Stat cards */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .stat-card { background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+        .stat-card .label { font-size: 0.78rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+        .stat-card .value { font-size: 2rem; font-weight: 700; color: #1a1a2e; margin-top: 0.25rem; }
+        .stat-card .sub { font-size: 0.78rem; color: #aaa; margin-top: 0.15rem; }
+
+        /* Section boxes */
+        .box { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 1.5rem; overflow: hidden; }
+        .box-header { padding: 1rem 1.5rem; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; justify-content: space-between; }
+        .box-header h2 { font-size: 1rem; font-weight: 600; }
+        .box-body { padding: 1.5rem; }
+
+        /* Tables */
+        .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .data-table th { background: #f8f8fb; text-align: left; padding: 0.6rem 0.8rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: #888; }
+        .data-table td { padding: 0.55rem 0.8rem; border-top: 1px solid #f0f0f0; }
+        .data-table tr:hover td { background: #fafafa; }
+        .data-table .truncate { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Status badges */
+        .badge { display: inline-block; padding: 0.2rem 0.55rem; border-radius: 20px; font-size: 0.72rem; font-weight: 600; }
+        .badge-success { background: #d1fae5; color: #065f46; }
+        .badge-failed  { background: #fee2e2; color: #991b1b; }
+        .badge-running { background: #dbeafe; color: #1e40af; }
+        .badge-queued  { background: #fef3c7; color: #92400e; }
+
+        /* Buttons */
+        .btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1rem; border-radius: 7px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 500; text-decoration: none; }
+        .btn-primary { background: #7c6af7; color: #fff; }
+        .btn-primary:hover { background: #6b58f0; }
+        .btn-outline { background: #fff; color: #444; border: 1px solid #ddd; }
+        .btn-outline:hover { background: #f5f5f5; }
+        .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+
+        /* Upload forms */
+        .upload-section { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+        .upload-card { border: 2px dashed #ddd; border-radius: 10px; padding: 1.25rem; text-align: center; }
+        .upload-card h3 { font-size: 0.9rem; margin-bottom: 0.3rem; }
+        .upload-card p { font-size: 0.75rem; color: #888; margin-bottom: 0.8rem; line-height: 1.5; }
+        .upload-card input[type=file] { display: block; width: 100%; font-size: 0.8rem; margin-bottom: 0.75rem; }
+        .upload-result { font-size: 0.8rem; margin-top: 0.5rem; color: #555; }
+
+        /* Source breakdown */
+        .source-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .source-chip { background: #f3f4f6; border-radius: 6px; padding: 0.3rem 0.75rem; font-size: 0.8rem; color: #444; }
+        .source-chip strong { color: #1a1a2e; }
+
+        .empty { color: #aaa; font-size: 0.85rem; padding: 2rem; text-align: center; }
+        .loading { color: #aaa; font-style: italic; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>⚙️ Supercaly Admin</h1>
+    <span>Internal dashboard</span>
+    <a href="/">← Back to site</a>
+</header>
+
+<nav class="tabs">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="events">Events</button>
+    <button class="tab-btn" data-tab="venues">Venues</button>
+    <button class="tab-btn" data-tab="artists">Artists</button>
+    <button class="tab-btn" data-tab="cities">Cities</button>
+    <button class="tab-btn" data-tab="logs">Scan Logs</button>
+    <button class="tab-btn" data-tab="upload">Bulk Upload</button>
+</nav>
+
+<div class="content">
+
+    <!-- OVERVIEW -->
+    <div class="panel active" id="panel-overview">
+        <div class="stats-grid" id="stats-grid"><div class="loading">Loading…</div></div>
+        <div class="box">
+            <div class="box-header"><h2>Events by Source</h2></div>
+            <div class="box-body"><div class="source-list" id="source-breakdown"><span class="loading">Loading…</span></div></div>
+        </div>
+        <div class="box">
+            <div class="box-header"><h2>Recent Scan Activity</h2></div>
+            <div class="box-body"><div id="recent-logs"><span class="loading">Loading…</span></div></div>
+        </div>
+    </div>
+
+    <!-- EVENTS -->
+    <div class="panel" id="panel-events">
+        <div class="box">
+            <div class="box-header">
+                <h2>Events</h2>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <select id="events-source-filter" style="padding:0.4rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                        <option value="">All sources</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" id="download-events-btn">⬇ Download CSV</button>
+                </div>
+            </div>
+            <div class="box-body">
+                <div id="events-preview"><span class="loading">Loading…</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- VENUES -->
+    <div class="panel" id="panel-venues">
+        <div class="box">
+            <div class="box-header">
+                <h2>Venues</h2>
+                <a class="btn btn-primary btn-sm" href="/api/admin/export/venues">⬇ Download CSV</a>
+            </div>
+            <div class="box-body">
+                <div id="venues-preview"><span class="loading">Loading…</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ARTISTS -->
+    <div class="panel" id="panel-artists">
+        <div class="box">
+            <div class="box-header">
+                <h2>Artists / Performers</h2>
+                <a class="btn btn-primary btn-sm" href="/api/admin/export/performers">⬇ Download CSV</a>
+            </div>
+            <div class="box-body">
+                <div id="artists-preview"><span class="loading">Loading…</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CITIES -->
+    <div class="panel" id="panel-cities">
+        <div class="box">
+            <div class="box-header">
+                <h2>Cities</h2>
+                <a class="btn btn-primary btn-sm" href="/api/admin/export/cities">⬇ Download CSV</a>
+            </div>
+            <div class="box-body">
+                <div id="cities-preview"><span class="loading">Loading…</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCAN LOGS -->
+    <div class="panel" id="panel-logs">
+        <div class="box">
+            <div class="box-header">
+                <h2>Scan Logs</h2>
+                <div style="display:flex;gap:0.5rem;">
+                    <select id="log-job-filter" style="padding:0.4rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                        <option value="">All jobs</option>
+                        <option value="collect_events">collect_events</option>
+                        <option value="venue_websites">venue_websites</option>
+                        <option value="dedup">dedup</option>
+                        <option value="cleanup">cleanup</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" id="refresh-logs-btn">↻ Refresh</button>
+                </div>
+            </div>
+            <div class="box-body">
+                <div id="logs-table"><span class="loading">Loading…</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BULK UPLOAD -->
+    <div class="panel" id="panel-upload">
+        <div class="box">
+            <div class="box-header"><h2>Bulk Upload</h2></div>
+            <div class="box-body">
+                <p style="font-size:0.85rem;color:#666;margin-bottom:1.25rem;">
+                    Upload CSV files to stage data. Venues are queued for scraping; artists are queued for enrichment; cities and events are imported directly.
+                </p>
+                <div class="upload-section">
+
+                    <div class="upload-card">
+                        <h3>🏛 Venues</h3>
+                        <p>Columns: <code>url</code>, <code>venue_name</code> (opt), <code>city</code> (opt)<br>Staged as queued — not scraped immediately.</p>
+                        <input type="file" id="upload-venues-file" accept=".csv">
+                        <button class="btn btn-primary" onclick="uploadFile('venues')">Upload</button>
+                        <div class="upload-result" id="upload-venues-result"></div>
+                    </div>
+
+                    <div class="upload-card">
+                        <h3>🎤 Artists</h3>
+                        <p>Column: <code>artist_name</code><br>Added to performers table with confidence=0 for later enrichment.</p>
+                        <input type="file" id="upload-artists-file" accept=".csv">
+                        <button class="btn btn-primary" onclick="uploadFile('artists')">Upload</button>
+                        <div class="upload-result" id="upload-artists-result"></div>
+                    </div>
+
+                    <div class="upload-card">
+                        <h3>🌍 Cities</h3>
+                        <p>Columns: <code>name</code>, <code>country</code>, <code>state</code> (opt), <code>timezone</code> (opt)<br>Imported directly.</p>
+                        <input type="file" id="upload-cities-file" accept=".csv">
+                        <button class="btn btn-primary" onclick="uploadFile('cities')">Upload</button>
+                        <div class="upload-result" id="upload-cities-result"></div>
+                    </div>
+
+                    <div class="upload-card">
+                        <h3>📅 Events</h3>
+                        <p>Columns: <code>name</code>, <code>artist_name</code>, <code>start_date</code> (YYYY-MM-DD), <code>start_time</code>, <code>venue_name</code>, <code>city</code>, <code>price</code>, <code>purchase_link</code><br>Imported directly.</p>
+                        <input type="file" id="upload-events-file" accept=".csv">
+                        <button class="btn btn-primary" onclick="uploadFile('events')">Upload</button>
+                        <div class="upload-result" id="upload-events-result"></div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// ── Tab switching ─────────────────────────────────────────────────────────────
+document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
+        if (btn.dataset.tab === "logs") loadLogs();
+        if (btn.dataset.tab === "venues") loadVenuesPreview();
+        if (btn.dataset.tab === "artists") loadArtistsPreview();
+        if (btn.dataset.tab === "cities") loadCitiesPreview();
+        if (btn.dataset.tab === "events") loadEventsPreview();
+    });
+});
+
+function esc(s) { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function fmt(n) { return Number(n).toLocaleString(); }
+
+// ── Overview ──────────────────────────────────────────────────────────────────
+async function loadOverview() {
+    const stats = await fetch("/api/admin/stats").then(r => r.json());
+    const grid = document.getElementById("stats-grid");
+    grid.innerHTML = `
+        <div class="stat-card"><div class="label">Events</div><div class="value">${fmt(stats.total_events)}</div></div>
+        <div class="stat-card"><div class="label">Venues</div><div class="value">${fmt(stats.total_venues)}</div></div>
+        <div class="stat-card"><div class="label">Cities</div><div class="value">${fmt(stats.total_cities)}</div></div>
+        <div class="stat-card"><div class="label">Event Types</div><div class="value">${fmt(stats.total_event_types)}</div></div>
+    `;
+    const src = document.getElementById("source-breakdown");
+    src.innerHTML = Object.entries(stats.events_by_source || {})
+        .sort((a,b) => b[1]-a[1])
+        .map(([s,n]) => `<div class="source-chip"><strong>${esc(s)}</strong> ${fmt(n)}</div>`)
+        .join("") || "<span class='empty'>No data</span>";
+
+    // Populate events source filter
+    const sel = document.getElementById("events-source-filter");
+    Object.keys(stats.events_by_source || {}).sort().forEach(s => {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        sel.appendChild(o);
+    });
+
+    loadRecentLogs();
+}
+
+async function loadRecentLogs() {
+    const logs = await fetch("/api/admin/scan-logs?limit=10").then(r => r.json()).catch(() => []);
+    const el = document.getElementById("recent-logs");
+    if (!logs.length) { el.innerHTML = "<span class='empty'>No scan logs yet — they'll appear after the next scheduled run.</span>"; return; }
+    el.innerHTML = renderLogsTable(logs);
+}
+
+// ── Scan Logs ─────────────────────────────────────────────────────────────────
+async function loadLogs() {
+    const job = document.getElementById("log-job-filter").value;
+    const url = "/api/admin/scan-logs?limit=100" + (job ? "&job=" + job : "");
+    const logs = await fetch(url).then(r => r.json()).catch(() => []);
+    const el = document.getElementById("logs-table");
+    el.innerHTML = logs.length ? renderLogsTable(logs) : "<span class='empty'>No logs found.</span>";
+}
+
+function renderLogsTable(logs) {
+    return `<table class="data-table">
+        <thead><tr><th>Job</th><th>Detail</th><th>Started</th><th>Duration</th><th>Found</th><th>Saved</th><th>Status</th><th>Notes</th></tr></thead>
+        <tbody>${logs.map(l => {
+            const dur = l.finished_at && l.started_at
+                ? Math.round((new Date(l.finished_at) - new Date(l.started_at)) / 1000) + "s"
+                : "—";
+            const badge = `<span class="badge badge-${l.status}">${esc(l.status)}</span>`;
+            return `<tr>
+                <td><strong>${esc(l.job_name)}</strong></td>
+                <td>${esc(l.detail || "")}</td>
+                <td>${esc((l.started_at||"").replace("T"," ").slice(0,19))}</td>
+                <td>${dur}</td>
+                <td>${l.events_found ?? "—"}</td>
+                <td>${l.events_saved ?? "—"}</td>
+                <td>${badge}</td>
+                <td class="truncate" title="${esc(l.notes||"")}">${esc((l.notes||"").slice(0,60))}</td>
+            </tr>`;
+        }).join("")}</tbody></table>`;
+}
+
+document.getElementById("log-job-filter").addEventListener("change", loadLogs);
+document.getElementById("refresh-logs-btn").addEventListener("click", loadLogs);
+
+// ── Data Previews ─────────────────────────────────────────────────────────────
+async function loadVenuesPreview() {
+    const el = document.getElementById("venues-preview");
+    const rows = await fetch("/api/venues?limit=20").then(r=>r.json()).catch(()=>[]);
+    if (!rows.length) { el.innerHTML = "<span class='empty'>No venues.</span>"; return; }
+    el.innerHTML = `<table class="data-table">
+        <thead><tr><th>ID</th><th>Name</th><th>City</th><th>Country</th><th>Website</th></tr></thead>
+        <tbody>${rows.slice(0,20).map(v=>`<tr>
+            <td>${v.id}</td><td>${esc(v.name)}</td>
+            <td>${esc(v.physical_city||"")}</td><td>${esc(v.physical_country||"")}</td>
+            <td class="truncate">${v.website_url?`<a href="${esc(v.website_url)}" target="_blank">${esc(v.website_url)}</a>`:"—"}</td>
+        </tr>`).join("")}</tbody></table>
+        <p style="font-size:0.78rem;color:#aaa;margin-top:0.75rem;">Showing 20 rows — download CSV for full list.</p>`;
+}
+
+async function loadArtistsPreview() {
+    const el = document.getElementById("artists-preview");
+    // Use suggestions as proxy for a quick artist list
+    el.innerHTML = "<span class='loading'>Fetching from export…</span>";
+    // Show a note since we can't paginate performers easily here
+    el.innerHTML = `<p style="color:#666;font-size:0.85rem;">Download the CSV for the full performers list — it contains all ${fmt("?")} artists with genres, confidence scores, and enrichment sources.</p>
+        <a class="btn btn-primary" href="/api/admin/export/performers" style="margin-top:0.75rem;display:inline-flex;">⬇ Download Performers CSV</a>`;
+}
+
+async function loadCitiesPreview() {
+    const el = document.getElementById("cities-preview");
+    const rows = await fetch("/api/cities").then(r=>r.json()).catch(()=>[]);
+    if (!rows.length) { el.innerHTML = "<span class='empty'>No cities.</span>"; return; }
+    el.innerHTML = `<table class="data-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Country</th><th>State</th><th>Timezone</th></tr></thead>
+        <tbody>${rows.slice(0,30).map(c=>`<tr>
+            <td>${c.id}</td><td>${esc(c.name)}</td>
+            <td>${esc(c.country)}</td><td>${esc(c.state||"")}</td><td>${esc(c.timezone||"")}</td>
+        </tr>`).join("")}</tbody></table>
+        <p style="font-size:0.78rem;color:#aaa;margin-top:0.75rem;">Showing ${Math.min(rows.length,30)} of ${rows.length} cities — download CSV for full list.</p>`;
+}
+
+async function loadEventsPreview() {
+    const source = document.getElementById("events-source-filter").value;
+    const url = "/api/admin/export/events" + (source ? "?source=" + encodeURIComponent(source) : "");
+    document.getElementById("download-events-btn").onclick = () => window.location.href = url;
+    const el = document.getElementById("events-preview");
+    el.innerHTML = `<p style="color:#666;font-size:0.85rem;">Use the CSV download to export the full events list. Apply source filter above to narrow by scrape source.</p>`;
+}
+
+document.getElementById("events-source-filter").addEventListener("change", loadEventsPreview);
+document.getElementById("download-events-btn").addEventListener("click", () => {
+    const source = document.getElementById("events-source-filter").value;
+    const url = "/api/admin/export/events" + (source ? "?source=" + encodeURIComponent(source) : "");
+    window.location.href = url;
+});
+
+// ── Bulk Upload ───────────────────────────────────────────────────────────────
+async function uploadFile(type) {
+    const input = document.getElementById(`upload-${type}-file`);
+    const result = document.getElementById(`upload-${type}-result`);
+    if (!input.files.length) { result.textContent = "Please select a file first."; return; }
+    result.textContent = "Uploading…";
+    const form = new FormData();
+    form.append("file", input.files[0]);
+    try {
+        const resp = await fetch(`/api/admin/upload/${type}`, { method: "POST", body: form });
+        const data = await resp.json();
+        result.textContent = JSON.stringify(data);
+    } catch (e) {
+        result.textContent = "Error: " + e.message;
+    }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadOverview();
+</script>
+</body>
+</html>
