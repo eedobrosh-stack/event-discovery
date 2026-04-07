@@ -21,6 +21,7 @@ from app.services.collectors.scrapers.barby import BarbyCollector
 from app.services.collectors.scrapers.israel_sites import IsraelSitesCollector
 from app.services.collectors.scrapers.smarticket import SmartticketCollector
 from app.services.collectors.scrapers.hatarbut import HatarbutCollector
+from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,12 @@ registry.register(BarbyCollector())
 registry.register(IsraelSitesCollector())
 registry.register(SmartticketCollector())
 registry.register(HatarbutCollector())
+registry.register(VenuePilotCollector())
 
 
 PRIORITY_CITIES = [
     "New York", "Tel Aviv", "London", "Los Angeles", "Chicago",
-    "San Francisco", "Berlin", "Paris", "Toronto", "Sydney",
+    "San Francisco", "Berkeley", "Berlin", "Paris", "Toronto", "Sydney",
 ]
 
 
