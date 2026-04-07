@@ -54,9 +54,9 @@
                 <input type="hidden" id="search" value="">
             </div>
             <div class="filter-actions">
-                <button id="export-ics-btn" type="button">Download ICS</button>
+                <button id="export-ics-btn" type="button">🍎 Add to Apple / Outlook Calendar</button>
                 <button id="export-csv-btn" type="button">Download CSV</button>
-                <button id="subscribe-btn" type="button" class="btn-subscribe">📅 Subscribe to Calendar</button>
+                <button id="subscribe-btn" type="button" class="btn-subscribe">📅 Add to Google Calendar</button>
             </div>
         </section>
 
@@ -89,31 +89,31 @@
     <div id="subscribe-modal" class="modal-overlay" hidden>
         <div class="modal-box">
             <button class="modal-close" id="modal-close-btn" aria-label="Close">×</button>
-            <h2 class="modal-title">📅 Subscribe to Calendar</h2>
-            <p class="modal-desc">Your calendar app will automatically pick up new events matching your current filters — no action needed after subscribing.</p>
+            <h2 class="modal-title">📅 Add to Google Calendar</h2>
+            <p class="modal-desc">A live calendar feed — new events matching your filters appear automatically. Also works with Outlook and Apple Calendar.</p>
 
             <div class="modal-section">
-                <label class="modal-label">Apple Calendar (iOS / macOS)</label>
-                <a id="webcal-link" href="#" class="btn-webcal">Open in Apple Calendar</a>
-                <p class="modal-hint">Click the button above — your device will prompt you to subscribe.</p>
-            </div>
-
-            <div class="modal-section">
-                <label class="modal-label">Google Calendar / Outlook / Other</label>
+                <label class="modal-label">Google Calendar</label>
                 <div class="copy-row">
                     <input id="subscribe-url" class="copy-input" readonly>
-                    <button id="copy-url-btn" class="btn-copy">Copy</button>
+                    <button id="copy-url-btn" class="btn-copy">Copy URL</button>
                 </div>
                 <p class="modal-hint">
                     <strong>Google Calendar:</strong> Other calendars → + → From URL → paste<br>
-                    <strong>Outlook:</strong> Add calendar → From internet → paste
+                    <strong>Outlook:</strong> Add calendar → From internet → paste<br>
+                    <strong>Apple Calendar:</strong> File → New Calendar Subscription → paste
                 </p>
             </div>
 
-            <p class="modal-refresh">🔄 Calendar refreshes every 6 hours automatically.</p>
+            <div class="modal-section">
+                <label class="modal-label">Open directly in Apple Calendar</label>
+                <a id="webcal-link" href="#" class="btn-webcal">Open in Apple Calendar</a>
+            </div>
+
+            <p class="modal-refresh">🔄 Calendar refreshes automatically — events stay up to date.</p>
         </div>
     </div>
 
-    <script src="/app.js?v=14"></script>
+    <script src="/app.js?v=15"></script>
 </body>
 </html>
