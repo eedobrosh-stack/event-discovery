@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.database import get_db
-from app.models import Event, EventType, Venue, Performer, event_event_types
+from app.models import Event, EventType, Venue, Performer, City, event_event_types
 from app.schemas.event import ExportRequest
 from app.services.export.ics_generator import generate_ics, generate_subscription_ics
 from app.services.export.google_sheets import export_to_sheets
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/export", tags=["export"])
 
 def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
     query = db.query(Event).options(
-        joinedload(Event.venue).joinedload("city"),
+        joinedload(Event.venue).joinedload(Venue.city),
         selectinload(Event.event_types),
     )
 
@@ -89,7 +89,7 @@ def _get_filtered_events_from_params(
 ) -> List[Event]:
     """Shared filter logic for GET-based subscription endpoint."""
     query = db.query(Event).options(
-        joinedload(Event.venue).joinedload("city"),
+        joinedload(Event.venue).joinedload(Venue.city),
         selectinload(Event.event_types),
     )
 
