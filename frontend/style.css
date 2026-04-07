@@ -520,9 +520,11 @@ a:hover { text-decoration: underline; }
     #events-table thead th:nth-child(3),
     #events-table thead th:nth-child(5),
     #events-table thead th:nth-child(8),
+    #events-table thead th:nth-child(9),
     #events-table tbody td:nth-child(3),
     #events-table tbody td:nth-child(5),
-    #events-table tbody td:nth-child(8) {
+    #events-table tbody td:nth-child(8),
+    #events-table tbody td:nth-child(9) {
         display: none;
     }
 
