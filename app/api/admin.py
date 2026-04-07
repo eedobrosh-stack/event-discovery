@@ -617,6 +617,96 @@ async def upload_cities(file: UploadFile = File(...), db: Session = Depends(get_
     return {"added": added, "skipped_duplicates": skipped}
 
 
+# ── City Deduplication ────────────────────────────────────────────────────────
+
+@router.get("/city-duplicates")
+def get_city_duplicates(db: Session = Depends(get_db)):
+    """
+    Return pairs of cities (same country) where one name is a substring of the
+    other — the most common pattern for duplicates (e.g. 'Tel Aviv' / 'Tel Aviv-Yafo',
+    'New York' / 'East New York').
+    Includes venue count per city so you can tell which record to keep.
+    """
+    venue_counts = dict(
+        db.query(Venue.city_id, func.count(Venue.id))
+        .group_by(Venue.city_id)
+        .all()
+    )
+
+    cities = db.query(City).order_by(City.country, City.name).all()
+
+    # Build pairs where one name is contained in the other (same country)
+    seen = set()
+    pairs = []
+    for i, c1 in enumerate(cities):
+        for c2 in cities[i + 1:]:
+            if c1.country != c2.country:
+                continue
+            n1, n2 = c1.name.lower(), c2.name.lower()
+            if n1 in n2 or n2 in n1:
+                key = (min(c1.id, c2.id), max(c1.id, c2.id))
+                if key in seen:
+                    continue
+                seen.add(key)
+                pairs.append({
+                    "city_a": {"id": c1.id, "name": c1.name, "country": c1.country,
+                               "venues": venue_counts.get(c1.id, 0)},
+                    "city_b": {"id": c2.id, "name": c2.name, "country": c2.country,
+                               "venues": venue_counts.get(c2.id, 0)},
+                })
+
+    return pairs
+
+
+@router.post("/merge-cities")
+def merge_cities(payload: dict, db: Session = Depends(get_db)):
+    """
+    Merge one or more cities into a single canonical city.
+    All venues pointing at merge_ids get reassigned to keep_id, then the
+    duplicate city records are deleted and the cities cache is invalidated.
+
+    Body: { "keep_id": int, "merge_ids": [int, ...] }
+    """
+    keep_id = int(payload["keep_id"])
+    merge_ids = [int(x) for x in payload.get("merge_ids", [])]
+
+    if not merge_ids:
+        return {"error": "merge_ids must be a non-empty list"}
+    if keep_id in merge_ids:
+        return {"error": "keep_id cannot also appear in merge_ids"}
+
+    keep_city = db.query(City).filter(City.id == keep_id).first()
+    if not keep_city:
+        return {"error": f"City {keep_id} not found"}
+
+    venues_updated = 0
+    merged_names = []
+    for mid in merge_ids:
+        mc = db.query(City).filter(City.id == mid).first()
+        if not mc:
+            continue
+        merged_names.append(mc.name)
+        count = (
+            db.query(Venue)
+            .filter(Venue.city_id == mid)
+            .update({"city_id": keep_id}, synchronize_session=False)
+        )
+        venues_updated += count
+        db.query(City).filter(City.id == mid).delete(synchronize_session=False)
+
+    db.commit()
+
+    # Bust the cities in-memory cache so the updated list is served immediately
+    from app.api.cities import warm_cities_cache
+    warm_cities_cache()
+
+    return {
+        "kept": {"id": keep_id, "name": keep_city.name, "country": keep_city.country},
+        "merged": merged_names,
+        "venues_reassigned": venues_updated,
+    }
+
+
 @router.post("/upload/events")
 async def upload_events(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """

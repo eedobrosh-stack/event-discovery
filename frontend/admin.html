@@ -163,6 +163,40 @@
                 <div id="cities-preview"><span class="loading">Loading…</span></div>
             </div>
         </div>
+
+        <div class="box">
+            <div class="box-header"><h2>🔀 Merge Duplicate Cities</h2></div>
+            <div class="box-body">
+                <p style="font-size:0.85rem;color:#666;margin-bottom:1.25rem;">
+                    Suggested duplicates are detected automatically (one name contained in the other, same country).
+                    Reassigns all venues from the duplicate to the canonical city, then removes the duplicate.
+                </p>
+
+                <!-- Auto-detected duplicates -->
+                <div id="duplicates-list"><span class="loading">Scanning for duplicates…</span></div>
+
+                <!-- Manual merge -->
+                <div style="margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid #f0f0f0;">
+                    <h3 style="font-size:0.9rem;margin-bottom:0.75rem;">Manual merge</h3>
+                    <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap;">
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.3rem;">Merge FROM (delete)</label>
+                            <select id="merge-from-select" style="padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;min-width:220px;">
+                                <option value="">— select city to remove —</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.3rem;">Merge INTO (keep)</label>
+                            <select id="merge-into-select" style="padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;min-width:220px;">
+                                <option value="">— select canonical city —</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="doManualMerge()">Merge</button>
+                    </div>
+                    <div id="merge-manual-result" style="margin-top:0.75rem;font-size:0.85rem;color:#555;"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- SCAN LOGS -->
@@ -346,6 +380,8 @@ async function loadArtistsPreview() {
         <a class="btn btn-primary" href="/api/admin/export/performers" style="margin-top:0.75rem;display:inline-flex;">⬇ Download Performers CSV</a>`;
 }
 
+let _allCitiesForMerge = [];
+
 async function loadCitiesPreview() {
     const el = document.getElementById("cities-preview");
     const rows = await fetch("/api/cities").then(r=>r.json()).catch(()=>[]);
@@ -357,6 +393,77 @@ async function loadCitiesPreview() {
             <td>${esc(c.country)}</td><td>${esc(c.state||"")}</td><td>${esc(c.timezone||"")}</td>
         </tr>`).join("")}</tbody></table>
         <p style="font-size:0.78rem;color:#aaa;margin-top:0.75rem;">Showing ${Math.min(rows.length,30)} of ${rows.length} cities — download CSV for full list.</p>`;
+
+    // Populate merge dropdowns
+    _allCitiesForMerge = rows;
+    const fromSel = document.getElementById("merge-from-select");
+    const intoSel = document.getElementById("merge-into-select");
+    const opts = rows.map(c => `<option value="${c.id}">${esc(c.name)}, ${esc(c.country)}</option>`).join("");
+    fromSel.innerHTML = '<option value="">— select city to remove —</option>' + opts;
+    intoSel.innerHTML = '<option value="">— select canonical city —</option>' + opts;
+
+    // Load duplicate suggestions
+    loadDuplicates();
+}
+
+async function loadDuplicates() {
+    const el = document.getElementById("duplicates-list");
+    const pairs = await fetch("/api/admin/city-duplicates").then(r=>r.json()).catch(()=>[]);
+    if (!pairs.length) {
+        el.innerHTML = "<span style='color:#aaa;font-size:0.85rem;'>No obvious duplicates detected.</span>";
+        return;
+    }
+    el.innerHTML = `<table class="data-table">
+        <thead><tr><th>City A</th><th>Venues</th><th>City B</th><th>Venues</th><th>Country</th><th>Action</th></tr></thead>
+        <tbody>${pairs.map(p => `<tr>
+            <td><strong>${esc(p.city_a.name)}</strong> <span style="color:#aaa;font-size:0.78rem">#${p.city_a.id}</span></td>
+            <td>${p.city_a.venues}</td>
+            <td><strong>${esc(p.city_b.name)}</strong> <span style="color:#aaa;font-size:0.78rem">#${p.city_b.id}</span></td>
+            <td>${p.city_b.venues}</td>
+            <td>${esc(p.city_a.country)}</td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-sm btn-outline" onclick="quickMerge(${p.city_a.id},${p.city_b.id},'${esc(p.city_a.name)}','${esc(p.city_b.name)}')">
+                    Keep A →</button>
+                <button class="btn btn-sm btn-outline" onclick="quickMerge(${p.city_b.id},${p.city_a.id},'${esc(p.city_b.name)}','${esc(p.city_a.name)}')">
+                    Keep B →</button>
+            </td>
+        </tr>`).join("")}</tbody></table>
+        <p style="font-size:0.78rem;color:#aaa;margin-top:0.5rem;">"Keep A →" keeps City A and deletes City B (reassigning its venues). "Keep B →" is the reverse.</p>`;
+}
+
+async function quickMerge(keepId, mergeId, keepName, mergeName) {
+    if (!confirm(`Keep "${keepName}" and delete "${mergeName}"?\nAll venues from "${mergeName}" will be reassigned to "${keepName}".`)) return;
+    await doMerge(keepId, [mergeId], document.getElementById("duplicates-list"));
+    loadCitiesPreview();
+}
+
+async function doManualMerge() {
+    const keepId = parseInt(document.getElementById("merge-into-select").value);
+    const mergeId = parseInt(document.getElementById("merge-from-select").value);
+    const resultEl = document.getElementById("merge-manual-result");
+    if (!keepId || !mergeId) { resultEl.textContent = "Please select both cities."; return; }
+    if (keepId === mergeId) { resultEl.textContent = "Cannot merge a city into itself."; return; }
+    const keepName = _allCitiesForMerge.find(c=>c.id===keepId)?.name || keepId;
+    const mergeName = _allCitiesForMerge.find(c=>c.id===mergeId)?.name || mergeId;
+    if (!confirm(`Keep "${keepName}" and delete "${mergeName}"?`)) return;
+    await doMerge(keepId, [mergeId], resultEl);
+    loadCitiesPreview();
+}
+
+async function doMerge(keepId, mergeIds, resultEl) {
+    resultEl.textContent = "Merging…";
+    try {
+        const resp = await fetch("/api/admin/merge-cities", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({keep_id: keepId, merge_ids: mergeIds}),
+        });
+        const data = await resp.json();
+        if (data.error) { resultEl.textContent = "Error: " + data.error; return; }
+        resultEl.innerHTML = `<span style="color:#065f46;">✓ Merged "${esc(data.merged.join(", "))}" → "${esc(data.kept.name)}" — ${data.venues_reassigned} venue(s) reassigned.</span>`;
+    } catch(e) {
+        resultEl.textContent = "Error: " + e.message;
+    }
 }
 
 async function loadEventsPreview() {
