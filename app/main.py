@@ -4,6 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
@@ -68,6 +69,11 @@ app.include_router(admin.router)
 app.include_router(venues.router)
 app.include_router(stats.router)
 app.include_router(suggestions.router)
+
+# Explicit route for admin page (StaticFiles html=True doesn't reliably resolve /admin → admin.html)
+@app.get("/admin")
+def admin_page():
+    return FileResponse("frontend/admin.html")
 
 # Serve frontend
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -23,6 +23,22 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
         selectinload(Event.event_types),
     )
 
+    if req.type_search:
+        terms = [t.strip() for t in req.type_search.split(",") if t.strip()]
+        for term in terms:
+            like = f"%{term}%"
+            type_matched_event_ids = (
+                select(event_event_types.c.event_id)
+                .join(EventType, EventType.id == event_event_types.c.event_type_id)
+                .where(or_(EventType.name.ilike(like), EventType.category.ilike(like)))
+                .scalar_subquery()
+            )
+            query = query.filter(or_(
+                Event.id.in_(type_matched_event_ids),
+                Event.artist_name.ilike(like),
+                Event.name.ilike(like),
+            ))
+
     if req.categories:
         type_ids = (
             db.query(EventType.id)

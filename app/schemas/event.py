@@ -43,6 +43,7 @@ class EventOut(BaseModel):
 
 
 class ExportRequest(BaseModel):
+    type_search: Optional[str] = None
     categories: List[str] = []
     city_ids: List[int] = []
     start_date: Optional[date] = None
