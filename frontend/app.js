@@ -646,12 +646,12 @@ function esc(str) {
 }
 
 function buildSubscribeUrl() {
-    const { typeSearch, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, cityId } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (cityId) params.set("city_ids", cityId);
-    if (startDate) params.set("start_date", startDate);
-    if (endDate) params.set("end_date", endDate);
+    // Date range is intentionally excluded — subscriptions always show upcoming
+    // events dynamically; baking in an end_date causes the feed to go empty.
     const path = `/api/export/subscribe?${params}`;
     const httpsUrl = `${location.protocol}//${location.host}${path}`;
     const webcalUrl = `webcal://${location.host}${path}`;
