@@ -28,4 +28,3 @@ class Venue(Base):
 
     city = relationship("City", back_populates="venues")
     events = relationship("Event", back_populates="venue")
-    default_event_type = relationship("EventType", foreign_keys=[default_event_type_id])
