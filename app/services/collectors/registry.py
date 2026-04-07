@@ -139,17 +139,41 @@ class CollectorRegistry:
                 db.add(event)
                 db.flush()
 
-                # Assign categories / event types
-                if raw.raw_categories:
+                # Assign event type using priority chain:
+                # 1. Artist → Performer table (event_type_name > category)
+                # 2. Venue default_event_type_id override
+                # 3. Raw categories with keyword/fallback rules
+                et = None
+
+                # Priority 1: look up artist in Performer table
+                # matched_performer is already set if event name IS a performer;
+                # for events with an explicit artist_name, do a fresh lookup.
+                performer_match = matched_performer
+                if not performer_match and artist_name:
+                    performer_match = (
+                        db.query(Performer)
+                        .filter(Performer.normalized_name == artist_name.strip().lower())
+                        .first()
+                    )
+                if performer_match:
+                    if performer_match.event_type_name:
+                        et = db.query(EventType).filter_by(name=performer_match.event_type_name).first()
+                    elif performer_match.category:
+                        et = self._resolve_event_type(performer_match.category, raw, db)
+
+                # Priority 2: venue-level override
+                if not et and venue and venue.default_event_type_id:
+                    et = db.query(EventType).filter_by(id=venue.default_event_type_id).first()
+
+                # Priority 3: raw categories with keyword/fallback rules
+                if not et and raw.raw_categories:
                     for cat_name in raw.raw_categories:
                         et = self._resolve_event_type(cat_name, raw, db)
-                        if et and et not in event.event_types:
-                            event.event_types.append(et)
-                elif matched_performer and matched_performer.category:
-                    # No raw categories — use the matched performer's known type
-                    et = self._resolve_event_type(matched_performer.category, raw, db)
-                    if et and et not in event.event_types:
-                        event.event_types.append(et)
+                        if et:
+                            break
+
+                if et and et not in event.event_types:
+                    event.event_types.append(et)
 
                 saved += 1
             except Exception as e:

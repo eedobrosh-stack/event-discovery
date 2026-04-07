@@ -16,10 +16,24 @@ from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_
 scheduler = AsyncIOScheduler()
 
 
+def _run_migrations():
+    """Apply incremental schema changes that create_all() won't handle."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Add venues.default_event_type_id if missing
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(venues)"))]
+        if "default_event_type_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE venues ADD COLUMN default_event_type_id INTEGER REFERENCES event_types(id)"
+            ))
+            conn.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create tables on startup
     Base.metadata.create_all(bind=engine)
+    _run_migrations()
 
     # Pre-warm the cities cache so the first user request is instant
     import asyncio

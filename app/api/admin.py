@@ -563,6 +563,10 @@ def fix_venue_event_types(payload: dict, db: Session = Depends(get_db)):
         event_event_types.insert(),
         [{"event_id": eid, "event_type_id": event_type.id} for eid in event_ids],
     )
+
+    # Persist as the venue's default so future scrapes use the same type
+    venue.default_event_type_id = event_type.id
+
     db.commit()
 
     return {
