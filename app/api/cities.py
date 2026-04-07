@@ -1,6 +1,5 @@
 from typing import List
 from fastapi import APIRouter, Depends
-from sqlalchemy import exists
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -16,10 +15,10 @@ def list_cities(db: Session = Depends(get_db)):
     return (
         db.query(City)
         .filter(
-            exists().where(
-                (Venue.city_id == City.id)
-                & exists().where(Event.venue_id == Venue.id)
-            )
+            db.query(Venue.id)
+              .join(Event, Event.venue_id == Venue.id)
+              .filter(Venue.city_id == City.id)
+              .exists()
         )
         .order_by(City.name)
         .all()

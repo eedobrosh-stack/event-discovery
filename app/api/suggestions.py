@@ -1,6 +1,6 @@
 from typing import List
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import exists, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -51,9 +51,9 @@ def get_suggestions(
         db.query(Performer.name)
         .filter(
             Performer.name.ilike(q_like),
-            exists().where(
-                func.lower(Event.artist_name) == func.lower(Performer.name)
-            ),
+            db.query(Event.id)
+              .filter(func.lower(Event.artist_name) == func.lower(Performer.name))
+              .exists(),
         )
         .limit(PER_TYPE)
         .all()
@@ -65,7 +65,9 @@ def get_suggestions(
         db.query(Venue.name, Venue.physical_city)
         .filter(
             Venue.name.ilike(q_like),
-            exists().where(Event.venue_id == Venue.id),
+            db.query(Event.id)
+              .filter(Event.venue_id == Venue.id)
+              .exists(),
         )
         .distinct()
         .limit(PER_TYPE)
