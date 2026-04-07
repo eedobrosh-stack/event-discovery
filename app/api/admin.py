@@ -91,7 +91,7 @@ async def trigger_scrape(
     return {"message": f"Scrape started in background for {label}"}
 
 
-@router.post("/scrape/venuepilot")
+@router.post("/run-venuepilot")
 async def scrape_venuepilot(db: Session = Depends(get_db)):
     """Run only the VenuePilot collector synchronously and return stats immediately."""
     from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
