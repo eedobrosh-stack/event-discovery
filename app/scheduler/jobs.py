@@ -169,6 +169,57 @@ def run_dedup():
         db.close()
 
 
+async def collect_platform_venues():
+    """Daily scrape for all active platform venues stored in the DB."""
+    from app.models.platform_venue import PlatformVenue
+    from app.services.platform_registry import fetch_platform_venue_events
+    from datetime import datetime as dt
+
+    db = SessionLocal()
+    log = ScanLog(job_name="platform_venues", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    total_found = 0
+    total_saved = 0
+
+    try:
+        pvs = db.query(PlatformVenue).filter(PlatformVenue.active == True).all()
+        logger.info(f"Platform venue scraper: {len(pvs)} active venues to scan")
+
+        for pv in pvs:
+            try:
+                city = db.query(City).filter(City.id == pv.city_id).first()
+                if not city:
+                    logger.warning(f"Platform venue '{pv.name}' has no linked city — skipping")
+                    continue
+                raw_events = await fetch_platform_venue_events(pv, city.name, city.country)
+                saved = registry._save_events(raw_events, city, db)
+                total_found += len(raw_events)
+                total_saved += saved
+                pv.last_scraped_at = dt.utcnow()
+                db.commit()
+                logger.info(
+                    f"Platform venue '{pv.name}' ({pv.platform}): "
+                    f"found={len(raw_events)}, saved={saved}"
+                )
+            except Exception as e:
+                logger.error(f"Platform venue '{pv.name}' error: {e}")
+
+        log.status = "success"
+        log.events_found = total_found
+        log.events_saved = total_saved
+        log.detail = f"{len(pvs)} venues scanned"
+    except Exception as e:
+        logger.error(f"collect_platform_venues error: {e}")
+        log.status = "failed"
+        log.notes = str(e)
+    finally:
+        log.finished_at = dt.utcnow()
+        db.commit()
+        db.close()
+
+
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()

@@ -10,10 +10,50 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
+from app.api import platform_venues as platform_venues_api
 from app.api.cities import warm_cities_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues
 
 scheduler = AsyncIOScheduler()
+
+
+def _seed_platform_venues():
+    """One-time migration: move hardcoded VenuePilot venues into the platform_venues table."""
+    from app.database import SessionLocal
+    from app.models.platform_venue import PlatformVenue
+    from app.models import City
+    from app.services.collectors.scrapers.venuepilot import VENUEPILOT_VENUES
+
+    db = SessionLocal()
+    try:
+        for cfg in VENUEPILOT_VENUES:
+            existing = db.query(PlatformVenue).filter(
+                PlatformVenue.platform == "venuepilot",
+                PlatformVenue.platform_id == str(cfg["account_id"]),
+            ).first()
+            if existing:
+                continue  # already seeded
+            # Resolve city: prefer the first city in run_for_cities that has a DB record
+            city = None
+            for city_name in cfg.get("run_for_cities", [cfg.get("city", "")]):
+                city = db.query(City).filter(City.name.ilike(city_name)).first()
+                if city:
+                    break
+            db.add(PlatformVenue(
+                name=cfg["name"],
+                city_id=city.id if city else None,
+                platform="venuepilot",
+                platform_id=str(cfg["account_id"]),
+                website_url=cfg.get("website_url"),
+                address=cfg.get("address"),
+                active=True,
+            ))
+        db.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"_seed_platform_venues failed: {e}")
+    finally:
+        db.close()
 
 
 def _run_migrations():
@@ -62,7 +102,16 @@ async def lifespan(app: FastAPI):
         id="dedup_events",
         replace_existing=True,
     )
+    scheduler.add_job(
+        collect_platform_venues,
+        CronTrigger(hour=2, minute=30),  # daily at 2:30am UTC
+        id="collect_platform_venues",
+        replace_existing=True,
+    )
     scheduler.start()
+
+    # Seed Ashkenaz into platform_venues if it hasn't been added yet
+    _seed_platform_venues()
 
     yield
 
@@ -81,6 +130,7 @@ app.include_router(admin.router)
 app.include_router(venues.router)
 app.include_router(stats.router)
 app.include_router(suggestions.router)
+app.include_router(platform_venues_api.router)
 
 # Explicit route for admin page (StaticFiles html=True doesn't reliably resolve /admin → admin.html)
 @app.get("/admin")

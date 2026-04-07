@@ -87,6 +87,7 @@
     <button class="tab-btn active" data-tab="overview">Overview</button>
     <button class="tab-btn" data-tab="events">Events</button>
     <button class="tab-btn" data-tab="venues">Venues</button>
+    <button class="tab-btn" data-tab="platform-venues">Platform Venues</button>
     <button class="tab-btn" data-tab="artists">Artists</button>
     <button class="tab-btn" data-tab="cities">Cities</button>
     <button class="tab-btn" data-tab="logs">Scan Logs</button>
@@ -135,6 +136,79 @@
             </div>
             <div class="box-body">
                 <div id="venues-preview"><span class="loading">Loading…</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PLATFORM VENUES -->
+    <div class="panel" id="panel-platform-venues">
+
+        <!-- Step 1: Detect platform from URL -->
+        <div class="box">
+            <div class="box-header"><h2>➕ Add Venue</h2></div>
+            <div class="box-body">
+                <p style="font-size:0.85rem;color:#666;margin-bottom:1rem;">
+                    Paste a venue's website URL. Supercaly will detect which ticketing platform powers it and pre-fill the form below.
+                </p>
+                <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
+                    <input type="text" id="pv-detect-url" placeholder="https://www.ashkenaz.com/full-calendar"
+                        style="flex:1;min-width:240px;padding:0.5rem 0.75rem;border:1px solid #ddd;border-radius:7px;font-size:0.9rem;">
+                    <button class="btn btn-primary" onclick="pvDetect()">Detect Platform</button>
+                </div>
+                <div id="pv-detect-result" style="margin-top:1rem;"></div>
+
+                <!-- Add form — hidden until detect succeeds -->
+                <div id="pv-add-form" style="display:none;margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid #f0f0f0;">
+                    <h3 style="font-size:0.95rem;margin-bottom:1rem;">Venue Details</h3>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0.75rem;">
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.25rem;">Venue Name *</label>
+                            <input type="text" id="pv-name" style="width:100%;padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                        </div>
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.25rem;">Platform *</label>
+                            <input type="text" id="pv-platform" readonly
+                                style="width:100%;padding:0.45rem 0.6rem;border:1px solid #eee;border-radius:6px;font-size:0.85rem;background:#f8f8fb;">
+                        </div>
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.25rem;">Platform ID</label>
+                            <input type="text" id="pv-platform-id"
+                                style="width:100%;padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                        </div>
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.25rem;">City</label>
+                            <select id="pv-city-id" style="width:100%;padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                                <option value="">— select city —</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.25rem;">Website URL</label>
+                            <input type="text" id="pv-website-url"
+                                style="width:100%;padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                        </div>
+                        <div>
+                            <label style="font-size:0.78rem;color:#888;display:block;margin-bottom:0.25rem;">Address</label>
+                            <input type="text" id="pv-address"
+                                style="width:100%;padding:0.45rem 0.6rem;border:1px solid #ddd;border-radius:6px;font-size:0.85rem;">
+                        </div>
+                    </div>
+                    <div style="margin-top:1rem;display:flex;gap:0.6rem;align-items:center;">
+                        <button class="btn btn-primary" onclick="pvAdd(true)">Save &amp; Scrape Now</button>
+                        <button class="btn btn-outline" onclick="pvAdd(false)">Save Only</button>
+                        <span id="pv-add-result" style="font-size:0.85rem;color:#555;"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Registered platform venues table -->
+        <div class="box">
+            <div class="box-header">
+                <h2>Registered Platform Venues</h2>
+                <button class="btn btn-outline btn-sm" onclick="loadPlatformVenues()">↻ Refresh</button>
+            </div>
+            <div class="box-body">
+                <div id="pv-table"><span class="loading">Loading…</span></div>
             </div>
         </div>
     </div>
@@ -283,6 +357,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
         if (btn.dataset.tab === "artists") loadArtistsPreview();
         if (btn.dataset.tab === "cities") loadCitiesPreview();
         if (btn.dataset.tab === "events") loadEventsPreview();
+        if (btn.dataset.tab === "platform-venues") loadPlatformVenues();
     });
 });
 
@@ -496,6 +571,139 @@ async function uploadFile(type) {
     } catch (e) {
         result.textContent = "Error: " + e.message;
     }
+}
+
+// ── Platform Venues ───────────────────────────────────────────────────────────
+let _pvCities = [];
+
+async function _pvEnsureCities() {
+    if (_pvCities.length) return;
+    _pvCities = await fetch("/api/cities").then(r => r.json()).catch(() => []);
+    const sel = document.getElementById("pv-city-id");
+    sel.innerHTML = '<option value="">— select city —</option>' +
+        _pvCities.map(c => `<option value="${c.id}">${esc(c.name)}, ${esc(c.country)}</option>`).join("");
+}
+
+async function pvDetect() {
+    const url = document.getElementById("pv-detect-url").value.trim();
+    if (!url) return;
+    const resEl = document.getElementById("pv-detect-result");
+    resEl.innerHTML = "<span class='loading'>Detecting…</span>";
+
+    try {
+        const data = await fetch("/api/platform-venues/detect", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({url}),
+        }).then(r => r.json());
+
+        if (!data.detected) {
+            resEl.innerHTML = `<span style="color:#b91c1c;">⚠ Could not detect a supported platform. Supported: VenuePilot, DICE, Eventbrite, Resident Advisor.</span>`;
+            return;
+        }
+
+        const confColor = data.confidence === "high" ? "#065f46" : "#92400e";
+        resEl.innerHTML = `<span style="color:${confColor};">
+            ✓ Detected <strong>${esc(data.platform)}</strong>
+            ${data.platform_id ? `(ID: <code>${esc(data.platform_id)}</code>)` : "— ID not found in URL, please enter manually"}
+            — confidence: ${esc(data.confidence)}
+        </span>`;
+
+        // Pre-fill the add form
+        await _pvEnsureCities();
+        document.getElementById("pv-platform").value = data.platform || "";
+        document.getElementById("pv-platform-id").value = data.platform_id || "";
+        document.getElementById("pv-name").value = data.name || "";
+        document.getElementById("pv-website-url").value = url;
+        document.getElementById("pv-add-form").style.display = "block";
+    } catch(e) {
+        resEl.innerHTML = `<span style="color:#b91c1c;">Error: ${esc(e.message)}</span>`;
+    }
+}
+
+async function pvAdd(scrapeNow) {
+    const resultEl = document.getElementById("pv-add-result");
+    const name = document.getElementById("pv-name").value.trim();
+    const platform = document.getElementById("pv-platform").value.trim();
+    const platform_id = document.getElementById("pv-platform-id").value.trim();
+    const city_id = parseInt(document.getElementById("pv-city-id").value) || null;
+    const website_url = document.getElementById("pv-website-url").value.trim();
+    const address = document.getElementById("pv-address").value.trim();
+
+    if (!name || !platform) { resultEl.textContent = "Name and platform are required."; return; }
+    resultEl.textContent = scrapeNow ? "Saving and scraping…" : "Saving…";
+
+    try {
+        const data = await fetch("/api/platform-venues/", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, platform, platform_id, city_id, website_url, address, scrape_now: scrapeNow}),
+        }).then(r => r.json());
+
+        resultEl.innerHTML = `<span style="color:#065f46;">✓ Saved!${scrapeNow && data.events_saved != null ? ` ${data.events_saved} events scraped.` : ""}</span>`;
+        // Reset form
+        document.getElementById("pv-add-form").style.display = "none";
+        document.getElementById("pv-detect-url").value = "";
+        document.getElementById("pv-detect-result").innerHTML = "";
+        loadPlatformVenues();
+    } catch(e) {
+        resultEl.textContent = "Error: " + e.message;
+    }
+}
+
+async function loadPlatformVenues() {
+    const el = document.getElementById("pv-table");
+    const rows = await fetch("/api/platform-venues/").then(r => r.json()).catch(() => []);
+    if (!rows.length) {
+        el.innerHTML = "<span class='empty'>No platform venues yet — add one above.</span>";
+        return;
+    }
+    el.innerHTML = `<table class="data-table">
+        <thead><tr><th>Name</th><th>Platform</th><th>ID</th><th>City</th><th>Active</th><th>Last Scraped</th><th>Actions</th></tr></thead>
+        <tbody>${rows.map(v => `<tr>
+            <td><strong>${esc(v.name)}</strong>${v.website_url ? ` <a href="${esc(v.website_url)}" target="_blank" style="color:#7c6af7;font-size:0.78rem;">↗</a>` : ""}</td>
+            <td><span class="badge badge-${v.active ? 'running' : 'queued'}">${esc(v.platform)}</span></td>
+            <td><code style="font-size:0.8rem;">${esc(v.platform_id || "—")}</code></td>
+            <td>${esc(v.city_name || "—")}</td>
+            <td>${v.active ? "✓" : "✗"}</td>
+            <td style="font-size:0.78rem;color:#888;">${v.last_scraped_at ? esc(v.last_scraped_at.slice(0,16).replace("T"," ")) : "never"}</td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-sm btn-primary" onclick="pvScrape(${v.id},'${esc(v.name)}')">▶ Scrape</button>
+                <button class="btn btn-sm btn-outline" onclick="pvToggle(${v.id},${!v.active})">${v.active ? "Pause" : "Resume"}</button>
+                <button class="btn btn-sm btn-outline" style="color:#b91c1c;" onclick="pvDelete(${v.id},'${esc(v.name)}')">✕</button>
+            </td>
+        </tr>`).join("")}</tbody></table>`;
+}
+
+async function pvScrape(id, name) {
+    const btn = event.target;
+    btn.textContent = "…";
+    btn.disabled = true;
+    try {
+        const data = await fetch(`/api/platform-venues/${id}/scrape`, {method:"POST"}).then(r=>r.json());
+        alert(`✓ "${name}" scraped — ${data.events_saved} new events saved.`);
+        loadPlatformVenues();
+    } catch(e) {
+        alert("Error: " + e.message);
+    } finally {
+        btn.textContent = "▶ Scrape";
+        btn.disabled = false;
+    }
+}
+
+async function pvToggle(id, newActive) {
+    await fetch(`/api/platform-venues/${id}`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({active: newActive}),
+    });
+    loadPlatformVenues();
+}
+
+async function pvDelete(id, name) {
+    if (!confirm(`Remove "${name}" from platform venues?\n(Already-scraped events are kept.)`)) return;
+    await fetch(`/api/platform-venues/${id}`, {method: "DELETE"});
+    loadPlatformVenues();
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
