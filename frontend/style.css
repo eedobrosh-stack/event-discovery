@@ -124,6 +124,20 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     flex-wrap: wrap;
 }
 
+.action-btn {
+    background: #f0f0f5;
+    color: #333;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    width: 100%;
+}
+.action-btn:hover { background: #e4e4ef; border-color: #bbb; }
+
 button {
     padding: 0.5rem 1rem;
     border: none;

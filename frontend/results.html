@@ -51,12 +51,16 @@
                     <label for="end-date">To</label>
                     <input type="date" id="end-date">
                 </div>
+                <div class="filter-group filter-group--btn">
+                    <button id="export-ics-btn" type="button" class="action-btn">🍎 Apple / Outlook</button>
+                </div>
+                <div class="filter-group filter-group--btn">
+                    <button id="export-csv-btn" type="button" class="action-btn">⬇ CSV</button>
+                </div>
+                <div class="filter-group filter-group--btn">
+                    <button id="subscribe-btn" type="button" class="action-btn btn-subscribe">📅 Google Calendar</button>
+                </div>
                 <input type="hidden" id="search" value="">
-            </div>
-            <div class="filter-actions">
-                <button id="export-ics-btn" type="button">🍎 Add to Apple / Outlook Calendar</button>
-                <button id="export-csv-btn" type="button">Download CSV</button>
-                <button id="subscribe-btn" type="button" class="btn-subscribe">📅 Add to Google Calendar</button>
             </div>
         </section>
 
@@ -114,6 +118,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=15"></script>
+    <script src="/app.js?v=16"></script>
 </body>
 </html>
