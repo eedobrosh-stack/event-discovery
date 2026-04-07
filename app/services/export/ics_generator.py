@@ -85,8 +85,11 @@ def _add_events(cal: Calendar, events) -> None:
             ics_event.add("location", event.venue_name)
         if event.purchase_link:
             ics_event.add("url", event.purchase_link)
+        description_parts = []
         if event.artist_name:
-            ics_event.add("description", f"Artist: {event.artist_name}")
+            description_parts.append(f"Artist: {event.artist_name}")
+        description_parts.append("Build your events calendar with Supercaly: https://superca.ly")
+        ics_event.add("description", "\n\n".join(description_parts))
 
         cal.add_component(ics_event)
 
