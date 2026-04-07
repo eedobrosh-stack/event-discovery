@@ -1,9 +1,10 @@
 from typing import List
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import exists, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import EventType, Performer, Venue
+from app.models import Event, EventType, Performer, Venue
 
 router = APIRouter(prefix="/api/suggestions", tags=["suggestions"])
 
@@ -19,6 +20,8 @@ def get_suggestions(
       - Event categories  (badge: "Category")
       - Event types       (badge: "Type")
       - Performer names   (badge: "Artist")
+      - Venues            (badge: "Venue")
+    Only shows artists and venues that have at least one event in the DB.
     """
     q_like = f"%{q}%"
     PER_TYPE = 3
@@ -43,19 +46,27 @@ def get_suggestions(
     )
     event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"} for name, _ in types]
 
-    # 3. Performers / Artists
+    # 3. Performers / Artists — only those with at least one event
     performers = (
-        db.query(Performer.name, Performer.event_type_name)
-        .filter(Performer.name.ilike(q_like))
+        db.query(Performer.name)
+        .filter(
+            Performer.name.ilike(q_like),
+            exists().where(
+                func.lower(Event.artist_name) == func.lower(Performer.name)
+            ),
+        )
         .limit(PER_TYPE)
         .all()
     )
-    artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"} for name, _ in performers]
+    artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"} for (name,) in performers]
 
-    # 4. Venues
+    # 4. Venues — only those with at least one event
     venues = (
         db.query(Venue.name, Venue.physical_city)
-        .filter(Venue.name.ilike(q_like))
+        .filter(
+            Venue.name.ilike(q_like),
+            exists().where(Event.venue_id == Venue.id),
+        )
         .distinct()
         .limit(PER_TYPE)
         .all()

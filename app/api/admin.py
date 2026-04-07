@@ -94,6 +94,65 @@ async def enrich_youtube(db: Session = Depends(get_db)):
     return {"message": f"YouTube enrichment complete", "enriched": enriched}
 
 
+@router.post("/propagate-youtube")
+def propagate_youtube(db: Session = Depends(get_db)):
+    """
+    For every artist that already has a YouTube link on at least one event,
+    copy that link to their other events that are missing it.
+    """
+    from sqlalchemy import func as sa_func
+
+    # Find the canonical YouTube URL per artist (pick the most common one)
+    artist_youtube = (
+        db.query(
+            func.lower(Event.artist_name).label("artist_key"),
+            Event.artist_youtube_channel,
+            func.count(Event.id).label("cnt"),
+        )
+        .filter(
+            Event.artist_name.isnot(None),
+            Event.artist_youtube_channel.isnot(None),
+            Event.artist_youtube_channel != "",
+        )
+        .group_by(func.lower(Event.artist_name), Event.artist_youtube_channel)
+        .all()
+    )
+
+    # Build dict: lowercase artist name → most-used YouTube URL
+    best: dict = {}
+    counts: dict = {}
+    for artist_key, yt_url, cnt in artist_youtube:
+        if artist_key not in counts or cnt > counts[artist_key]:
+            best[artist_key] = yt_url
+            counts[artist_key] = cnt
+
+    if not best:
+        return {"message": "No YouTube links found to propagate", "updated": 0}
+
+    updated = 0
+    for artist_key, yt_url in best.items():
+        result = (
+            db.query(Event)
+            .filter(
+                func.lower(Event.artist_name) == artist_key,
+                Event.artist_youtube_channel.is_(None)
+                | (Event.artist_youtube_channel == ""),
+            )
+            .update(
+                {Event.artist_youtube_channel: yt_url},
+                synchronize_session=False,
+            )
+        )
+        updated += result
+
+    db.commit()
+    return {
+        "message": "YouTube propagation complete",
+        "artists_with_links": len(best),
+        "events_updated": updated,
+    }
+
+
 async def _fetch_venue_url_from_event(client, source_id, api_key):
     try:
         resp = await client.get(
