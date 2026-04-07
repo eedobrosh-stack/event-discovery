@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
+from app.api.cities import warm_cities_cache
 from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup
 
 scheduler = AsyncIOScheduler()
@@ -18,6 +19,10 @@ scheduler = AsyncIOScheduler()
 async def lifespan(app: FastAPI):
     # Create tables on startup
     Base.metadata.create_all(bind=engine)
+
+    # Pre-warm the cities cache so the first user request is instant
+    import asyncio
+    await asyncio.get_event_loop().run_in_executor(None, warm_cities_cache)
 
     # Schedule jobs
     scheduler.add_job(
