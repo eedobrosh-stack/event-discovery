@@ -3,6 +3,29 @@ from datetime import datetime, timedelta
 from typing import Optional
 from icalendar import Calendar, Event as ICSEvent
 
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:  # Python < 3.9
+    from backports.zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
+
+
+def _event_tz(event) -> Optional[ZoneInfo]:
+    """Return a ZoneInfo for the event's venue timezone, or None (floating)."""
+    tz_name = None
+    venue = getattr(event, "venue", None)
+    if venue:
+        tz_name = venue.timezone
+        if not tz_name:
+            city = getattr(venue, "city", None)
+            if city:
+                tz_name = city.timezone
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, Exception):
+            pass
+    return None
+
 
 def _build_cal(name: Optional[str] = None, refresh_hours: Optional[int] = None) -> Calendar:
     cal = Calendar()
@@ -21,8 +44,11 @@ def _build_cal(name: Optional[str] = None, refresh_hours: Optional[int] = None) 
 def _add_events(cal: Calendar, events) -> None:
     for event in events:
         ics_event = ICSEvent()
-        ics_event.add("uid", f"{event.scrape_source}-{event.source_id}@supercaly")
+        # Use DB primary key for UID — source_id can be None, causing collisions
+        ics_event.add("uid", f"supercaly-{event.id}@supercaly.ly")
         ics_event.add("summary", event.name)
+
+        tz = _event_tz(event)  # ZoneInfo or None (floating)
 
         # Build start datetime
         if event.start_time:
@@ -31,6 +57,7 @@ def _add_events(cal: Calendar, events) -> None:
             dt_start = datetime(
                 event.start_date.year, event.start_date.month, event.start_date.day,
                 h, m,
+                tzinfo=tz,
             )
             ics_event.add("dtstart", dt_start)
         else:
@@ -45,6 +72,7 @@ def _add_events(cal: Calendar, events) -> None:
                 dt_end = datetime(
                     event.end_date.year, event.end_date.month, event.end_date.day,
                     h, m,
+                    tzinfo=tz,
                 )
                 ics_event.add("dtend", dt_end)
             else:

@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/export", tags=["export"])
 
 def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
     query = db.query(Event).options(
-        joinedload(Event.venue),
+        joinedload(Event.venue).joinedload("city"),
         selectinload(Event.event_types),
     )
 
@@ -89,7 +89,7 @@ def _get_filtered_events_from_params(
 ) -> List[Event]:
     """Shared filter logic for GET-based subscription endpoint."""
     query = db.query(Event).options(
-        joinedload(Event.venue),
+        joinedload(Event.venue).joinedload("city"),
         selectinload(Event.event_types),
     )
 
