@@ -416,7 +416,6 @@ function bindEvents() {
 
     document.getElementById("export-ics-btn").addEventListener("click", exportICS);
     document.getElementById("export-csv-btn").addEventListener("click", exportCSV);
-    document.getElementById("export-sheets-btn").addEventListener("click", exportSheets);
     document.getElementById("load-more-btn").addEventListener("click", searchEvents);
     document.getElementById("subscribe-btn").addEventListener("click", openSubscribeModal);
     document.getElementById("modal-close-btn").addEventListener("click", closeSubscribeModal);
