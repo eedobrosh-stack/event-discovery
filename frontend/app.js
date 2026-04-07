@@ -500,7 +500,7 @@ async function searchEvents() {
                 <span class="time-sep">${ev.start_time && ev.end_time ? "–" : ""}</span>
                 <span class="time-val">${ev.end_time || ""}</span>
               </div>
-              ${ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
+              ${!getSelectedCityId() && ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
             </td>
             <td>
               ${ev.venue_website_url

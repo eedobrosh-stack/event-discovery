@@ -10,7 +10,7 @@ import asyncio
 import httpx
 
 from app.database import get_db, engine
-from app.models import Event, Venue, City, EventType, PendingVenue, Performer, ScanLog
+from app.models import Event, Venue, City, EventType, event_event_types, PendingVenue, Performer, ScanLog
 from app.scheduler.jobs import registry, collect_venue_websites
 from app.services.dedup import dedup_events
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
@@ -524,6 +524,52 @@ def get_scan_logs(limit: int = 100, job: Optional[str] = None, db: Session = Dep
         }
         for l in logs
     ]
+
+
+# ── Event Type Repair ─────────────────────────────────────────────────────────
+
+@router.post("/fix-venue-event-types")
+def fix_venue_event_types(payload: dict, db: Session = Depends(get_db)):
+    """
+    Replace all event-type associations for every event at a given venue.
+    Body: { "venue_id": int, "event_type_name": str }
+    Clears existing associations and assigns the single correct event type.
+    """
+    venue_id = int(payload["venue_id"])
+    type_name = payload["event_type_name"].strip()
+
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    if not venue:
+        return {"error": f"Venue {venue_id} not found"}
+
+    event_type = db.query(EventType).filter(
+        EventType.name.ilike(type_name)
+    ).first()
+    if not event_type:
+        return {"error": f"EventType '{type_name}' not found"}
+
+    event_ids = [e.id for e in db.query(Event.id).filter(Event.venue_id == venue_id).all()]
+    if not event_ids:
+        return {"message": "No events found for this venue", "updated": 0}
+
+    # Remove all existing type associations for these events
+    db.execute(
+        event_event_types.delete().where(
+            event_event_types.c.event_id.in_(event_ids)
+        )
+    )
+    # Insert the correct association for each event
+    db.execute(
+        event_event_types.insert(),
+        [{"event_id": eid, "event_type_id": event_type.id} for eid in event_ids],
+    )
+    db.commit()
+
+    return {
+        "venue": venue.name,
+        "event_type_assigned": event_type.name,
+        "events_updated": len(event_ids),
+    }
 
 
 # ── Admin Dashboard: Bulk Uploads (staged, no immediate scraping) ─────────────
