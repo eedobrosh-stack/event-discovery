@@ -569,10 +569,16 @@ async function exportCSV() {
     btn.disabled = true;
     btn.textContent = "Downloading...";
     try {
+        const { typeSearch, cityId, startDate, endDate } = getFilters();
+        const body = {};
+        if (typeSearch.length) body.type_search = typeSearch.join(",");
+        if (cityId) body.city_ids = [parseInt(cityId)];
+        if (startDate) body.start_date = startDate;
+        if (endDate) body.end_date = endDate;
         const resp = await fetch("/api/export/csv", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(buildExportRequest()),
+            body: JSON.stringify(body),
         });
         if (!resp.ok) { alert("CSV export failed."); return; }
         const blob = await resp.blob();
