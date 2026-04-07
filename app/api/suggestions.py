@@ -1,12 +1,34 @@
-from typing import List
+from datetime import date, datetime
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Event, EventType, Performer, Venue
+from app.models import Event, EventType, Venue
 
 router = APIRouter(prefix="/api/suggestions", tags=["suggestions"])
+
+# ── In-memory suggestions cache (5-min TTL, keyed by query string) ────────────
+_cache: dict = {}
+_CACHE_TTL = 300  # seconds
+
+
+def _cache_get(q: str) -> Optional[list]:
+    entry = _cache.get(q)
+    if entry and (datetime.utcnow() - entry["ts"]).total_seconds() < _CACHE_TTL:
+        return entry["data"]
+    return None
+
+
+def _cache_set(q: str, data: list) -> None:
+    _cache[q] = {"data": data, "ts": datetime.utcnow()}
+    # Evict old entries if cache grows too large
+    if len(_cache) > 500:
+        cutoff = datetime.utcnow()
+        stale = [k for k, v in _cache.items()
+                 if (cutoff - v["ts"]).total_seconds() >= _CACHE_TTL]
+        for k in stale:
+            _cache.pop(k, None)
 
 
 @router.get("")
@@ -19,14 +41,18 @@ def get_suggestions(
     Returns autocomplete suggestions mixing:
       - Event categories  (badge: "Category")
       - Event types       (badge: "Type")
-      - Performer names   (badge: "Artist")
-      - Venues            (badge: "Venue")
-    Only shows artists and venues that have at least one event in the DB.
+      - Artist names      (badge: "Artist")  — from future events only
+      - Venues            (badge: "Venue")   — from future events only
     """
+    cached = _cache_get(q)
+    if cached is not None:
+        return cached[:limit]
+
     q_like = f"%{q}%"
+    today = date.today()
     PER_TYPE = 3
 
-    # 1. Categories (distinct values)
+    # 1. Categories
     cats = (
         db.query(EventType.category)
         .filter(EventType.category.ilike(q_like))
@@ -34,7 +60,8 @@ def get_suggestions(
         .limit(PER_TYPE)
         .all()
     )
-    categories = [{"kind": "category", "value": cat, "label": cat, "badge": "Category"} for (cat,) in cats]
+    categories = [{"kind": "category", "value": cat, "label": cat, "badge": "Category"}
+                  for (cat,) in cats]
 
     # 2. Event types
     types = (
@@ -44,66 +71,44 @@ def get_suggestions(
         .limit(PER_TYPE)
         .all()
     )
-    event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"} for name, _ in types]
+    event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"}
+                   for name, _ in types]
 
-    # 3. Performers / Artists
-    # Primary: Performer records that have at least one matching event
-    # Use a higher fetch limit so fallback names can still appear even when
-    # several primary Performer records fill the early slots.
-    ARTIST_LIMIT = PER_TYPE * 2  # fetch up to 6 primary, cap display at 5
-    performers = (
-        db.query(Performer.name)
-        .filter(
-            Performer.name.ilike(q_like),
-            db.query(Event.id)
-              .filter(func.lower(Event.artist_name) == func.lower(Performer.name))
-              .exists(),
-        )
-        .limit(ARTIST_LIMIT)
-        .all()
-    )
-    performer_names_lower = {name.lower() for (name,) in performers}
-
-    # Fallback: artist_names from events directly (catches artists with no Performer record)
-    event_artists = (
+    # 3. Artists — query Event.artist_name directly (avoids correlated EXISTS on
+    #    Performer table which is slow on large event sets).
+    #    Only consider future events so stale artists don't pollute results.
+    artist_rows = (
         db.query(Event.artist_name)
         .filter(
             Event.artist_name.isnot(None),
             Event.artist_name.ilike(q_like),
+            Event.start_date >= today,
         )
         .distinct()
-        .limit(ARTIST_LIMIT)
+        .limit(PER_TYPE + 2)
         .all()
     )
-    # Merge, avoiding duplicates already covered by Performer records
-    for (name,) in event_artists:
-        if name and name.lower() not in performer_names_lower:
-            performers.append((name,))
-            performer_names_lower.add(name.lower())
+    artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"}
+               for (name,) in artist_rows if name]
 
-    artists = [
-        {"kind": "performer", "value": name, "label": name, "badge": "Artist"}
-        for (name,) in performers[:PER_TYPE + 2]  # allow up to 5, so fallback always has room
-    ]
-
-    # 4. Venues — only those with at least one event
-    venues = (
+    # 4. Venues — JOIN to events instead of correlated EXISTS; filter future events.
+    venue_rows = (
         db.query(Venue.name, Venue.physical_city)
+        .join(Event, Event.venue_id == Venue.id)
         .filter(
             Venue.name.ilike(q_like),
-            db.query(Event.id)
-              .filter(Event.venue_id == Venue.id)
-              .exists(),
+            Event.start_date >= today,
         )
         .distinct()
         .limit(PER_TYPE)
         .all()
     )
     venue_results = [
-        {"kind": "venue", "value": name, "label": f"{name} — {city}" if city else name, "badge": "Venue"}
-        for name, city in venues
+        {"kind": "venue", "value": name,
+         "label": f"{name} — {city}" if city else name, "badge": "Venue"}
+        for name, city in venue_rows
     ]
 
-    # Interleave so all types get representation before the cap
-    results = categories + event_types + artists + venue_results
-    return results[:limit]
+    results = (categories + event_types + artists + venue_results)[:limit]
+    _cache_set(q, results)
+    return results
