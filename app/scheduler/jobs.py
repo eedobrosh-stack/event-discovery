@@ -88,6 +88,9 @@ async def collect_all_events():
             finally:
                 log.finished_at = datetime.utcnow()
                 db.commit()
+                # Free all ORM objects accumulated during this city's scrape
+                # so they don't pile up across cities.
+                db.expire_all()
     finally:
         db.close()
 
@@ -96,15 +99,21 @@ async def collect_venue_websites():
     """Scrape each venue's own website for events. Runs every 24h."""
     import asyncio
     import httpx
+    from sqlalchemy.orm import joinedload
+
     db = SessionLocal()
     log = ScanLog(job_name="venue_websites", status="running")
     db.add(log)
     db.commit()
     db.refresh(log)
     try:
+        # Eager-load city so we don't trigger N lazy queries inside the loop.
+        # Cap at 500 venues per run to bound memory usage.
         venues = (
             db.query(Venue)
+            .options(joinedload(Venue.city))
             .filter(Venue.website_url.isnot(None), Venue.website_url != "")
+            .limit(500)
             .all()
         )
         logger.info(f"Venue website scraper: {len(venues)} venues to scan")
@@ -132,6 +141,10 @@ async def collect_venue_websites():
                     if venue.city:
                         saved = registry._save_events(result, venue.city, db)
                         total_saved += saved
+                # Flush accumulated ORM objects after each batch to keep
+                # the session identity map small throughout the job.
+                db.commit()
+                db.expire_all()
 
         logger.info(f"Venue website scraper done: {total_found} found, {total_saved} saved")
         log.status = "success"
