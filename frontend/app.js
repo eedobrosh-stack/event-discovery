@@ -59,30 +59,25 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     await searchEvents();
 
-    // Collapse filter panel on table scroll, expand when back at top
-    const tableScroll = document.querySelector(".table-scroll");
-    const filters = document.querySelector(".filters");
-    let expandTimer = null;
+    // ── Compact / search-mode toggle ──────────────────────────────────────────
+    // After a search: compact bar is shown, filter panel is hidden.
+    // Clicking the compact bar: filter panel slides back in, compact bar hides.
 
-    tableScroll.addEventListener("scroll", () => {
-        if (tableScroll.scrollTop > 30) {
-            // Cancel any pending expand and collapse immediately
-            clearTimeout(expandTimer);
-            filters.classList.add("collapsed");
-        } else {
-            // Delay re-expansion slightly so the transition feels deliberate
-            clearTimeout(expandTimer);
-            expandTimer = setTimeout(() => {
-                filters.classList.remove("collapsed");
-            }, 120);
-        }
+    const compactBar = document.getElementById("compact-search");
+
+    compactBar.addEventListener("click", showSearchMode);
+    compactBar.addEventListener("keydown", e => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showSearchMode(); }
     });
 
-    // Also re-expand when user clicks the collapsed bar
-    filters.addEventListener("click", () => {
-        if (filters.classList.contains("collapsed")) {
-            filters.classList.remove("collapsed");
-            tableScroll.scrollTop = 0;
+    // Escape while filter panel is open → back to compact mode (if results exist)
+    document.addEventListener("keydown", e => {
+        if (e.key === "Escape") {
+            const filters = document.querySelector(".filters");
+            if (!filters.classList.contains("search-hidden") &&
+                document.getElementById("events-body").children.length > 0) {
+                showCompactMode();
+            }
         }
     });
 
@@ -460,6 +455,7 @@ function getFilters() {
 let totalEvents = null; // total matching count from /api/events/count
 
 async function searchEvents() {
+    const isFirstPage = offset === 0;   // capture before any mutation
     const { typeSearch, cityId, startDate, endDate, search } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
@@ -468,8 +464,8 @@ async function searchEvents() {
     if (endDate) params.set("end_date", endDate);
     if (search) params.set("search", search);
 
-    // Fetch total count on the first page (offset === 0)
-    if (offset === 0) {
+    // Fetch total count on the first page
+    if (isFirstPage) {
         totalEvents = null;
         fetch(`/api/events/count?${params}`)
             .then(r => r.json())
@@ -520,6 +516,10 @@ async function searchEvents() {
 
     offset += events.length;
     updateStats(tbody.children.length);
+
+    // Switch to compact mode after a fresh search (not "Load More")
+    if (isFirstPage) showCompactMode();
+
     const hasMore = events.length === LIMIT;
     const btn = document.getElementById("load-more-btn");
     btn.style.display = hasMore ? "" : "none";
@@ -637,6 +637,51 @@ async function exportSheets() {
         btn.textContent = "Export to Google Sheet";
         btn.disabled = false;
     }
+}
+
+// ── Compact / search-mode helpers ────────────────────────────────────────────
+
+function showCompactMode() {
+    const filters    = document.querySelector(".filters");
+    const compactBar = document.getElementById("compact-search");
+    const compactTxt = document.getElementById("compact-text");
+    const cityBadge  = document.getElementById("compact-city-badge");
+
+    // Build summary text from current active filters
+    const { typeSearch } = getFilters();
+    const cityLabel = document.getElementById("city-input").value.trim();
+
+    if (typeSearch.length > 0) {
+        compactTxt.textContent = typeSearch.join(" · ");
+        compactTxt.classList.remove("compact-placeholder");
+    } else {
+        compactTxt.textContent = "All events";
+        compactTxt.classList.add("compact-placeholder");
+    }
+    cityBadge.textContent = cityLabel || "";
+
+    // Swap visibility
+    filters.classList.add("search-hidden");
+    compactBar.classList.add("visible");
+
+    // Scroll to the top of the results section
+    document.querySelector(".results").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function showSearchMode() {
+    const filters    = document.querySelector(".filters");
+    const compactBar = document.getElementById("compact-search");
+
+    compactBar.classList.remove("visible");
+    filters.classList.remove("search-hidden");
+
+    // Focus the type-search input after the panel has animated in
+    setTimeout(() => {
+        document.getElementById("type-search-input").focus();
+    }, 80);
+
+    // Scroll to top so the full filter panel is visible
+    window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function esc(str) {

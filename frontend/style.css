@@ -24,49 +24,91 @@ header p { opacity: 0.7; font-size: 0.9rem; }
 
 main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 
+/* ── Compact search bar (shown after a search is committed) ──── */
+#compact-search {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    margin-bottom: 1rem;
+    padding: 0.75rem 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    cursor: pointer;
+    outline: none;
+    transition: box-shadow 0.2s;
+    /* Hidden until a search is committed */
+    display: none;
+}
+
+#compact-search.visible {
+    display: flex;
+}
+
+#compact-search:hover,
+#compact-search:focus {
+    box-shadow: 0 2px 10px rgba(124,106,247,0.22);
+}
+
+.compact-icon {
+    color: #7c6af7;
+    flex-shrink: 0;
+}
+
+.compact-text {
+    flex: 1;
+    font-size: 0.95rem;
+    color: #222;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compact-placeholder {
+    color: #bbb;
+    font-weight: 400;
+}
+
+.compact-city-badge {
+    background: #f0edff;
+    color: #5b3fd4;
+    border-radius: 20px;
+    padding: 0.2rem 0.75rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.compact-city-badge:empty {
+    display: none;
+}
+
+/* ── Full filter panel ──────────────────────────────────────── */
 .filters {
     background: #fff;
     padding: 1.5rem;
     border-radius: 8px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     margin-bottom: 1.5rem;
-    transition: padding 0.6s cubic-bezier(0.4, 0, 0.2, 1),
-                max-height 0.7s cubic-bezier(0.4, 0, 0.2, 1),
-                opacity 0.5s ease,
-                box-shadow 0.5s ease;
-    max-height: 600px;
+    transition: max-height 0.35s ease,
+                opacity 0.3s ease,
+                padding 0.3s ease,
+                margin-bottom 0.3s ease;
+    max-height: 500px;
+    opacity: 1;
     overflow: hidden;
 }
 
-.filters.collapsed {
-    padding: 0.45rem 1.5rem;
-    max-height: 42px;
-    opacity: 0.75;
-    cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-}
-
-/* Fade out inner content gradually */
-.filters .filter-row,
-.filters .filter-actions {
-    transition: opacity 0.5s ease;
-}
-
-.filters.collapsed .filter-row,
-.filters.collapsed .filter-actions {
+/* Filter panel hidden — only shown when user focuses the compact bar */
+.filters.search-hidden {
+    max-height: 0;
     opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
     pointer-events: none;
-}
-
-/* Show a subtle "▼ Filters" hint when collapsed */
-.filters.collapsed::before {
-    content: "▼  Filters";
-    display: block;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #888;
-    letter-spacing: 0.05em;
-    line-height: 1;
 }
 
 .filter-row {
@@ -171,12 +213,12 @@ button {
     max-height: calc(100vh - 340px);
     border: 1px solid #eee;
     border-radius: 4px;
-    transition: max-height 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: max-height 0.35s ease;
 }
 
-/* Give the table more room when filters are collapsed */
-.filters.collapsed ~ .results .table-scroll {
-    max-height: calc(100vh - 130px);
+/* More vertical room when filter panel is hidden (compact mode) */
+.filters.search-hidden ~ .results .table-scroll {
+    max-height: calc(100vh - 185px);
 }
 
 #stats {
