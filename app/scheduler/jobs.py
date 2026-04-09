@@ -78,7 +78,7 @@ async def collect_all_events():
                 stats = await registry.collect_all(city, db)
                 logger.info(f"{city.name} stats: {stats}")
                 log.status = "success"
-                log.events_found = sum(v.get("found", 0) for v in stats.values() if isinstance(v, dict))
+                log.events_found = sum(v.get("fetched", 0) for v in stats.values() if isinstance(v, dict))
                 log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
                 log.notes = str(stats)
             except Exception as e:

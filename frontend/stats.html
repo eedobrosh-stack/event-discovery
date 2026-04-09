@@ -403,8 +403,8 @@
                             <th>Job</th>
                             <th>Detail / City</th>
                             <th>Last Run</th>
-                            <th class="num">Found</th>
-                            <th class="num">Saved</th>
+                            <th class="num" title="Events fetched from the source API">Fetched</th>
+                            <th class="num" title="Net-new events written to DB (0 = all duplicates, still healthy)">Saved new</th>
                             <th>Status</th>
                             <th>Health</th>
                         </tr>
@@ -412,6 +412,10 @@
                     <tbody id="source-body"></tbody>
                 </table>
             </div>
+
+            <hr class="section-divider">
+            <p class="section-title">🏙️ Thin Coverage <span style="font-weight:400; color:#666; font-size:.78rem;">(&lt; 10 upcoming events)</span></p>
+            <div id="thin-cities-content" style="margin-bottom: 8px;"></div>
         </div>
 
         <hr class="section-divider">
@@ -663,22 +667,53 @@
                         ? new Date(s.last_run).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
                         : '–';
                     const statusBadge = `<span class="badge-status ${s.last_status}">${s.last_status}</span>`;
+                    // Health is based on fetched=0 (source returning nothing), NOT saved=0
+                    // saved=0 with fetched>0 just means all events were duplicates — totally normal
                     const health = s.alert
-                        ? `<span class="badge-alert">⚠️ Stale (${s.consecutive_zeros} zeros)</span>`
-                        : s.consecutive_zeros > 0
-                            ? `<span style="color:#888; font-size:.78rem;">${s.consecutive_zeros} empty run${s.consecutive_zeros > 1 ? 's' : ''}</span>`
+                        ? `<span class="badge-alert">⚠️ No data (${s.consecutive_zeros} runs)</span>`
+                        : s.consecutive_zeros > 0 && s.last_fetched === 0
+                            ? `<span style="color:#fbbf24; font-size:.78rem;">⚡ Fetched 0</span>`
                             : `<span style="color:#4ade80; font-size:.78rem;">✓ Active</span>`;
+                    const fetchedDisplay = s.last_fetched > 0
+                        ? `<strong>${s.last_fetched.toLocaleString()}</strong>`
+                        : `<span style="color:#666">0</span>`;
+                    const savedDisplay = s.last_saved > 0
+                        ? `<span style="color:#7c6af7;">${s.last_saved.toLocaleString()}</span>`
+                        : `<span style="color:#555">0</span>`;
                     return `
                     <tr>
                         <td style="color:#aaa; font-size:.78rem;">${esc(s.job)}</td>
                         <td><strong>${esc(s.detail || '—')}</strong></td>
                         <td style="color:#888; font-size:.8rem;">${when}</td>
-                        <td class="num">${s.last_found.toLocaleString()}</td>
-                        <td class="num" style="color:#7c6af7;">${s.last_saved.toLocaleString()}</td>
+                        <td class="num">${fetchedDisplay}</td>
+                        <td class="num">${savedDisplay}</td>
                         <td>${statusBadge}</td>
                         <td>${health}</td>
                     </tr>`;
                 }).join('');
+            }
+
+            // Thin cities panel
+            const thin = d.thin_cities || [];
+            const thinEl = document.getElementById('thin-cities-content');
+            if (thin.length === 0) {
+                thinEl.innerHTML = '<p style="color:#4ade80; font-size:.88rem; margin:0;">✓ All cities have ≥ 10 upcoming events.</p>';
+            } else {
+                thinEl.innerHTML = `
+                <p style="color:#aaa; font-size:.8rem; margin:0 0 10px;">
+                    These cities have fewer than 10 upcoming events — they may need more sources or venue website scrapers.
+                </p>
+                <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                    ${thin.map(c => `
+                    <span style="display:inline-flex; align-items:center; gap:5px; padding:4px 10px;
+                        background:rgba(251,191,36,.1); border:1px solid rgba(251,191,36,.25);
+                        border-radius:8px; font-size:.8rem;">
+                        <span style="color:#fbbf24;">⚠</span>
+                        <strong>${esc(c.city)}</strong>
+                        <span style="color:#888">${esc(c.country)}</span>
+                        <span style="color:#f87171; font-weight:600;">${c.upcoming}</span>
+                    </span>`).join('')}
+                </div>`;
             }
 
             document.getElementById('coverage-loading').hidden = true;

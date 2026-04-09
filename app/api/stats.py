@@ -121,21 +121,40 @@ def coverage_health(db: Session = Depends(get_db)):
     sources = []
     for (job, detail), logs in sorted(sources_map.items()):
         last = logs[0]
-        consec_zeros = sum(1 for lg in logs if (lg.events_found or 0) == 0)
-        ever_had_data = any((lg.events_found or 0) > 0 for lg in logs)
-        alert = consec_zeros >= 3 and ever_had_data
+        # events_found = total fetched from the source API (fixed key in jobs.py)
+        # events_saved = net-new events written to DB
+        # A source is stale when it fetched 0 on its last 3+ runs but previously had data
+        consec_fetch_zeros = sum(1 for lg in logs if (lg.events_found or 0) == 0)
+        ever_fetched = any((lg.events_found or 0) > 0 for lg in logs)
+        alert = consec_fetch_zeros >= 3 and ever_fetched
         sources.append(
             {
                 "job": job,
                 "detail": detail,
                 "last_run": last.started_at.isoformat() if last.started_at else None,
                 "last_status": last.status,
-                "last_found": last.events_found or 0,
-                "last_saved": last.events_saved or 0,
-                "consecutive_zeros": consec_zeros,
+                "last_fetched": last.events_found or 0,   # events pulled from source
+                "last_saved": last.events_saved or 0,     # net-new to DB
+                "consecutive_zeros": consec_fetch_zeros,
                 "alert": alert,
             }
         )
+
+    # ── Cities with thin coverage (< 10 upcoming events) ─────────────────────
+    thin_cities = (
+        db.query(
+            City.name,
+            City.country,
+            func.count(func.distinct(Event.id)).label("upcoming"),
+        )
+        .join(Venue, Venue.city_id == City.id)
+        .join(Event, Event.venue_id == Venue.id)
+        .filter(Event.start_date >= today)
+        .group_by(City.id)
+        .having(func.count(func.distinct(Event.id)) < 10)
+        .order_by(func.count(func.distinct(Event.id)).asc())
+        .all()
+    )
 
     return {
         "events": {
@@ -155,4 +174,8 @@ def coverage_health(db: Session = Depends(get_db)):
             "url_pct": pct(venues_with_url, total_venues),
         },
         "sources": sources,
+        "thin_cities": [
+            {"city": r.name, "country": r.country, "upcoming": r.upcoming}
+            for r in thin_cities
+        ],
     }
