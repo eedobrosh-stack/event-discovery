@@ -165,6 +165,124 @@
         #stats-loading { color: #aaa; padding: 40px 0; text-align: center; }
         .empty-state { color: #aaa; text-align: center; padding: 30px; }
 
+        /* ── Coverage health section ── */
+        .section-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #ccc;
+            margin: 0 0 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--border, #2a2a3a);
+            margin: 28px 0;
+        }
+
+        /* Metric cards with progress bar */
+        .metric-cards {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-bottom: 28px;
+        }
+        .metric-card {
+            flex: 1;
+            min-width: 140px;
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 10px;
+            padding: 16px 18px;
+        }
+        .metric-card .mc-label {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #888;
+            margin-bottom: 8px;
+        }
+        .metric-card .mc-pct {
+            font-size: 1.9rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+        .mc-pct.good  { color: #4ade80; }
+        .mc-pct.ok    { color: #facc15; }
+        .mc-pct.poor  { color: #f87171; }
+        .metric-card .mc-sub {
+            font-size: 0.72rem;
+            color: #666;
+            margin-bottom: 8px;
+        }
+        .mc-bar-bg {
+            height: 4px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .mc-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width .4s;
+        }
+        .mc-bar-fill.good { background: #4ade80; }
+        .mc-bar-fill.ok   { background: #facc15; }
+        .mc-bar-fill.poor { background: #f87171; }
+
+        /* Source health table */
+        .source-table-wrap {
+            overflow-x: auto;
+            border-radius: 10px;
+            border: 1px solid var(--border, #333);
+            margin-bottom: 28px;
+        }
+        .source-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .source-table thead th {
+            background: var(--card-bg, #1e1e2e);
+            padding: 9px 14px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+            color: #888;
+            white-space: nowrap;
+        }
+        .source-table tbody tr { border-top: 1px solid var(--border, #2a2a3a); }
+        .source-table tbody tr:hover { background: rgba(124,106,247,.06); }
+        .source-table td { padding: 8px 14px; white-space: nowrap; }
+        .source-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .badge-status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+        }
+        .badge-status.success { background: rgba(74,222,128,.15); color: #4ade80; }
+        .badge-status.failed  { background: rgba(248,113,113,.15); color: #f87171; }
+        .badge-alert {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            background: rgba(251,191,36,.15);
+            color: #fbbf24;
+        }
+        #coverage-loading { color: #aaa; padding: 20px 0; text-align: center; font-size: 0.88rem; }
+
         /* Add Venue section */
         .add-venue-section {
             background: var(--card-bg, #1e1e2e);
@@ -266,6 +384,37 @@
                 <div class="card-label">Upcoming events</div>
             </div>
         </div>
+
+        <!-- ── Coverage Health ─────────────────────────────────────────────── -->
+        <hr class="section-divider">
+        <p class="section-title">🔬 Enrichment Coverage <span style="font-weight:400; color:#666; font-size:.78rem;">(upcoming events)</span></p>
+
+        <div id="coverage-loading">Loading coverage metrics…</div>
+        <div id="coverage-content" hidden>
+            <div class="metric-cards" id="metric-cards"></div>
+
+            <hr class="section-divider">
+            <p class="section-title">📡 Source Health <span style="font-weight:400; color:#666; font-size:.78rem;">(last 5 runs per source)</span></p>
+
+            <div class="source-table-wrap">
+                <table class="source-table">
+                    <thead>
+                        <tr>
+                            <th>Job</th>
+                            <th>Detail / City</th>
+                            <th>Last Run</th>
+                            <th class="num">Found</th>
+                            <th class="num">Saved</th>
+                            <th>Status</th>
+                            <th>Health</th>
+                        </tr>
+                    </thead>
+                    <tbody id="source-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <hr class="section-divider">
 
         <!-- Add Venue Events -->
         <div class="add-venue-section">
@@ -467,6 +616,78 @@
     document.getElementById('next-btn').addEventListener('click', () => { currentPage++; render(); window.scrollTo(0,0); });
 
     load();
+
+    // ── Coverage health ────────────────────────────────────────────────────
+    async function loadCoverage() {
+        try {
+            const res = await fetch('/api/stats/coverage');
+            const d = await res.json();
+
+            // Metric cards
+            const ev = d.events;
+            const ve = d.venues;
+
+            function tier(pct) {
+                return pct >= 70 ? 'good' : pct >= 35 ? 'ok' : 'poor';
+            }
+
+            const metrics = [
+                { label: 'Event type classified', pct: ev.type_pct,    n: ev.with_type,    total: ev.total,    icon: '🏷️' },
+                { label: 'Artist identified',      pct: ev.artist_pct,  n: ev.with_artist,  total: ev.total,    icon: '🎤' },
+                { label: 'YouTube sample',         pct: ev.youtube_pct, n: ev.with_youtube, total: ev.total,    icon: '▶️' },
+                { label: 'Price available',        pct: ev.price_pct,   n: ev.with_price,   total: ev.total,    icon: '🎟️' },
+                { label: 'Venue has website',      pct: ve.url_pct,     n: ve.with_url,     total: ve.total,    icon: '🔗' },
+            ];
+
+            document.getElementById('metric-cards').innerHTML = metrics.map(m => {
+                const t = tier(m.pct);
+                return `
+                <div class="metric-card">
+                    <div class="mc-label">${m.icon} ${m.label}</div>
+                    <div class="mc-pct ${t}">${m.pct}%</div>
+                    <div class="mc-sub">${m.n.toLocaleString()} / ${m.total.toLocaleString()}</div>
+                    <div class="mc-bar-bg">
+                        <div class="mc-bar-fill ${t}" style="width:${m.pct}%"></div>
+                    </div>
+                </div>`;
+            }).join('');
+
+            // Source health table
+            const sources = d.sources;
+            if (sources.length === 0) {
+                document.getElementById('source-body').innerHTML =
+                    '<tr><td colspan="7" class="empty-state">No scan logs yet.</td></tr>';
+            } else {
+                document.getElementById('source-body').innerHTML = sources.map(s => {
+                    const when = s.last_run
+                        ? new Date(s.last_run).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+                        : '–';
+                    const statusBadge = `<span class="badge-status ${s.last_status}">${s.last_status}</span>`;
+                    const health = s.alert
+                        ? `<span class="badge-alert">⚠️ Stale (${s.consecutive_zeros} zeros)</span>`
+                        : s.consecutive_zeros > 0
+                            ? `<span style="color:#888; font-size:.78rem;">${s.consecutive_zeros} empty run${s.consecutive_zeros > 1 ? 's' : ''}</span>`
+                            : `<span style="color:#4ade80; font-size:.78rem;">✓ Active</span>`;
+                    return `
+                    <tr>
+                        <td style="color:#aaa; font-size:.78rem;">${esc(s.job)}</td>
+                        <td><strong>${esc(s.detail || '—')}</strong></td>
+                        <td style="color:#888; font-size:.8rem;">${when}</td>
+                        <td class="num">${s.last_found.toLocaleString()}</td>
+                        <td class="num" style="color:#7c6af7;">${s.last_saved.toLocaleString()}</td>
+                        <td>${statusBadge}</td>
+                        <td>${health}</td>
+                    </tr>`;
+                }).join('');
+            }
+
+            document.getElementById('coverage-loading').hidden = true;
+            document.getElementById('coverage-content').hidden = false;
+        } catch (e) {
+            document.getElementById('coverage-loading').textContent = 'Failed to load coverage: ' + e.message;
+        }
+    }
+    loadCoverage();
 
     // ── Add-venue handler ──────────────────────────────────────────────────
     document.getElementById('add-venue-btn').addEventListener('click', async () => {
