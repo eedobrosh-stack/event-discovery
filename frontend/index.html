@@ -53,17 +53,26 @@
             line-height: 1;
         }
 
-        /* Red cape hanging from "Super" */
+        /* Red cape hanging from "Super" — waves in the wind */
         .cape {
             display: inline-block;
-            width: 0.19em;
-            height: 0.48em;
-            background: linear-gradient(to bottom, #ef4444, #b91c1c);
-            clip-path: polygon(5% 0, 95% 0, 72% 100%, 28% 100%);
-            border-radius: 0 0 2px 2px;
-            margin-left: 0.04em;
+            width: 0.26em;
+            height: 0.68em;
             vertical-align: top;
-            margin-top: 0.06em;
+            margin-top: 0.02em;
+            margin-left: 0.04em;
+            transform-origin: center top;
+            animation: capeWave 2s ease-in-out infinite;
+            overflow: visible;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.55));
+        }
+
+        @keyframes capeWave {
+            0%   { transform: rotate(-11deg) skewX(5deg);  }
+            30%  { transform: rotate(9deg)   skewX(-7deg); }
+            58%  { transform: rotate(-7deg)  skewX(4deg);  }
+            80%  { transform: rotate(10deg)  skewX(-6deg); }
+            100% { transform: rotate(-11deg) skewX(5deg);  }
         }
         .logo-mark {
             font-size: 2rem;
@@ -227,7 +236,22 @@
         <div class="logo-brand">
             <span class="logo-mark">✦</span>
             <div class="logo-wordmark">
-                <span class="logo-super">Super<span class="cape" aria-hidden="true"></span></span><span class="logo-caly">caly</span>
+                <span class="logo-super">Super<svg class="cape" viewBox="0 0 24 42" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <defs>
+                        <linearGradient id="capeGrad" x1="0" y1="0" x2="0.5" y2="1">
+                            <stop offset="0%"   stop-color="#f87171"/>
+                            <stop offset="50%"  stop-color="#dc2626"/>
+                            <stop offset="100%" stop-color="#7f1d1d"/>
+                        </linearGradient>
+                    </defs>
+                    <path fill="url(#capeGrad)"
+                          d="M4,1 L20,1
+                             C23,10 25,21 22,31
+                             Q19,39 14,41
+                             Q10,42 7,40
+                             Q3,38 2,31
+                             C-1,21 1,10 4,1 Z"/>
+                </svg></span><span class="logo-caly">caly</span>
             </div>
         </div>
         <p class="logo-subtitle">The Super Calendar</p>
