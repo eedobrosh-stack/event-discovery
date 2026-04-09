@@ -29,10 +29,41 @@
 
         .logo {
             display: inline-flex;
-            flex-direction: column;
-            align-items: center;
+            flex-direction: row;
+            align-items: flex-end;
+            gap: 0.9rem;
             margin-bottom: 1rem;
             user-select: none;
+        }
+
+        .logo-brand {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* "The Super Calendar" tagline sitting to the right of the wordmark */
+        .logo-subtitle {
+            font-size: 1.05rem;
+            color: rgba(255,255,255,0.42);
+            font-style: italic;
+            letter-spacing: 0.01em;
+            white-space: nowrap;
+            padding-bottom: 0.55rem; /* align visually with wordmark baseline */
+            line-height: 1;
+        }
+
+        /* Red cape hanging from "Super" */
+        .cape {
+            display: inline-block;
+            width: 0.19em;
+            height: 0.48em;
+            background: linear-gradient(to bottom, #ef4444, #b91c1c);
+            clip-path: polygon(5% 0, 95% 0, 72% 100%, 28% 100%);
+            border-radius: 0 0 2px 2px;
+            margin-left: 0.04em;
+            vertical-align: top;
+            margin-top: 0.06em;
         }
         .logo-mark {
             font-size: 2rem;
@@ -181,6 +212,7 @@
         /* ── Responsive ── */
         @media (max-width: 560px) {
             .logo-wordmark { font-size: 3.2rem; letter-spacing: -1.5px; }
+            .logo-subtitle { font-size: 0.78rem; padding-bottom: 0.38rem; }
             .search-row { flex-direction: column; }
             .search-field--wide { flex: 1; }
             .search-btn { width: 100%; padding: 15px; }
@@ -192,10 +224,13 @@
 
     <!-- Logo -->
     <div class="logo">
-        <span class="logo-mark">✦</span>
-        <div class="logo-wordmark">
-            <span class="logo-super">Super</span><span class="logo-caly">caly</span>
+        <div class="logo-brand">
+            <span class="logo-mark">✦</span>
+            <div class="logo-wordmark">
+                <span class="logo-super">Super<span class="cape" aria-hidden="true"></span></span><span class="logo-caly">caly</span>
+            </div>
         </div>
+        <p class="logo-subtitle">The Super Calendar</p>
     </div>
     <p class="tagline">Discover events &middot; music &middot; art &middot; sports</p>
 
