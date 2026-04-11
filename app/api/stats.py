@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, text
@@ -178,4 +178,108 @@ def coverage_health(db: Session = Depends(get_db)):
             {"city": r.name, "country": r.country, "upcoming": r.upcoming}
             for r in thin_cities
         ],
+    }
+
+
+@router.get("/daily")
+def daily_pulse(db: Session = Depends(get_db)):
+    """24-hour snapshot: new events / venues / artists / active cities by source."""
+    now = datetime.utcnow()
+    since = now - timedelta(hours=24)
+    today = date.today()
+
+    # ── 1. Total upcoming events ──────────────────────────────────────────────
+    total_upcoming = (
+        db.query(func.count(Event.id))
+        .filter(Event.start_date >= today)
+        .scalar() or 0
+    )
+
+    # ── 2. New events in 24h by source ───────────────────────────────────────
+    new_ev_rows = (
+        db.query(Event.scrape_source, func.count(Event.id).label("n"))
+        .filter(Event.created_at >= since)
+        .group_by(Event.scrape_source)
+        .order_by(func.count(Event.id).desc())
+        .all()
+    )
+
+    # ── 3. New venues in 24h by source (via events at those new venues) ───────
+    new_venue_sq = db.query(Venue.id).filter(Venue.created_at >= since).subquery()
+    new_v_by_src = (
+        db.query(
+            Event.scrape_source,
+            func.count(func.distinct(Event.venue_id)).label("n"),
+        )
+        .join(new_venue_sq, Event.venue_id == new_venue_sq.c.id)
+        .group_by(Event.scrape_source)
+        .order_by(func.count(func.distinct(Event.venue_id)).desc())
+        .all()
+    )
+    total_new_venues = (
+        db.query(func.count(Venue.id)).filter(Venue.created_at >= since).scalar() or 0
+    )
+
+    # ── 4. New artists in 24h (distinct artist_name from new events) ──────────
+    new_art_rows = (
+        db.query(Event.scrape_source, func.count(func.distinct(Event.artist_name)).label("n"))
+        .filter(
+            Event.created_at >= since,
+            Event.artist_name.isnot(None),
+            Event.artist_name != "",
+        )
+        .group_by(Event.scrape_source)
+        .order_by(func.count(func.distinct(Event.artist_name)).desc())
+        .all()
+    )
+
+    # ── 5. Cities that received new events in 24h ─────────────────────────────
+    new_city_rows = (
+        db.query(
+            City.name,
+            City.country,
+            Event.scrape_source,
+            func.count(func.distinct(Event.id)).label("n"),
+        )
+        .join(Venue, Venue.city_id == City.id)
+        .join(Event, Event.venue_id == Venue.id)
+        .filter(Event.created_at >= since)
+        .group_by(City.id, City.name, City.country, Event.scrape_source)
+        .order_by(func.count(func.distinct(Event.id)).desc())
+        .all()
+    )
+
+    def to_sources(rows):
+        return [{"source": r[0] or "unknown", "count": r[1]} for r in rows]
+
+    # Collapse city rows into city → [sources] structure
+    from collections import OrderedDict
+    cities_map: dict = OrderedDict()
+    for r in new_city_rows:
+        key = f"{r.name}|{r.country}"
+        if key not in cities_map:
+            cities_map[key] = {"city": r.name, "country": r.country, "total": 0, "sources": []}
+        cities_map[key]["total"] += r.n
+        cities_map[key]["sources"].append({"source": r.scrape_source or "unknown", "count": r.n})
+
+    return {
+        "as_of": now.isoformat(),
+        "since": since.isoformat(),
+        "total_upcoming": total_upcoming,
+        "new_events": {
+            "total": sum(r.n for r in new_ev_rows),
+            "by_source": to_sources(new_ev_rows),
+        },
+        "new_venues": {
+            "total": total_new_venues,
+            "by_source": to_sources(new_v_by_src),
+        },
+        "new_artists": {
+            "total": sum(r.n for r in new_art_rows),
+            "by_source": to_sources(new_art_rows),
+        },
+        "new_cities": {
+            "total": len(cities_map),
+            "by_city": list(cities_map.values()),
+        },
     }

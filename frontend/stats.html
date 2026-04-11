@@ -18,7 +18,101 @@
         }
         .stats-header h2 { margin: 0; font-size: 1.4rem; }
 
-        /* Summary cards */
+        /* ── Daily Pulse cards ── */
+        .pulse-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 14px;
+            margin-bottom: 28px;
+        }
+        @media (max-width: 900px) { .pulse-grid { grid-template-columns: repeat(3, 1fr); } }
+        @media (max-width: 560px) { .pulse-grid { grid-template-columns: 1fr 1fr; } }
+
+        .pulse-card {
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 12px;
+            padding: 16px 18px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+        .pulse-card.accent-card { border-color: rgba(124,106,247,.35); }
+        .pulse-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: .07em;
+            color: #666;
+            margin-bottom: 6px;
+        }
+        .pulse-num {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent, #7c6af7);
+            line-height: 1;
+            margin-bottom: 12px;
+        }
+        .pulse-card.accent-card .pulse-num { font-size: 2.4rem; }
+        .pulse-sources {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            border-top: 1px solid var(--border, #2a2a3a);
+            padding-top: 10px;
+            margin-top: auto;
+        }
+        .src-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 6px;
+        }
+        .src-name {
+            font-size: 0.72rem;
+            color: #888;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 110px;
+        }
+        .src-count {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: #ccc;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        .src-bar-wrap {
+            flex: 1;
+            height: 3px;
+            background: rgba(255,255,255,.07);
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 0 6px;
+        }
+        .src-bar { height: 100%; border-radius: 2px; background: var(--accent, #7c6af7); opacity: .6; }
+        .pulse-empty { font-size: 0.75rem; color: #555; padding-top: 8px; }
+
+        /* City source chips (new_cities breakdown) */
+        .city-chips {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            border-top: 1px solid var(--border, #2a2a3a);
+            padding-top: 10px;
+            margin-top: auto;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .city-chip {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.72rem;
+        }
+        .city-chip .city-chip-name { color: #ccc; }
+        .city-chip .city-chip-n { color: #7c6af7; font-weight: 600; }
+
+        /* Summary cards (kept, secondary) */
         .summary-cards {
             display: flex;
             gap: 16px;
@@ -370,6 +464,14 @@
             <span id="last-updated" style="color:#aaa; font-size:.8rem;"></span>
         </div>
 
+        <!-- ── Daily Pulse ─────────────────────────────────────────────────── -->
+        <p class="section-title" style="margin-bottom:12px;">⚡ Daily Pulse <span style="font-weight:400; color:#555; font-size:.75rem;">last 24 hours</span></p>
+        <div id="pulse-loading" style="color:#aaa; font-size:.85rem; padding:12px 0 20px;">Loading…</div>
+        <div class="pulse-grid" id="pulse-grid" hidden></div>
+
+        <hr class="section-divider">
+
+        <!-- Secondary summary -->
         <div class="summary-cards">
             <div class="card">
                 <div class="card-num" id="sum-cities">–</div>
@@ -620,6 +722,78 @@
     document.getElementById('next-btn').addEventListener('click', () => { currentPage++; render(); window.scrollTo(0,0); });
 
     load();
+
+    // ── Daily Pulse ────────────────────────────────────────────────────────
+    async function loadPulse() {
+        try {
+            const res = await fetch('/api/stats/daily');
+            const d = await res.json();
+
+            function sourceRows(sources, total) {
+                if (!sources || sources.length === 0)
+                    return '<p class="pulse-empty">No data yet</p>';
+                return sources.map(s => {
+                    const pct = total > 0 ? Math.round(s.count * 100 / total) : 0;
+                    return `
+                    <div class="src-row">
+                        <span class="src-name" title="${esc(s.source)}">${esc(s.source)}</span>
+                        <div class="src-bar-wrap"><div class="src-bar" style="width:${pct}%"></div></div>
+                        <span class="src-count">${s.count.toLocaleString()}</span>
+                    </div>`;
+                }).join('');
+            }
+
+            const ev  = d.new_events;
+            const ve  = d.new_venues;
+            const art = d.new_artists;
+            const cit = d.new_cities;
+
+            // City breakdown: list top cities with their event counts
+            const cityRows = (cit.by_city || []).slice(0, 8).map(c =>
+                `<div class="city-chip">
+                    <span class="city-chip-name">${esc(c.city)}</span>
+                    <span class="city-chip-n">+${c.total}</span>
+                </div>`
+            ).join('') || '<p class="pulse-empty">No data yet</p>';
+
+            document.getElementById('pulse-grid').innerHTML = `
+            <div class="pulse-card accent-card">
+                <div class="pulse-label">Total upcoming</div>
+                <div class="pulse-num">${d.total_upcoming.toLocaleString()}</div>
+                <div class="pulse-sources" style="border-top:none; padding-top:0;">
+                    <div class="src-row" style="justify-content:flex-start; gap:8px;">
+                        <span style="font-size:.72rem; color:#555;">live events in DB</span>
+                    </div>
+                </div>
+            </div>
+            <div class="pulse-card">
+                <div class="pulse-label">New events</div>
+                <div class="pulse-num">${ev.total > 0 ? '+' : ''}${ev.total.toLocaleString()}</div>
+                <div class="pulse-sources">${sourceRows(ev.by_source, ev.total)}</div>
+            </div>
+            <div class="pulse-card">
+                <div class="pulse-label">New venues</div>
+                <div class="pulse-num">${ve.total > 0 ? '+' : ''}${ve.total.toLocaleString()}</div>
+                <div class="pulse-sources">${sourceRows(ve.by_source, ve.total)}</div>
+            </div>
+            <div class="pulse-card">
+                <div class="pulse-label">New artists</div>
+                <div class="pulse-num">${art.total > 0 ? '+' : ''}${art.total.toLocaleString()}</div>
+                <div class="pulse-sources">${sourceRows(art.by_source, art.total)}</div>
+            </div>
+            <div class="pulse-card">
+                <div class="pulse-label">Active cities</div>
+                <div class="pulse-num">${cit.total.toLocaleString()}</div>
+                <div class="city-chips">${cityRows}</div>
+            </div>`;
+
+            document.getElementById('pulse-loading').hidden = true;
+            document.getElementById('pulse-grid').hidden = false;
+        } catch (e) {
+            document.getElementById('pulse-loading').textContent = 'Failed to load pulse: ' + e.message;
+        }
+    }
+    loadPulse();
 
     // ── Coverage health ────────────────────────────────────────────────────
     async function loadCoverage() {
