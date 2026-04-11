@@ -181,6 +181,35 @@ def coverage_health(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/source-detail")
+def source_detail(source: str, db: Session = Depends(get_db)):
+    """City breakdown for a given scrape source over the last 24h."""
+    since = datetime.utcnow() - timedelta(hours=24)
+    rows = (
+        db.query(
+            City.name,
+            City.country,
+            func.count(Event.id).label("events"),
+            func.sum(
+                func.case((Event.created_at >= since, 1), else_=0)
+            ).label("new_events"),
+        )
+        .join(Venue, Venue.city_id == City.id)
+        .join(Event, Event.venue_id == Venue.id)
+        .filter(Event.scrape_source == source, Event.created_at >= since)
+        .group_by(City.id, City.name, City.country)
+        .order_by(func.count(Event.id).desc())
+        .all()
+    )
+    return {
+        "source": source,
+        "cities": [
+            {"city": r.name, "country": r.country, "events": r.events}
+            for r in rows
+        ],
+    }
+
+
 @router.get("/daily")
 def daily_pulse(db: Session = Depends(get_db)):
     """24-hour snapshot: new events / venues / artists / active cities by source,

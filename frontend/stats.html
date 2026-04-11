@@ -106,6 +106,28 @@
         .delta.down { color: #f87171; }
         .delta.flat { color: #555; }
 
+        /* Source drill-down panel */
+        .src-row { cursor: pointer; }
+        .src-row:hover .src-name { color: #ccc; }
+        .src-row.active .src-name { color: var(--accent, #7c6af7); }
+        .src-detail {
+            background: rgba(0,0,0,.25);
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-top: 4px;
+            margin-bottom: 4px;
+        }
+        .src-detail-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            padding: 2px 0;
+            color: #888;
+        }
+        .src-detail-row .sd-city { color: #bbb; }
+        .src-detail-row .sd-n { color: var(--accent, #7c6af7); font-weight: 600; }
+        .src-detail-empty { font-size: .7rem; color: #555; }
+
         /* City source chips (new_cities breakdown) */
         .city-chips {
             display: flex;
@@ -758,12 +780,14 @@
                     return '<p class="pulse-empty">No data yet</p>';
                 return sources.map(s => {
                     const pct = total > 0 ? Math.round(s.count * 100 / total) : 0;
+                    const sid = 'sd-' + s.source.replace(/[^a-z0-9]/gi, '_');
                     return `
-                    <div class="src-row">
-                        <span class="src-name" title="${esc(s.source)}">${esc(s.source)}</span>
+                    <div class="src-row" onclick="toggleSourceDetail(this,'${esc(s.source)}','${sid}')" title="Click to see city breakdown">
+                        <span class="src-name">${esc(s.source)}</span>
                         <div class="src-bar-wrap"><div class="src-bar" style="width:${pct}%"></div></div>
                         <span class="src-count">${s.count.toLocaleString()}</span>
-                    </div>`;
+                    </div>
+                    <div class="src-detail" id="${sid}" hidden></div>`;
                 }).join('');
             }
 
@@ -821,6 +845,43 @@
         }
     }
     loadPulse();
+
+    // ── Source drill-down ──────────────────────────────────────────────────
+    async function toggleSourceDetail(row, source, panelId) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+
+        // Toggle collapse if already open
+        if (!panel.hidden) {
+            panel.hidden = true;
+            row.classList.remove('active');
+            return;
+        }
+
+        row.classList.add('active');
+        panel.hidden = false;
+
+        // Already loaded — just show
+        if (panel.dataset.loaded) return;
+
+        panel.innerHTML = '<span class="src-detail-empty">Loading…</span>';
+        try {
+            const res = await fetch('/api/stats/source-detail?source=' + encodeURIComponent(source));
+            const d = await res.json();
+            if (!d.cities || d.cities.length === 0) {
+                panel.innerHTML = '<span class="src-detail-empty">No city data for this source in the last 24h.</span>';
+            } else {
+                panel.innerHTML = d.cities.map(c => `
+                    <div class="src-detail-row">
+                        <span class="sd-city">${esc(c.city)}<span style="color:#555; margin-left:4px;">${esc(c.country)}</span></span>
+                        <span class="sd-n">+${c.events.toLocaleString()}</span>
+                    </div>`).join('');
+            }
+            panel.dataset.loaded = '1';
+        } catch (e) {
+            panel.innerHTML = '<span class="src-detail-empty">Failed to load: ' + e.message + '</span>';
+        }
+    }
 
     // ── Coverage health ────────────────────────────────────────────────────
     async function loadCoverage() {
