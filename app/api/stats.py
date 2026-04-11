@@ -183,15 +183,58 @@ def coverage_health(db: Session = Depends(get_db)):
 
 @router.get("/daily")
 def daily_pulse(db: Session = Depends(get_db)):
-    """24-hour snapshot: new events / venues / artists / active cities by source."""
+    """24-hour snapshot: new events / venues / artists / active cities by source,
+    plus previous-24h totals so the frontend can show ↑↓ deltas."""
     now = datetime.utcnow()
     since = now - timedelta(hours=24)
+    prev_since = now - timedelta(hours=48)
     today = date.today()
+
+    def _count_events(after, before=None):
+        q = db.query(func.count(Event.id)).filter(Event.created_at >= after)
+        if before:
+            q = q.filter(Event.created_at < before)
+        return q.scalar() or 0
+
+    def _count_venues(after, before=None):
+        q = db.query(func.count(Venue.id)).filter(Venue.created_at >= after)
+        if before:
+            q = q.filter(Venue.created_at < before)
+        return q.scalar() or 0
+
+    def _count_artists(after, before=None):
+        q = (
+            db.query(func.count(func.distinct(Event.artist_name)))
+            .filter(
+                Event.created_at >= after,
+                Event.artist_name.isnot(None),
+                Event.artist_name != "",
+            )
+        )
+        if before:
+            q = q.filter(Event.created_at < before)
+        return q.scalar() or 0
+
+    def _count_cities(after, before=None):
+        q = (
+            db.query(func.count(func.distinct(City.id)))
+            .join(Venue, Venue.city_id == City.id)
+            .join(Event, Event.venue_id == Venue.id)
+            .filter(Event.created_at >= after)
+        )
+        if before:
+            q = q.filter(Event.created_at < before)
+        return q.scalar() or 0
 
     # ── 1. Total upcoming events ──────────────────────────────────────────────
     total_upcoming = (
         db.query(func.count(Event.id))
         .filter(Event.start_date >= today)
+        .scalar() or 0
+    )
+    prev_upcoming = (
+        db.query(func.count(Event.id))
+        .filter(Event.start_date >= today - timedelta(days=1))
         .scalar() or 0
     )
 
@@ -204,7 +247,7 @@ def daily_pulse(db: Session = Depends(get_db)):
         .all()
     )
 
-    # ── 3. New venues in 24h by source (via events at those new venues) ───────
+    # ── 3. New venues in 24h by source ───────────────────────────────────────
     new_venue_sq = db.query(Venue.id).filter(Venue.created_at >= since).subquery()
     new_v_by_src = (
         db.query(
@@ -216,11 +259,8 @@ def daily_pulse(db: Session = Depends(get_db)):
         .order_by(func.count(func.distinct(Event.venue_id)).desc())
         .all()
     )
-    total_new_venues = (
-        db.query(func.count(Venue.id)).filter(Venue.created_at >= since).scalar() or 0
-    )
 
-    # ── 4. New artists in 24h (distinct artist_name from new events) ──────────
+    # ── 4. New artists in 24h by source ──────────────────────────────────────
     new_art_rows = (
         db.query(Event.scrape_source, func.count(func.distinct(Event.artist_name)).label("n"))
         .filter(
@@ -252,7 +292,6 @@ def daily_pulse(db: Session = Depends(get_db)):
     def to_sources(rows):
         return [{"source": r[0] or "unknown", "count": r[1]} for r in rows]
 
-    # Collapse city rows into city → [sources] structure
     from collections import OrderedDict
     cities_map: dict = OrderedDict()
     for r in new_city_rows:
@@ -262,24 +301,40 @@ def daily_pulse(db: Session = Depends(get_db)):
         cities_map[key]["total"] += r.n
         cities_map[key]["sources"].append({"source": r.scrape_source or "unknown", "count": r.n})
 
+    # ── Previous-window totals for delta calculation ──────────────────────────
+    prev_events  = _count_events(prev_since, since)
+    prev_venues  = _count_venues(prev_since, since)
+    prev_artists = _count_artists(prev_since, since)
+    prev_cities  = _count_cities(prev_since, since)
+
+    cur_events  = sum(r.n for r in new_ev_rows)
+    cur_venues  = _count_venues(since)
+    cur_artists = sum(r.n for r in new_art_rows)
+    cur_cities  = len(cities_map)
+
     return {
         "as_of": now.isoformat(),
         "since": since.isoformat(),
         "total_upcoming": total_upcoming,
+        "prev_upcoming": prev_upcoming,
         "new_events": {
-            "total": sum(r.n for r in new_ev_rows),
+            "total": cur_events,
+            "prev": prev_events,
             "by_source": to_sources(new_ev_rows),
         },
         "new_venues": {
-            "total": total_new_venues,
+            "total": cur_venues,
+            "prev": prev_venues,
             "by_source": to_sources(new_v_by_src),
         },
         "new_artists": {
-            "total": sum(r.n for r in new_art_rows),
+            "total": cur_artists,
+            "prev": prev_artists,
             "by_source": to_sources(new_art_rows),
         },
         "new_cities": {
-            "total": len(cities_map),
+            "total": cur_cities,
+            "prev": prev_cities,
             "by_city": list(cities_map.values()),
         },
     }

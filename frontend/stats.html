@@ -93,6 +93,19 @@
         .src-bar { height: 100%; border-radius: 2px; background: var(--accent, #7c6af7); opacity: .6; }
         .pulse-empty { font-size: 0.75rem; color: #555; padding-top: 8px; }
 
+        /* Delta badge */
+        .delta {
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .delta.up   { color: #4ade80; }
+        .delta.down { color: #f87171; }
+        .delta.flat { color: #555; }
+
         /* City source chips (new_cities breakdown) */
         .city-chips {
             display: flex;
@@ -729,6 +742,17 @@
             const res = await fetch('/api/stats/daily');
             const d = await res.json();
 
+            function delta(cur, prev) {
+                if (prev === 0 && cur === 0) return '<span class="delta flat">— same as yesterday</span>';
+                const diff = cur - prev;
+                if (diff === 0) return '<span class="delta flat">→ same as yesterday</span>';
+                const sign = diff > 0 ? '+' : '';
+                const cls  = diff > 0 ? 'up' : 'down';
+                const arrow = diff > 0 ? '↑' : '↓';
+                const pct = prev > 0 ? ` (${Math.abs(Math.round(diff * 100 / prev))}%)` : '';
+                return `<span class="delta ${cls}">${arrow} ${sign}${diff.toLocaleString()}${pct} vs yesterday</span>`;
+            }
+
             function sourceRows(sources, total) {
                 if (!sources || sources.length === 0)
                     return '<p class="pulse-empty">No data yet</p>';
@@ -760,30 +784,33 @@
             <div class="pulse-card accent-card">
                 <div class="pulse-label">Total upcoming</div>
                 <div class="pulse-num">${d.total_upcoming.toLocaleString()}</div>
+                ${delta(d.total_upcoming, d.prev_upcoming)}
                 <div class="pulse-sources" style="border-top:none; padding-top:0;">
-                    <div class="src-row" style="justify-content:flex-start; gap:8px;">
-                        <span style="font-size:.72rem; color:#555;">live events in DB</span>
-                    </div>
+                    <span style="font-size:.72rem; color:#555;">live events in DB</span>
                 </div>
             </div>
             <div class="pulse-card">
                 <div class="pulse-label">New events</div>
                 <div class="pulse-num">${ev.total > 0 ? '+' : ''}${ev.total.toLocaleString()}</div>
+                ${delta(ev.total, ev.prev)}
                 <div class="pulse-sources">${sourceRows(ev.by_source, ev.total)}</div>
             </div>
             <div class="pulse-card">
                 <div class="pulse-label">New venues</div>
                 <div class="pulse-num">${ve.total > 0 ? '+' : ''}${ve.total.toLocaleString()}</div>
+                ${delta(ve.total, ve.prev)}
                 <div class="pulse-sources">${sourceRows(ve.by_source, ve.total)}</div>
             </div>
             <div class="pulse-card">
                 <div class="pulse-label">New artists</div>
                 <div class="pulse-num">${art.total > 0 ? '+' : ''}${art.total.toLocaleString()}</div>
+                ${delta(art.total, art.prev)}
                 <div class="pulse-sources">${sourceRows(art.by_source, art.total)}</div>
             </div>
             <div class="pulse-card">
                 <div class="pulse-label">Active cities</div>
                 <div class="pulse-num">${cit.total.toLocaleString()}</div>
+                ${delta(cit.total, cit.prev)}
                 <div class="city-chips">${cityRows}</div>
             </div>`;
 
