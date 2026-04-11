@@ -1,6 +1,7 @@
 import logging
 from datetime import date, timedelta, datetime
 
+from sqlalchemy import func
 from app.database import SessionLocal
 from app.models import City, Event, Venue, ScanLog
 from app.config import settings
@@ -229,6 +230,155 @@ async def collect_platform_venues():
         log.notes = str(e)
     finally:
         log.finished_at = dt.utcnow()
+        db.commit()
+        db.close()
+
+
+async def enrich_youtube_job(batch: int = 100):
+    """Find artists with no YouTube link and look them up. Runs every 6h."""
+    from sqlalchemy import func as _func, or_
+    from app.services.youtube_lookup import lookup_youtube_video
+
+    db = SessionLocal()
+    log = ScanLog(job_name="enrich_youtube", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    found = 0
+    failed = 0
+    try:
+        artists = (
+            db.query(Event.artist_name)
+            .filter(
+                Event.artist_name.isnot(None),
+                Event.artist_name != "",
+                or_(
+                    Event.artist_youtube_channel.is_(None),
+                    Event.artist_youtube_channel == "",
+                ),
+            )
+            .group_by(Event.artist_name)
+            .order_by(_func.count(Event.id).desc())   # most-event artists first
+            .limit(batch)
+            .all()
+        )
+        names = [r[0] for r in artists]
+        logger.info(f"enrich_youtube: {len(names)} artists to enrich")
+
+        for artist in names:
+            try:
+                url = await lookup_youtube_video(artist)
+                if url:
+                    db.query(Event).filter(Event.artist_name == artist).update(
+                        {"artist_youtube_channel": url}, synchronize_session=False
+                    )
+                    db.commit()
+                    found += 1
+                else:
+                    # Write empty string so we don't retry endlessly
+                    db.query(Event).filter(
+                        Event.artist_name == artist,
+                        Event.artist_youtube_channel.is_(None),
+                    ).update({"artist_youtube_channel": ""}, synchronize_session=False)
+                    db.commit()
+                    failed += 1
+            except Exception as e:
+                logger.warning(f"enrich_youtube: error for {artist!r}: {e}")
+                failed += 1
+
+        log.status = "success"
+        log.events_found = len(names)
+        log.events_saved = found
+        log.notes = f"found={found} no_result={failed}"
+        logger.info(f"enrich_youtube done: found={found} failed={failed}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"enrich_youtube error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
+async def enrich_performers_job(batch: int = 50):
+    """MusicBrainz lookup for new artist names → performers table. Runs nightly."""
+    import asyncio
+    import httpx
+    from app.models import Performer
+    from app.services.performer_lookup import lookup_musicbrainz, normalize
+    from sqlalchemy.exc import IntegrityError
+
+    db = SessionLocal()
+    log = ScanLog(job_name="enrich_performers", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    enriched = 0
+    skipped = 0
+    try:
+        existing_norms = {r[0] for r in db.query(Performer.normalized_name).all()}
+        all_artists = (
+            db.query(Event.artist_name, func.count(Event.id).label("n"))
+            .filter(Event.artist_name.isnot(None), Event.artist_name != "")
+            .group_by(Event.artist_name)
+            .order_by(func.count(Event.id).desc())
+            .all()
+        )
+        pending = [r[0] for r in all_artists if normalize(r[0]) not in existing_norms][:batch]
+        logger.info(f"enrich_performers: {len(pending)} new artists to look up")
+
+        async with httpx.AsyncClient(timeout=15) as http:
+            for artist in pending:
+                try:
+                    result = await lookup_musicbrainz(artist, http)
+                    if result:
+                        perf = Performer(
+                            name=artist,
+                            normalized_name=normalize(artist),
+                            category=result.get("category"),
+                            event_type_name=result.get("event_type_name"),
+                            genres=result.get("genres"),
+                            mb_id=result.get("mb_id"),
+                            mb_type=result.get("mb_type"),
+                            source="musicbrainz",
+                            confidence=result.get("confidence", 1.0),
+                        )
+                        db.add(perf)
+                        try:
+                            db.commit()
+                            enriched += 1
+                        except IntegrityError:
+                            db.rollback()
+                    else:
+                        # Insert a stub so we don't retry
+                        stub = Performer(
+                            name=artist,
+                            normalized_name=normalize(artist),
+                            source="not_found",
+                            confidence=0.0,
+                        )
+                        db.add(stub)
+                        try:
+                            db.commit()
+                        except IntegrityError:
+                            db.rollback()
+                        skipped += 1
+                except Exception as e:
+                    logger.warning(f"enrich_performers: error for {artist!r}: {e}")
+                    skipped += 1
+
+        log.status = "success"
+        log.events_found = len(pending)
+        log.events_saved = enriched
+        log.notes = f"enriched={enriched} not_found={skipped}"
+        logger.info(f"enrich_performers done: enriched={enriched} skipped={skipped}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"enrich_performers error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
         db.commit()
         db.close()
 

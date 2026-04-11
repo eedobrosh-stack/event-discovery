@@ -12,7 +12,7 @@ from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
 from app.api import platform_venues as platform_venues_api
 from app.api.cities import warm_cities_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job
 
 scheduler = AsyncIOScheduler()
 
@@ -106,6 +106,18 @@ async def lifespan(app: FastAPI):
         collect_platform_venues,
         CronTrigger(hour=2, minute=30),  # daily at 2:30am UTC
         id="collect_platform_venues",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        enrich_youtube_job,
+        CronTrigger(hour="6,12,18,0", minute=30),  # 4x daily, 100 artists/run
+        id="enrich_youtube",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        enrich_performers_job,
+        CronTrigger(hour=5, minute=30),  # nightly at 5:30am UTC, 50 artists/run
+        id="enrich_performers",
         replace_existing=True,
     )
     scheduler.start()
