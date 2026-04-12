@@ -1,10 +1,16 @@
 from __future__ import annotations
-import httpx
+import logging
 from datetime import date, datetime
+
+import httpx
 
 from app.config import settings
 from app.services.collectors.base import BaseCollector, RawEvent, safe_time, default_end_time
 from app.services.collectors.category_mapper import map_category
+
+logger = logging.getLogger(__name__)
+
+_MAX_PAGES = 4   # up to 200 events per city run
 
 
 class EventbriteCollector(BaseCollector):
@@ -17,26 +23,63 @@ class EventbriteCollector(BaseCollector):
         return bool(settings.EVENTBRITE_TOKEN)
 
     async def collect(self, city_name: str, country_code: str = "US", **kwargs) -> list[RawEvent]:
-        events = []
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                "https://www.eventbriteapi.com/v3/events/search/",
-                params={
-                    "location.address": city_name,
-                    "location.within": "50km",
-                    "status": "live",
-                    "order_by": "start_asc",
-                    "expand": "venue,ticket_availability,category",
-                },
-                headers={"Authorization": f"Bearer {settings.EVENTBRITE_TOKEN}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        lat = kwargs.get("lat")
+        lon = kwargs.get("lon")
 
-        for ev in data.get("events", []):
-            raw = self._transform(ev)
-            if raw:
-                events.append(raw)
+        # Build location params — prefer lat/lon (reliable), fall back to
+        # "City, Country" string (plain city name returns 404 on Eventbrite v3)
+        if lat and lon:
+            location_params = {
+                "location.latitude": lat,
+                "location.longitude": lon,
+                "location.within": "50km",
+            }
+        else:
+            location_params = {
+                "location.address": f"{city_name}, {country_code}",
+                "location.within": "50km",
+            }
+
+        base_params = {
+            **location_params,
+            "status": "live",
+            "order_by": "start_asc",
+            "expand": "venue,ticket_availability,category",
+        }
+
+        events: list[RawEvent] = []
+        async with httpx.AsyncClient(timeout=30) as client:
+            for page in range(1, _MAX_PAGES + 1):
+                params = {**base_params, "page": page}
+                try:
+                    resp = await client.get(
+                        "https://www.eventbriteapi.com/v3/events/search/",
+                        params=params,
+                        headers={"Authorization": f"Bearer {settings.EVENTBRITE_TOKEN}"},
+                    )
+                    if resp.status_code in (404, 410):
+                        logger.warning(
+                            f"Eventbrite: {resp.status_code} for {city_name} "
+                            f"(page {page}) — location may not be supported"
+                        )
+                        break
+                    resp.raise_for_status()
+                    data = resp.json()
+                except httpx.HTTPStatusError as e:
+                    logger.warning(f"Eventbrite HTTP error for {city_name}: {e}")
+                    break
+
+                page_events = data.get("events", [])
+                for ev in page_events:
+                    raw = self._transform(ev)
+                    if raw:
+                        events.append(raw)
+
+                # Stop if this is the last page
+                pagination = data.get("pagination", {})
+                if not pagination.get("has_more_items", False):
+                    break
+
         return events
 
     def _transform(self, ev: dict) -> RawEvent | None:
@@ -65,7 +108,6 @@ class EventbriteCollector(BaseCollector):
         ticket = ev.get("ticket_availability", {})
         min_price = ticket.get("minimum_ticket_price", {})
 
-        # Map category
         raw_cats = []
         cat_name = ev.get("category", {}).get("name") if ev.get("category") else None
         if cat_name:
