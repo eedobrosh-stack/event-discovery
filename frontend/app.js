@@ -149,12 +149,12 @@ function setupTypeAutocomplete() {
     input.addEventListener("input", () => {
         const q = input.value.trim();
         clearTimeout(debounceTimer);
-        if (q.length < 3) { list.hidden = true; return; }
+        if (q.length < 2) { list.hidden = true; return; }
         debounceTimer = setTimeout(async () => {
             const resp = await fetch(`/api/suggestions?q=${encodeURIComponent(q)}`);
             const items = await resp.json();
             showSuggestions(items);
-        }, 200);
+        }, 80);
     });
 
     // mousedown prevents input blur before click fires

@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -49,7 +49,6 @@ def get_suggestions(
         return cached[:limit]
 
     q_like = f"%{q}%"
-    today = date.today()
     PER_TYPE = 3
 
     # 1. Categories
@@ -74,15 +73,12 @@ def get_suggestions(
     event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"}
                    for name, _ in types]
 
-    # 3. Artists — query Event.artist_name directly (avoids correlated EXISTS on
-    #    Performer table which is slow on large event sets).
-    #    Only consider future events so stale artists don't pollute results.
+    # 3. Artists — simple ilike on artist_name, no date filtering for speed
     artist_rows = (
         db.query(Event.artist_name)
         .filter(
             Event.artist_name.isnot(None),
             Event.artist_name.ilike(q_like),
-            Event.start_date >= today,
         )
         .distinct()
         .limit(PER_TYPE + 2)
@@ -91,14 +87,10 @@ def get_suggestions(
     artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"}
                for (name,) in artist_rows if name]
 
-    # 4. Venues — JOIN to events instead of correlated EXISTS; filter future events.
+    # 4. Venues — direct query, no event JOIN needed for speed
     venue_rows = (
         db.query(Venue.name, Venue.physical_city)
-        .join(Event, Event.venue_id == Venue.id)
-        .filter(
-            Venue.name.ilike(q_like),
-            Event.start_date >= today,
-        )
+        .filter(Venue.name.ilike(q_like))
         .distinct()
         .limit(PER_TYPE)
         .all()

@@ -48,7 +48,7 @@ function setupTypeAutocomplete() {
                 const resp = await fetch(`/api/suggestions?q=${encodeURIComponent(q)}`);
                 showSuggestions(await resp.json());
             } catch {}
-        }, 200);
+        }, 80);
     });
 
     list.addEventListener("mousedown", e => e.preventDefault());
