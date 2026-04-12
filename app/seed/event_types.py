@@ -187,4 +187,16 @@ EVENT_TYPES = [
     {"name": "Gardening Festivals", "category": "Home & Garden", "keywords": "gardening, festival, plants"},
     {"name": "Plant Sales", "category": "Home & Garden", "keywords": "plants, sale, gardening"},
     {"name": "Landscaping Demonstrations", "category": "Home & Garden", "keywords": "landscaping, demonstration, gardening"},
+    # Sports
+    {"name": "Sports Event", "category": "Sports", "keywords": "sports, match, game"},
+    {"name": "Baseball Game", "category": "Sports", "keywords": "baseball, mlb, cubs, yankees, dodgers, red sox"},
+    {"name": "Basketball Game", "category": "Sports", "keywords": "basketball, nba, lakers, celtics, bulls"},
+    {"name": "American Football Game", "category": "Sports", "keywords": "football, nfl, super bowl, touchdown"},
+    {"name": "Soccer Match", "category": "Sports", "keywords": "soccer, football, mls, premier league, fifa"},
+    {"name": "Hockey Game", "category": "Sports", "keywords": "hockey, nhl, ice hockey, puck"},
+    {"name": "Tennis Match", "category": "Sports", "keywords": "tennis, atp, wta, grand slam"},
+    {"name": "Golf Tournament", "category": "Sports", "keywords": "golf, pga, tournament"},
+    {"name": "Boxing / MMA Event", "category": "Sports", "keywords": "boxing, mma, ufc, fight night"},
+    {"name": "Wrestling Event", "category": "Sports", "keywords": "wrestling, wwe, aew"},
+    {"name": "Athletics / Track & Field", "category": "Sports", "keywords": "track, field, athletics, sprint"},
 ]

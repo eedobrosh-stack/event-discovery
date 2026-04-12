@@ -56,6 +56,29 @@ def _seed_platform_venues():
         db.close()
 
 
+def _seed_event_types():
+    """Insert any event types from seed data that are not yet in the DB."""
+    from app.database import SessionLocal
+    from app.models import EventType
+    from app.seed.event_types import EVENT_TYPES
+
+    db = SessionLocal()
+    try:
+        for et in EVENT_TYPES:
+            exists = db.query(EventType).filter_by(name=et["name"]).first()
+            if not exists:
+                db.add(EventType(
+                    name=et["name"],
+                    category=et["category"],
+                    keywords=et.get("keywords", ""),
+                ))
+        db.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"_seed_event_types failed: {e}")
+    finally:
+        db.close()
+
+
 def _run_migrations():
     """Apply incremental schema changes that create_all() won't handle."""
     from sqlalchemy import text, inspect
@@ -136,6 +159,8 @@ async def lifespan(app: FastAPI):
 
     # Seed Ashkenaz into platform_venues if it hasn't been added yet
     _seed_platform_venues()
+    # Insert any missing event types (e.g. new Sports category)
+    _seed_event_types()
 
     yield
 

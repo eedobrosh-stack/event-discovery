@@ -214,11 +214,40 @@ class CollectorRegistry:
         "Comedy":   "Comedy Show",
         "Dance":    "Dance Performance",
         "Film":     "Film Screening",
-        "Fitness":  "Sports Event",
+        "Fitness":  "Marathons",
+        "Sports":   "Sports Event",
         "Festival": "Festival",
         "Food & Drink": "Food & Drink Event",
         "Technology": "Tech Conference",
     }
+
+    # Event-name keywords → specific sport type (checked before category fallback)
+    _SPORT_NAME_HINTS: list[tuple[str, str]] = [
+        ("baseball",  "Baseball Game"),
+        (" mlb ",     "Baseball Game"),
+        ("basketball","Basketball Game"),
+        (" nba ",     "Basketball Game"),
+        ("hockey",    "Hockey Game"),
+        (" nhl ",     "Hockey Game"),
+        ("soccer",    "Soccer Match"),
+        (" mls ",     "Soccer Match"),
+        (" nfl ",     "American Football Game"),
+        ("tennis",    "Tennis Match"),
+        (" atp ",     "Tennis Match"),
+        (" wta ",     "Tennis Match"),
+        ("golf",      "Golf Tournament"),
+        (" pga ",     "Golf Tournament"),
+        ("boxing",    "Boxing / MMA Event"),
+        (" mma ",     "Boxing / MMA Event"),
+        (" ufc ",     "Boxing / MMA Event"),
+        ("wrestling", "Wrestling Event"),
+        (" wwe ",     "Wrestling Event"),
+        ("marathon",  "Marathons"),
+        ("triathlon", "Marathons"),
+        ("cycling",   "Cycling Races"),
+        ("yoga",      "Yoga Retreats"),
+        ("crossfit",  "CrossFit Competitions"),
+    ]
 
     def _resolve_event_type(self, category: str, raw: "RawEvent", db: Session) -> "EventType | None":
         """
@@ -238,14 +267,23 @@ class CollectorRegistry:
                 if et:
                     return et
 
-        # 2. Use a sensible generic fallback for the category
+        # 2. For Sports/Fitness: match event name against specific sport keywords
+        if category in ("Sports", "Fitness"):
+            event_text = f" {(raw.name or '').lower()} "
+            for keyword, preferred_type_name in self._SPORT_NAME_HINTS:
+                if keyword in event_text:
+                    et = db.query(EventType).filter_by(name=preferred_type_name).first()
+                    if et:
+                        return et
+
+        # 3. Use a sensible generic fallback for the category
         fallback_name = self._CATEGORY_FALLBACK.get(category)
         if fallback_name:
             et = db.query(EventType).filter_by(name=fallback_name).first()
             if et:
                 return et
 
-        # 3. Last resort: any type in the category
+        # 4. Last resort: any type in the category
         return db.query(EventType).filter_by(category=category).first()
 
     async def enrich_youtube(self, db: Session) -> int:

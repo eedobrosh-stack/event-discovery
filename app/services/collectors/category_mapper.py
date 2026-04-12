@@ -4,7 +4,7 @@ from __future__ import annotations
 TICKETMASTER_SEGMENT_MAP = {
     "KZFzniwnSyZfZ7v7nJ": "Music",
     "KZFzniwnSyZfZ7v7na": "Art",
-    "KZFzniwnSyZfZ7v7nE": "Fitness",
+    "KZFzniwnSyZfZ7v7nE": "Sports",   # Ticketmaster "Sports" segment
     "KZFzniwnSyZfZ7v7n1": "Comedy",
     "KZFzniwnSyZfZ7v7nI": "Film",
 }
@@ -35,7 +35,7 @@ EVENTBRITE_MAP = {
     "Community & Culture": "Festival",
     "Performing & Visual Arts": "Art",
     "Film, Media & Entertainment": "Film",
-    "Sports & Fitness": "Fitness",
+    "Sports & Fitness": "Sports",
     "Health & Wellness": "Fitness",
     "Science & Technology": "Technology",
     "Travel & Outdoor": "Outdoor",
@@ -54,7 +54,7 @@ EVENTBRITE_MAP = {
 
 SEATGEEK_MAP = {
     "concert": "Music",
-    "sports": "Fitness",
+    "sports": "Sports",
     "theater": "Art",
     "comedy": "Comedy",
     "dance_performance_tour": "Dance",
@@ -71,7 +71,7 @@ PREDICTHQ_MAP = {
     "festivals": "Festival",
     "performing-arts": "Dance",
     "community": "Charity",
-    "sports": "Fitness",
+    "sports": "Sports",
 }
 
 
