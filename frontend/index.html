@@ -74,38 +74,44 @@
         .logo-super { color: #ffffff; }
         .logo-caly  { color: #7c6af7; }
 
+        /* ── Tagline + mascot row ── */
+        .tagline-row {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 1rem;
+            margin-bottom: 2.4rem;
+        }
         .tagline {
             font-size: 0.82rem;
             color: rgba(255,255,255,0.35);
             letter-spacing: 0.12em;
             text-transform: uppercase;
-            margin-bottom: 1.6rem;
+            margin-bottom: 0;
         }
-
-        /* ── Mascot ── */
         .mascot-wrap {
             display: flex;
             flex-direction: column;
             align-items: center;
-            margin-bottom: 2.2rem;
+            flex-shrink: 0;
         }
         .mascot-img {
-            width: 148px;
-            height: 148px;
+            width: 90px;
+            height: 90px;
             object-fit: contain;
-            filter: drop-shadow(0 8px 24px rgba(124,106,247,0.35));
+            filter: drop-shadow(0 6px 18px rgba(124,106,247,0.35));
             animation: mascot-float 4s ease-in-out infinite;
         }
         @keyframes mascot-float {
             0%, 100% { transform: translateY(0px); }
-            50%       { transform: translateY(-10px); }
+            50%       { transform: translateY(-7px); }
         }
         .mascot-caption {
-            margin-top: 8px;
-            font-size: 0.82rem;
+            margin-top: 4px;
+            font-size: 0.72rem;
             font-style: italic;
-            color: rgba(255,255,255,0.38);
-            letter-spacing: 0.03em;
+            color: rgba(255,255,255,0.32);
+            letter-spacing: 0.02em;
         }
 
         /* ── Search area ── */
@@ -246,12 +252,13 @@
         </div>
         <p class="logo-subtitle">The Super Calendar</p>
     </div>
-    <p class="tagline">Discover events &middot; music &middot; art &middot; sports</p>
-
-    <!-- Mascot -->
-    <div class="mascot-wrap">
-        <img src="/mary-poppins.png" alt="SuperCaly mascot" class="mascot-img">
-        <span class="mascot-caption">It's fragilistic</span>
+    <!-- Tagline + mascot -->
+    <div class="tagline-row">
+        <p class="tagline">Discover events &middot; music &middot; art &middot; sports</p>
+        <div class="mascot-wrap">
+            <img src="/mary-poppins.png" alt="SuperCaly mascot" class="mascot-img">
+            <span class="mascot-caption">It's fragilistic</span>
+        </div>
     </div>
 
     <!-- Search -->
