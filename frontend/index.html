@@ -8,6 +8,8 @@
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+        html { overflow-y: scroll; }   /* always reserve scrollbar lane — prevents layout shift */
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #08081a;
@@ -17,7 +19,6 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            scrollbar-gutter: stable;
         }
 
         /* ── Logo ── */
