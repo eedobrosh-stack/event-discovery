@@ -272,7 +272,6 @@ async def enrich_youtube_job(batch: int = 100):
                     db.query(Event).filter(Event.artist_name == artist).update(
                         {"artist_youtube_channel": url}, synchronize_session=False
                     )
-                    db.commit()
                     found += 1
                 else:
                     # Write empty string so we don't retry endlessly
@@ -280,10 +279,12 @@ async def enrich_youtube_job(batch: int = 100):
                         Event.artist_name == artist,
                         Event.artist_youtube_channel.is_(None),
                     ).update({"artist_youtube_channel": ""}, synchronize_session=False)
-                    db.commit()
                     failed += 1
+                db.commit()
+                db.expire_all()   # release session identity map after each artist
             except Exception as e:
                 logger.warning(f"enrich_youtube: error for {artist!r}: {e}")
+                db.rollback()
                 failed += 1
 
         log.status = "success"
@@ -317,15 +318,22 @@ async def enrich_performers_job(batch: int = 50):
     enriched = 0
     skipped = 0
     try:
-        existing_norms = {r[0] for r in db.query(Performer.normalized_name).all()}
-        all_artists = (
+        # Push filtering to SQL — never load all artists or all performers into Python
+        already_seen_sq = db.query(Performer.name).subquery()
+        pending_rows = (
             db.query(Event.artist_name, func.count(Event.id).label("n"))
-            .filter(Event.artist_name.isnot(None), Event.artist_name != "")
+            .filter(
+                Event.artist_name.isnot(None),
+                Event.artist_name != "",
+                Event.artist_name.notin_(already_seen_sq),
+            )
             .group_by(Event.artist_name)
             .order_by(func.count(Event.id).desc())
+            .limit(batch)
             .all()
         )
-        pending = [r[0] for r in all_artists if normalize(r[0]) not in existing_norms][:batch]
+        pending = [r[0] for r in pending_rows]
+        del pending_rows   # free immediately
         logger.info(f"enrich_performers: {len(pending)} new artists to look up")
 
         async with httpx.AsyncClient(timeout=15) as http:
@@ -361,11 +369,13 @@ async def enrich_performers_job(batch: int = 50):
                         db.add(stub)
                         try:
                             db.commit()
+                            skipped += 1
                         except IntegrityError:
                             db.rollback()
-                        skipped += 1
+                    db.expire_all()   # release session identity map after each artist
                 except Exception as e:
                     logger.warning(f"enrich_performers: error for {artist!r}: {e}")
+                    db.rollback()
                     skipped += 1
 
         log.status = "success"
