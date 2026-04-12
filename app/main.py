@@ -12,7 +12,7 @@ from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
 from app.api import platform_venues as platform_venues_api
 from app.api.cities import warm_cities_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job
 
 scheduler = AsyncIOScheduler()
 
@@ -118,6 +118,18 @@ async def lifespan(app: FastAPI):
         enrich_performers_job,
         IntervalTrigger(hours=24),
         id="enrich_performers",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        enrich_venue_urls_job,
+        IntervalTrigger(hours=24),
+        id="enrich_venue_urls",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        discover_venues_job,
+        IntervalTrigger(hours=48),   # every 2 days — Overpass is expensive
+        id="discover_venues",
         replace_existing=True,
     )
     scheduler.start()

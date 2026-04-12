@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     PREDICTHQ_TOKEN: str = ""
     YOUTUBE_API_KEY: str = ""
     BANDSINTOWN_APP_ID: str = ""
+    SERPER_API_KEY: str = ""       # google.serper.dev — paid fallback for venue URL search
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""

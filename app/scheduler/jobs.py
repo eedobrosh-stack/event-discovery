@@ -393,6 +393,169 @@ async def enrich_performers_job(batch: int = 50):
         db.close()
 
 
+async def enrich_venue_urls_job(batch: int = 50):
+    """
+    Fill missing website_url on existing venues using OSM Nominatim.
+    Processes the `batch` venues with the most events first.
+    Rate-limited to ≥1.1 s between Nominatim requests.
+    """
+    import asyncio
+    import httpx
+    from sqlalchemy import or_ as _or_
+    from app.services.osm import find_venue_url
+
+    db = SessionLocal()
+    log = ScanLog(job_name="enrich_venue_urls", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    found = 0
+    checked = 0
+    try:
+        # Venues with no URL, ordered by event count desc so the most-visited get filled first
+        rows = (
+            db.query(Venue.id, Venue.name, Venue.physical_city, Venue.physical_country)
+            .outerjoin(Event, Event.venue_id == Venue.id)
+            .filter(
+                _or_(Venue.website_url.is_(None), Venue.website_url == "")
+            )
+            .group_by(Venue.id, Venue.name, Venue.physical_city, Venue.physical_country)
+            .order_by(func.count(Event.id).desc())
+            .limit(batch)
+            .all()
+        )
+        logger.info(f"enrich_venue_urls: {len(rows)} venues to look up")
+
+        serper_key = settings.SERPER_API_KEY
+        async with httpx.AsyncClient(timeout=15) as client:
+            for venue_id, name, city, country in rows:
+                try:
+                    url = await find_venue_url(
+                        client, name, city or "", country or "", serper_key
+                    )
+                    checked += 1
+                    if url:
+                        db.query(Venue).filter(Venue.id == venue_id).update(
+                            {"website_url": url}, synchronize_session=False
+                        )
+                        db.commit()
+                        found += 1
+                        logger.debug(f"enrich_venue_urls: {name!r} → {url}")
+                    # Nominatim rate limit: ≥1.1 s between requests
+                    await asyncio.sleep(1.1)
+                    db.expire_all()
+                except Exception as e:
+                    logger.warning(f"enrich_venue_urls: error for {name!r}: {e}")
+                    db.rollback()
+
+        log.status = "success"
+        log.events_found = checked
+        log.events_saved = found
+        log.notes = f"checked={checked} urls_found={found}"
+        logger.info(f"enrich_venue_urls done: checked={checked} found={found}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"enrich_venue_urls error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
+async def discover_venues_job():
+    """
+    Use OSM Overpass API to find venue nodes/ways near each priority city
+    and insert any that are not already in our DB.
+    """
+    import asyncio
+    import httpx
+    from app.services.osm import overpass_discover_venues, find_venue_url
+
+    db = SessionLocal()
+    log = ScanLog(job_name="discover_venues", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    new_venues = 0
+    cities_checked = 0
+    try:
+        # Only run for cities that have coordinates stored
+        cities = (
+            db.query(City)
+            .filter(City.name.in_(PRIORITY_CITIES), City.latitude.isnot(None), City.longitude.isnot(None))
+            .all()
+        )
+        logger.info(f"discover_venues: checking {len(cities)} priority cities")
+
+        serper_key = settings.SERPER_API_KEY
+        async with httpx.AsyncClient(timeout=50) as client:
+            for city in cities:
+                try:
+                    candidates = await overpass_discover_venues(
+                        client, city.latitude, city.longitude, city.name
+                    )
+                    cities_checked += 1
+                    for v in candidates:
+                        if not v.get("name"):
+                            continue
+                        # Case-insensitive match: skip if already in DB for this city
+                        exists = (
+                            db.query(Venue.id)
+                            .filter(
+                                Venue.city_id == city.id,
+                                func.lower(Venue.name) == v["name"].lower(),
+                            )
+                            .first()
+                        )
+                        if exists:
+                            continue
+                        # If OSM didn't supply a URL, try the fallback chain
+                        website = v.get("website")
+                        if not website:
+                            website = await find_venue_url(
+                                client, v["name"], city.name, city.country or "", serper_key
+                            )
+                            # Nominatim rate limit between calls
+                            await asyncio.sleep(1.1)
+                        venue = Venue(
+                            name=v["name"],
+                            city_id=city.id,
+                            physical_city=city.name,
+                            physical_country=city.country,
+                            latitude=v.get("lat"),
+                            longitude=v.get("lon"),
+                            street_address=v.get("address"),
+                            website_url=website or None,
+                            venue_type=v.get("venue_type"),
+                        )
+                        db.add(venue)
+                        new_venues += 1
+                    db.commit()
+                    db.expire_all()
+                    logger.info(
+                        f"discover_venues: {city.name} — {len(candidates)} found, "
+                        f"{new_venues} new total so far"
+                    )
+                except Exception as e:
+                    logger.warning(f"discover_venues: error for {city.name}: {e}")
+                    db.rollback()
+
+        log.status = "success"
+        log.events_found = cities_checked
+        log.events_saved = new_venues
+        log.notes = f"cities={cities_checked} new_venues={new_venues}"
+        logger.info(f"discover_venues done: cities={cities_checked} new_venues={new_venues}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"discover_venues error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()
