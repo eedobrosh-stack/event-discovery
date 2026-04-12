@@ -20,13 +20,22 @@
     <main>
         <!-- Compact search bar — visible after a search is committed.
              Clicking it re-opens the full filter panel. -->
-        <div id="compact-search" tabindex="0" role="button" aria-label="Edit search filters">
-            <svg class="compact-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-            <span id="compact-text" class="compact-text compact-placeholder">Search events…</span>
-            <span id="compact-city-badge" class="compact-city-badge"></span>
+        <div id="compact-search">
+            <!-- Framed pill — clicking opens the full filter panel -->
+            <div id="compact-pill" tabindex="0" role="button" aria-label="Edit search filters">
+                <svg class="compact-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <span id="compact-text" class="compact-text compact-placeholder">Search events…</span>
+                <span id="compact-city-badge" class="compact-city-badge"></span>
+            </div>
+            <!-- Export actions — always visible in compact mode -->
+            <div class="compact-actions">
+                <button id="compact-ics-btn" type="button" class="action-btn compact-action-btn">🍎 Apple / Outlook</button>
+                <button id="compact-subscribe-btn" type="button" class="action-btn compact-action-btn btn-subscribe">📅 Google Calendar</button>
+                <button id="compact-csv-btn" type="button" class="action-btn compact-action-btn">⬇ CSV</button>
+            </div>
         </div>
 
         <section class="filters search-hidden">

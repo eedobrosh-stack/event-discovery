@@ -26,28 +26,51 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 
 /* ── Compact search bar (shown after a search is committed) ──── */
 #compact-search {
-    background: #fff;
-    border-radius: 8px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    margin-bottom: 1rem;
-    padding: 0.75rem 1.1rem;
-    display: flex;
+    display: none;   /* hidden until a search is committed */
     align-items: center;
     gap: 0.75rem;
-    cursor: pointer;
-    outline: none;
-    transition: box-shadow 0.2s;
-    /* Hidden until a search is committed */
-    display: none;
+    margin-bottom: 1rem;
 }
 
 #compact-search.visible {
     display: flex;
 }
 
-#compact-search:hover,
-#compact-search:focus {
+/* Framed search pill — looks like a real input so the user knows it's reusable */
+#compact-pill {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 1;
+    min-width: 0;
+    background: #fff;
+    border: 2px solid #c9c2f8;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.07);
+    padding: 0.65rem 1.1rem;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+#compact-pill:hover,
+#compact-pill:focus {
+    border-color: #7c6af7;
     box-shadow: 0 2px 10px rgba(124,106,247,0.22);
+}
+
+/* Export buttons row — sits right of the pill */
+.compact-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.compact-action-btn {
+    width: auto !important;
+    padding: 0.55rem 0.85rem !important;
+    font-size: 0.8rem !important;
 }
 
 .compact-icon {

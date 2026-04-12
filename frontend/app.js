@@ -64,11 +64,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Clicking the compact bar: filter panel slides back in, compact bar hides.
 
     const compactBar = document.getElementById("compact-search");
+    const compactPill = document.getElementById("compact-pill");
 
-    compactBar.addEventListener("click", showSearchMode);
-    compactBar.addEventListener("keydown", e => {
+    // Only the pill opens the filter panel — buttons handle their own clicks
+    compactPill.addEventListener("click", showSearchMode);
+    compactPill.addEventListener("keydown", e => {
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showSearchMode(); }
     });
+
+    // Wire compact export buttons to the same handlers as the full-panel ones
+    document.getElementById("compact-ics-btn").addEventListener("click", e => { e.stopPropagation(); exportICS(); });
+    document.getElementById("compact-csv-btn").addEventListener("click", e => { e.stopPropagation(); exportCSV(); });
+    document.getElementById("compact-subscribe-btn").addEventListener("click", e => { e.stopPropagation(); openSubscribeModal(); });
 
     // Escape while filter panel is open → back to compact mode (if results exist)
     document.addEventListener("keydown", e => {
