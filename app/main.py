@@ -86,13 +86,13 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         cleanup_past_events,
-        CronTrigger(hour=3, minute=0),
+        IntervalTrigger(hours=24),
         id="cleanup_past",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_venue_websites,
-        CronTrigger(hour=4, minute=0),   # daily at 4am UTC, after cleanup
+        IntervalTrigger(hours=24),   # every 24h from startup — resilient to restarts
         id="collect_venue_websites",
         replace_existing=True,
     )
@@ -104,19 +104,19 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         collect_platform_venues,
-        CronTrigger(hour=2, minute=30),  # daily at 2:30am UTC
+        IntervalTrigger(hours=24),
         id="collect_platform_venues",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_youtube_job,
-        CronTrigger(hour="6,12,18,0", minute=30),  # 4x daily, 100 artists/run
+        IntervalTrigger(hours=6),   # 4x daily, 100 artists/run
         id="enrich_youtube",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_performers_job,
-        CronTrigger(hour=5, minute=30),  # nightly at 5:30am UTC, 50 artists/run
+        IntervalTrigger(hours=24),
         id="enrich_performers",
         replace_existing=True,
     )
