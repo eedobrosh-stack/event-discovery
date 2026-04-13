@@ -101,21 +101,26 @@ async def lifespan(app: FastAPI):
     await asyncio.get_event_loop().run_in_executor(None, warm_cities_cache)
 
     # Schedule jobs
+    # Jobs are staggered (start_date offset) so they don't all fire simultaneously
+    # and compete for memory on the same instance.
+    from datetime import datetime as _dt, timedelta as _td
+    _t = _dt.utcnow()
+
     scheduler.add_job(
         collect_all_events,
-        IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS),
+        IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS, start_date=_t + _td(minutes=1)),
         id="collect_events",
         replace_existing=True,
     )
     scheduler.add_job(
         cleanup_past_events,
-        IntervalTrigger(hours=24),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=5)),
         id="cleanup_past",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_venue_websites,
-        IntervalTrigger(hours=24),   # every 24h from startup — resilient to restarts
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=10)),
         id="collect_venue_websites",
         replace_existing=True,
     )
@@ -127,31 +132,31 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         collect_platform_venues,
-        IntervalTrigger(hours=24),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=15)),
         id="collect_platform_venues",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_youtube_job,
-        IntervalTrigger(hours=6),   # 4x daily, 100 artists/run
+        IntervalTrigger(hours=6, start_date=_t + _td(minutes=20)),
         id="enrich_youtube",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_performers_job,
-        IntervalTrigger(hours=24),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
         id="enrich_performers",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_venue_urls_job,
-        IntervalTrigger(hours=24),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=45)),
         id="enrich_venue_urls",
         replace_existing=True,
     )
     scheduler.add_job(
         discover_venues_job,
-        IntervalTrigger(hours=48),   # every 2 days — Overpass is expensive
+        IntervalTrigger(hours=48, start_date=_t + _td(minutes=60)),
         id="discover_venues",
         replace_existing=True,
     )
