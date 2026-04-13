@@ -470,7 +470,7 @@ async def discover_venues_job():
     """
     import asyncio
     import httpx
-    from app.services.osm import overpass_discover_venues, find_venue_url
+    from app.services.osm import overpass_discover_venues
 
     db = SessionLocal()
     log = ScanLog(job_name="discover_venues", status="running")
@@ -488,7 +488,6 @@ async def discover_venues_job():
         )
         logger.info(f"discover_venues: checking {len(cities)} priority cities")
 
-        serper_key = settings.SERPER_API_KEY
         async with httpx.AsyncClient(timeout=50) as client:
             for city in cities:
                 try:
@@ -510,14 +509,8 @@ async def discover_venues_job():
                         )
                         if exists:
                             continue
-                        # If OSM didn't supply a URL, try the fallback chain
-                        website = v.get("website")
-                        if not website:
-                            website = await find_venue_url(
-                                client, v["name"], city.name, city.country or "", serper_key
-                            )
-                            # Nominatim rate limit between calls
-                            await asyncio.sleep(1.1)
+                        # Take URL from OSM if present; enrich_venue_urls_job fills the rest
+                        website = v.get("website") or None
                         venue = Venue(
                             name=v["name"],
                             city_id=city.id,
