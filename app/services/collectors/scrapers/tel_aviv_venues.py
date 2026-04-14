@@ -153,8 +153,8 @@ class TelAvivVenueScraper(BaseCollector):
                     all_events.extend(events)
                 except Exception as e:
                     import logging
-                    logging.getLogger(__name__).warning(
-                        f"Tel Aviv scrape failed for {venue['name']}: {e}"
+                    logging.getLogger(__name__).debug(
+                        f"Tel Aviv scrape failed for {venue['name']}: {type(e).__name__}: {e}"
                     )
 
         return all_events
