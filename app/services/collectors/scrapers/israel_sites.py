@@ -28,6 +28,11 @@ from typing import Optional
 from urllib.parse import urljoin, unquote
 
 import httpx
+try:
+    from curl_cffi.requests import AsyncSession as CffiSession
+    _CFFI_AVAILABLE = True
+except ImportError:
+    _CFFI_AVAILABLE = False
 from bs4 import BeautifulSoup
 
 from app.services.collectors.base import BaseCollector, RawEvent, safe_time, default_end_time
@@ -423,21 +428,45 @@ async def scrape_habama(client: httpx.AsyncClient, city_name: str) -> list[RawEv
 
 
 # ---------------------------------------------------------------------------
+# curl_cffi helper — Chrome TLS impersonation for Cloudflare-protected sites
+# ---------------------------------------------------------------------------
+
+async def _cffi_get(url: str, timeout: int = 20) -> Optional[str]:
+    """Fetch URL impersonating Chrome TLS to bypass Cloudflare. Falls back to httpx."""
+    if _CFFI_AVAILABLE:
+        try:
+            async with CffiSession(impersonate="chrome120") as session:
+                resp = await session.get(url, timeout=timeout)
+                resp.raise_for_status()
+                return resp.text
+        except Exception as e:
+            logger.debug(f"cffi fetch failed for {url}: {e}")
+    # httpx fallback
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=HEADERS) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.text
+    except Exception as e:
+        logger.debug(f"httpx fallback failed for {url}: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Yellow Submarine
 # ---------------------------------------------------------------------------
 
 async def scrape_yellowsubmarine(client: httpx.AsyncClient) -> list[RawEvent]:
     """
     yellowsubmarine.org.il — WordPress. Events listed on /event/ page.
+    Uses curl_cffi to bypass Cloudflare protection.
     """
-    try:
-        resp = await client.get("https://www.yellowsubmarine.org.il/event/", timeout=20)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(f"YellowSub: fetch failed: {e}")
+    html = await _cffi_get("https://www.yellowsubmarine.org.il/event/")
+    if not html:
+        logger.warning("YellowSub: fetch failed")
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     # Tribe Events plugin uses <article class="tribe_events_cat-...">
     articles = soup.find_all("article", class_=re.compile(r"tribe|event", re.I))
     events = []
@@ -767,15 +796,13 @@ async def scrape_timeout(client: httpx.AsyncClient) -> list[RawEvent]:
 # ---------------------------------------------------------------------------
 
 async def scrape_ligdol(client: httpx.AsyncClient) -> list[RawEvent]:
-    """ligdol.co.il — family & children events across Israel."""
-    try:
-        resp = await client.get("https://www.ligdol.co.il", timeout=20)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(f"LiGdol: fetch failed: {e}")
+    """ligdol.co.il — family & children events across Israel. Uses curl_cffi."""
+    html = await _cffi_get("https://www.ligdol.co.il")
+    if not html:
+        logger.warning("LiGdol: fetch failed")
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     cards = soup.find_all(["article", "div"], class_=re.compile(r"event|card|item|post", re.I))
     events = []
     seen: set = set()
@@ -841,15 +868,13 @@ async def scrape_ligdol(client: httpx.AsyncClient) -> list[RawEvent]:
 # ---------------------------------------------------------------------------
 
 async def scrape_haifahaifa(client: httpx.AsyncClient) -> list[RawEvent]:
-    """haifahaifa.co.il — Haifa events portal."""
-    try:
-        resp = await client.get("https://haifahaifa.co.il", timeout=20)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.warning(f"HaifaHaifa: fetch failed: {e}")
+    """haifahaifa.co.il — Haifa events portal. Uses curl_cffi."""
+    html = await _cffi_get("https://haifahaifa.co.il")
+    if not html:
+        logger.warning("HaifaHaifa: fetch failed")
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     # WordPress-style posts
     articles = soup.find_all(["article", "div"], class_=re.compile(r"event|post|entry", re.I))
     events = []

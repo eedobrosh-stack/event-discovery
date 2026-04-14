@@ -42,13 +42,28 @@ GENERIC_EXACT = {
 }
 
 
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+}
+
+
 async def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
-    """Fetch HTML content from a URL."""
+    """Fetch HTML content from a URL with full browser headers."""
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
+            headers=BROWSER_HEADERS,
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
