@@ -2,9 +2,10 @@ services:
   - type: web
     name: supercaly
     runtime: python
+    plan: standard
     branch: main
     autoDeploy: true
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: python start.py
     envVars:
       - key: DATABASE_URL
