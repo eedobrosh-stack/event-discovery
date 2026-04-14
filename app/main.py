@@ -92,13 +92,23 @@ def _run_migrations():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup
+    import asyncio
+    import logging
+    _log = logging.getLogger(__name__)
+
+    # Create tables on startup (fast, must complete before serving)
     Base.metadata.create_all(bind=engine)
     _run_migrations()
 
-    # Pre-warm the cities cache so the first user request is instant
-    import asyncio
-    await asyncio.get_event_loop().run_in_executor(None, warm_cities_cache)
+    # Move cache warming to background so Render's health check passes quickly
+    async def _deferred_startup():
+        await asyncio.sleep(2)  # let uvicorn bind the port first
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, warm_cities_cache)
+            _log.info("Cities cache warmed")
+        except Exception as e:
+            _log.warning(f"Cache warm failed: {e}")
+    asyncio.create_task(_deferred_startup())
 
     # Schedule jobs
     # Jobs are staggered (start_date offset) so they don't all fire simultaneously
@@ -162,10 +172,16 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
 
-    # Seed Ashkenaz into platform_venues if it hasn't been added yet
-    _seed_platform_venues()
-    # Insert any missing event types (e.g. new Sports category)
-    _seed_event_types()
+    # Seed data in background (non-blocking)
+    async def _deferred_seed():
+        await asyncio.sleep(5)
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _seed_platform_venues)
+            await asyncio.get_event_loop().run_in_executor(None, _seed_event_types)
+            _log.info("Seeding complete")
+        except Exception as e:
+            _log.warning(f"Seeding failed: {e}")
+    asyncio.create_task(_deferred_seed())
 
     yield
 
