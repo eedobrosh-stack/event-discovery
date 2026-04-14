@@ -28,15 +28,15 @@ ENGLISH_MONTHS = {
 TEL_AVIV_VENUES = [
     # Music
     {"name": "Barby Club",         "url": "https://www.barby.co.il",          "address": "52 Kibbutz Galuyot St, Tel Aviv", "type": "Music Venue"},
-    {"name": "Zappa Club Tel Aviv","url": "https://www.zappa-club.co.il/events","address": "24 Raoul Wallenberg St, Tel Aviv","type": "Music Venue"},
+    {"name": "Zappa Club Tel Aviv","url": "https://zappa-club.co.il/events",    "address": "24 Raoul Wallenberg St, Tel Aviv","type": "Music Venue"},
     {"name": "Levontin 7",         "url": "https://www.levontin7.com",         "address": "7 Levontin St, Tel Aviv",         "type": "Music Venue"},
-    {"name": "Shablul Jazz Club",  "url": "https://www.shabluljazz.com",       "address": "40 Yordei HaSira St, Tel Aviv",   "type": "Jazz Club"},
+    {"name": "Shablul Jazz Club",  "url": "https://shabluljazz.com",           "address": "40 Yordei HaSira St, Tel Aviv",   "type": "Jazz Club"},
     {"name": "Gagarin Club",       "url": "https://www.gagarin.co.il",         "address": "8 Karlibach St, Tel Aviv",        "type": "Music Venue"},
     {"name": "The Block",          "url": "https://www.theblock.co.il",        "address": "157 Ben Yehuda St, Tel Aviv",     "type": "Nightclub"},
     {"name": "Kuli Alma",          "url": "https://www.kulialma.com",          "address": "10 Mikveh Israel St, Tel Aviv",   "type": "Music Venue"},
     {"name": "Hangar 11",          "url": "https://www.hangar11.co.il",        "address": "Tel Aviv Port",                  "type": "Concert Hall"},
     {"name": "Reading 3",          "url": "https://www.reading3.co.il",        "address": "Reading Power Station, Tel Aviv","type": "Concert Hall"},
-    {"name": "Radio EPGB",         "url": "https://www.radioepgb.com",         "address": "7 Shadal St, Tel Aviv",           "type": "Music Bar"},
+    {"name": "Radio EPGB",         "url": "https://radioepgb.com",             "address": "7 Shadal St, Tel Aviv",           "type": "Music Bar"},
     {"name": "Yellow Submarine",   "url": "https://www.yellowsubmarine.org.il","address": "13 HaRechev St, Tel Aviv",        "type": "Music Venue"},
     # Theatre
     {"name": "Habima Theatre",     "url": "https://www.habima.co.il",          "address": "Tarsat Blvd 2, Tel Aviv",         "type": "Theatre"},
@@ -48,7 +48,7 @@ TEL_AVIV_VENUES = [
     # Dance
     {"name": "Suzanne Dellal Centre","url": "https://www.suzannedellal.org.il","address": "5 Yehieli St, Tel Aviv",          "type": "Dance Center"},
     # Comedy
-    {"name": "Comedy Bar Tel Aviv","url": "https://www.comedybar.co.il",       "address": "140 Dizengoff St, Tel Aviv",      "type": "Comedy Club"},
+    {"name": "Comedy Bar Tel Aviv","url": "https://comedybar.co.il",           "address": "140 Dizengoff St, Tel Aviv",      "type": "Comedy Club"},
     # Art / Museum
     {"name": "Tel Aviv Museum of Art","url": "https://www.tamuseum.org.il",    "address": "27 Shaul HaMelech Blvd, Tel Aviv","type": "Museum"},
     {"name": "Eretz Israel Museum","url": "https://www.eretzmuseum.org.il",    "address": "2 Chaim Levanon St, Tel Aviv",    "type": "Museum"},
@@ -144,7 +144,8 @@ class TelAvivVenueScraper(BaseCollector):
         }
 
         async with httpx.AsyncClient(
-            timeout=20, follow_redirects=True, headers=headers
+            timeout=20, follow_redirects=True, headers=headers,
+            verify=False,   # some IL sites have cert mismatches (e.g. shabluljazz.com)
         ) as client:
             for venue in TEL_AVIV_VENUES:
                 try:
