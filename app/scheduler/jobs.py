@@ -109,12 +109,12 @@ async def collect_venue_websites():
     db.refresh(log)
     try:
         # Eager-load city so we don't trigger N lazy queries inside the loop.
-        # Cap at 500 venues per run to bound memory usage.
+        # Cap at 100 venues per run to keep memory pressure low.
         venues = (
             db.query(Venue)
             .options(joinedload(Venue.city))
             .filter(Venue.website_url.isnot(None), Venue.website_url != "")
-            .limit(500)
+            .limit(100)
             .all()
         )
         logger.info(f"Venue website scraper: {len(venues)} venues to scan")

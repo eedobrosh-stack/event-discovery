@@ -108,19 +108,19 @@ async def lifespan(app: FastAPI):
 
     scheduler.add_job(
         collect_all_events,
-        IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS, start_date=_t + _td(minutes=1)),
+        IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS, start_date=_t + _td(minutes=2)),
         id="collect_events",
         replace_existing=True,
     )
     scheduler.add_job(
         cleanup_past_events,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=5)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
         id="cleanup_past",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_venue_websites,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=10)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=45)),
         id="collect_venue_websites",
         replace_existing=True,
     )
@@ -132,31 +132,31 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         collect_platform_venues,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=15)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=60)),
         id="collect_platform_venues",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_youtube_job,
-        IntervalTrigger(hours=6, start_date=_t + _td(minutes=20)),
+        IntervalTrigger(hours=6, start_date=_t + _td(minutes=90)),
         id="enrich_youtube",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_performers_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=120)),
         id="enrich_performers",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_venue_urls_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=45)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=150)),
         id="enrich_venue_urls",
         replace_existing=True,
     )
     scheduler.add_job(
         discover_venues_job,
-        IntervalTrigger(hours=48, start_date=_t + _td(minutes=60)),
+        IntervalTrigger(hours=48, start_date=_t + _td(minutes=180)),
         id="discover_venues",
         replace_existing=True,
     )
