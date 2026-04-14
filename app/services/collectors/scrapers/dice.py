@@ -64,44 +64,47 @@ class DiceCollector(BaseCollector):
         return events
 
     def _transform(self, ev: dict) -> RawEvent | None:
-        dates = ev.get("dates", {})
-        start_str = dates.get("event_start_date")
-        if not start_str:
-            return None
-
         try:
-            start_dt = datetime.fromisoformat(start_str)
-        except ValueError:
-            return None
+            dates = ev.get("dates") or {}
+            start_str = dates.get("event_start_date")
+            if not start_str:
+                return None
 
-        if start_dt.date() < date.today():
-            return None
-
-        end_dt = None
-        end_str = dates.get("event_end_date")
-        if end_str:
             try:
-                end_dt = datetime.fromisoformat(end_str)
+                start_dt = datetime.fromisoformat(start_str)
             except ValueError:
-                pass
+                return None
 
-        # Price: amount_from is in cents
-        price_data = ev.get("price", {})
-        amount_from = price_data.get("amount_from")
-        price = round(amount_from / 100, 2) if amount_from else None
-        price_currency = price_data.get("currency", "USD")
+            if start_dt.date() < date.today():
+                return None
 
-        venues = ev.get("venues") or []
-        venue = venues[0] if venues else {}
-        venue_address = venue.get("address", "")
-        venue_city_obj = venue.get("city") or {}
+            end_dt = None
+            end_str = dates.get("event_end_date")
+            if end_str:
+                try:
+                    end_dt = datetime.fromisoformat(end_str)
+                except ValueError:
+                    pass
 
-        images = ev.get("images", {})
-        image_url = images.get("landscape") or images.get("square")
+            # Price: amount_from is in cents
+            price_data = ev.get("price") or {}
+            amount_from = price_data.get("amount_from")
+            price = round(amount_from / 100, 2) if amount_from else None
+            price_currency = price_data.get("currency", "USD")
 
-        lineup = ev.get("summary_lineup", {})
-        top_artists = lineup.get("top_artists", [])
-        artist_name = top_artists[0].get("name") if top_artists else None
+            venues = ev.get("venues") or []
+            venue = (venues[0] if venues else None) or {}
+            venue_address = venue.get("address", "")
+            venue_city_obj = venue.get("city") or {}
+
+            images = ev.get("images") or {}
+            image_url = images.get("landscape") or images.get("square")
+
+            lineup = ev.get("summary_lineup") or {}
+            top_artists = lineup.get("top_artists") or []
+            artist_name = (top_artists[0] or {}).get("name") if top_artists else None
+        except Exception:
+            return None
 
         perm_name = ev.get("perm_name", "")
         purchase_link = f"https://dice.fm/event/{perm_name}" if perm_name else None
