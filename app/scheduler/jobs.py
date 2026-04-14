@@ -9,7 +9,7 @@ from app.services.collectors.registry import CollectorRegistry
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
 from app.services.dedup import dedup_events
 from app.services.collectors.api.ticketmaster import TicketmasterCollector
-from app.services.collectors.api.eventbrite import EventbriteCollector
+from app.services.collectors.scrapers.eventbrite_web import EventbriteWebScraper
 from app.services.collectors.api.seatgeek import SeatGeekCollector
 from app.services.collectors.api.predicthq import PredictHQCollector
 from app.services.collectors.scrapers.nyc_venues import NYCVenueScraper
@@ -30,8 +30,7 @@ registry = CollectorRegistry()
 # Only register collectors that have credentials or are credential-free scrapers
 if settings.TICKETMASTER_KEY:
     registry.register(TicketmasterCollector())
-if settings.EVENTBRITE_TOKEN:
-    registry.register(EventbriteCollector())
+registry.register(EventbriteWebScraper())   # no token needed — web scraper
 if settings.SEATGEEK_CLIENT_ID:
     registry.register(SeatGeekCollector())
 if settings.PREDICTHQ_TOKEN:
