@@ -94,7 +94,7 @@ class DiceCollector(BaseCollector):
         venues = ev.get("venues") or []
         venue = venues[0] if venues else {}
         venue_address = venue.get("address", "")
-        venue_city_obj = venue.get("city", {})
+        venue_city_obj = venue.get("city") or {}
 
         images = ev.get("images", {})
         image_url = images.get("landscape") or images.get("square")

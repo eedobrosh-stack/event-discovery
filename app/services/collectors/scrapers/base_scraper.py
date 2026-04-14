@@ -5,8 +5,11 @@ from datetime import date, datetime
 from typing import Optional, Tuple
 from urllib.parse import urljoin
 
+import logging
 import httpx
 from bs4 import BeautifulSoup
+
+_log = logging.getLogger(__name__)
 
 try:
     from curl_cffi.requests import AsyncSession as _CffiSession
@@ -87,7 +90,7 @@ async def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
             resp.raise_for_status()
             return resp.text
     except Exception as e:
-        print(f"Error fetching {url}: {e}")
+        _log.debug(f"fetch_html failed for {url}: {type(e).__name__}: {e}")
         return None
 
 
