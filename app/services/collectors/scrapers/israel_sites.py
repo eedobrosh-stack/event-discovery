@@ -463,7 +463,7 @@ async def scrape_yellowsubmarine(client: httpx.AsyncClient) -> list[RawEvent]:
     """
     html = await _cffi_get("https://www.yellowsubmarine.org.il/event/")
     if not html:
-        logger.warning("YellowSub: fetch failed")
+        logger.debug("YellowSub: fetch failed (IP-blocked)")
         return []
 
     soup = BeautifulSoup(html, "html.parser")
@@ -799,7 +799,7 @@ async def scrape_ligdol(client: httpx.AsyncClient) -> list[RawEvent]:
     """ligdol.co.il — family & children events across Israel. Uses curl_cffi."""
     html = await _cffi_get("https://www.ligdol.co.il")
     if not html:
-        logger.warning("LiGdol: fetch failed")
+        logger.debug("LiGdol: fetch failed (IP-blocked)")
         return []
 
     soup = BeautifulSoup(html, "html.parser")
@@ -871,7 +871,7 @@ async def scrape_haifahaifa(client: httpx.AsyncClient) -> list[RawEvent]:
     """haifahaifa.co.il — Haifa events portal. Uses curl_cffi."""
     html = await _cffi_get("https://haifahaifa.co.il")
     if not html:
-        logger.warning("HaifaHaifa: fetch failed")
+        logger.debug("HaifaHaifa: fetch failed (IP-blocked)")
         return []
 
     soup = BeautifulSoup(html, "html.parser")

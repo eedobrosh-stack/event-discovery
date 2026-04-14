@@ -68,7 +68,7 @@ class NYCVenueScraper(BaseCollector):
                 logger.info(f"Scraping {venue['name']}...")
                 html = await fetch_html(venue["url"])
                 if not html:
-                    logger.warning(f"No HTML from {venue['name']}")
+                    logger.debug(f"No HTML from {venue['name']} (blocked or unreachable)")
                     continue
 
                 soup = BeautifulSoup(html, "lxml")
