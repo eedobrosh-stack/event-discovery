@@ -8,6 +8,12 @@ from urllib.parse import urljoin
 import httpx
 from bs4 import BeautifulSoup
 
+try:
+    from curl_cffi.requests import AsyncSession as _CffiSession
+    _CFFI_OK = True
+except ImportError:
+    _CFFI_OK = False
+
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -58,7 +64,19 @@ BROWSER_HEADERS = {
 
 
 async def fetch_html(url: str, timeout: int = 30) -> Optional[str]:
-    """Fetch HTML content from a URL with full browser headers."""
+    """Fetch HTML content from a URL.
+
+    Uses curl_cffi (Chrome TLS impersonation) when available to bypass
+    Cloudflare and WAF protection; falls back to httpx with full browser headers.
+    """
+    if _CFFI_OK:
+        try:
+            async with _CffiSession(impersonate="chrome120") as session:
+                resp = await session.get(url, timeout=timeout)
+                resp.raise_for_status()
+                return resp.text
+        except Exception:
+            pass  # fall through to httpx
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
