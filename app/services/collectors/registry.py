@@ -46,12 +46,21 @@ class CollectorRegistry:
         saved = 0
         for raw in raw_events:
             try:
-                # Normalize: split "Artist/Event @ Venue Name" into name + venue
+                # Normalize: split "Event Title @ Venue Name" patterns
+                # Case 1: @ in event name  → "Concert Title @ Venue" → split
                 if raw.name and " @ " in raw.name:
                     parts = raw.name.split(" @ ", 1)
                     raw.name = parts[0].strip()
                     if not raw.venue_name:
                         raw.venue_name = parts[1].strip()
+                # Case 2: @ in venue_name → bandsintown stores "Event Title @ Venue" in venue field
+                if raw.venue_name and " @ " in raw.venue_name:
+                    parts = raw.venue_name.split(" @ ", 1)
+                    event_title = parts[0].strip()
+                    raw.venue_name = parts[1].strip()
+                    # Use the full event title as name if current name is just the artist
+                    if event_title and (not raw.name or raw.name.lower() in event_title.lower()):
+                        raw.name = event_title
 
                 # Skip events with no date — DB has NOT NULL constraint on start_date
                 if raw.start_date is None:
