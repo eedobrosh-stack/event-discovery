@@ -24,6 +24,7 @@ from app.services.collectors.scrapers.smarticket import SmartticketCollector
 from app.services.collectors.scrapers.hatarbut import HatarbutCollector
 from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
 from app.services.collectors.scrapers.luma import LumaCollector
+from app.services.collectors.scrapers.meetup import MeetupCollector
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ if settings.PREDICTHQ_TOKEN:
 # Credential-free scrapers — always register
 registry.register(NYCVenueScraper())
 registry.register(LumaCollector())
+registry.register(MeetupCollector())
 registry.register(TelAvivVenueScraper())
 registry.register(LeaanCollector())
 registry.register(ResidentAdvisorCollector())
