@@ -46,6 +46,14 @@ class CollectorRegistry:
         saved = 0
         for raw in raw_events:
             try:
+                # Normalize: split "Artist/Event @ Venue Name" into name + venue
+                if raw.name and " @ " in raw.name:
+                    parts = raw.name.split(" @ ", 1)
+                    raw = raw._replace(
+                        name=parts[0].strip(),
+                        venue_name=raw.venue_name or parts[1].strip(),
+                    )
+
                 # Skip events with no date — DB has NOT NULL constraint on start_date
                 if raw.start_date is None:
                     logger.debug(f"Skipping undated event '{raw.name}' from {raw.source}")
