@@ -267,23 +267,29 @@ class CollectorRegistry:
                 if et:
                     return et
 
-        # 2. For Sports/Fitness: match event name against specific sport keywords
+        # 2. "X vs Y" in name → always a sports game regardless of category
+        event_text = f" {(raw.name or '').lower()} "
+        if " vs " in event_text or " vs. " in event_text:
+            et = db.query(EventType).filter_by(name="Sports Event").first()
+            if et:
+                return et
+
+        # 3. For Sports/Fitness: match event name against specific sport keywords
         if category in ("Sports", "Fitness"):
-            event_text = f" {(raw.name or '').lower()} "
             for keyword, preferred_type_name in self._SPORT_NAME_HINTS:
                 if keyword in event_text:
                     et = db.query(EventType).filter_by(name=preferred_type_name).first()
                     if et:
                         return et
 
-        # 3. Use a sensible generic fallback for the category
+        # 4. Use a sensible generic fallback for the category
         fallback_name = self._CATEGORY_FALLBACK.get(category)
         if fallback_name:
             et = db.query(EventType).filter_by(name=fallback_name).first()
             if et:
                 return et
 
-        # 4. Last resort: any type in the category
+        # 5. Last resort: any type in the category
         return db.query(EventType).filter_by(category=category).first()
 
     async def enrich_youtube(self, db: Session) -> int:
