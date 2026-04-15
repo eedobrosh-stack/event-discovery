@@ -23,6 +23,7 @@ from app.services.collectors.scrapers.israel_sites import IsraelSitesCollector
 from app.services.collectors.scrapers.smarticket import SmartticketCollector
 from app.services.collectors.scrapers.hatarbut import HatarbutCollector
 from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
+from app.services.collectors.scrapers.luma import LumaCollector
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ if settings.PREDICTHQ_TOKEN:
     registry.register(PredictHQCollector())
 # Credential-free scrapers — always register
 registry.register(NYCVenueScraper())
+registry.register(LumaCollector())
 registry.register(TelAvivVenueScraper())
 registry.register(LeaanCollector())
 registry.register(ResidentAdvisorCollector())
