@@ -223,46 +223,182 @@ class CollectorRegistry:
         ("reggae",      "Reggae / Calypso Concert"),
     ]
 
-    # Generic fallback type per broad category (avoids grabbing .first() randomly)
+    # Generic fallback type per broad category
     _CATEGORY_FALLBACK: dict[str, str] = {
-        "Music":    "Concert",
-        "Art":      "Art Exhibition",
-        "Comedy":   "Comedy Show",
-        "Dance":    "Dance Performance",
-        "Film":     "Film Screening",
-        "Fitness":  "Marathons",
-        "Sports":   "Sports Event",
-        "Festival": "Festival",
-        "Food & Drink": "Food & Drink Event",
-        "Technology": "Tech Conference",
+        "Music":        "Jazz Concert",
+        "Art":          "Commercial Gallery Exhibitions",
+        "Comedy":       "Open Mic Nights",
+        "Dance":        "Modern Dance",
+        "Film":         "Art House Cinema Screenings",
+        "Fitness":      "Marathons",
+        "Sports":       "Sports Event",
+        "Festival":     "Multi-Genre Music Festivals",
+        "Food & Drink": "Farmers Markets",
+        "Technology":   "AI Tech Conferences",
+        "Literature":   "Author Talks",
+        "Charity":      "Formal Fundraising Galas",
+        "Political":    "Campaign Events",
+        "Religious":    "Church Services",
+        "Career":       "Networking Expos",
+        "Workshop":     "Photography Workshops",
+        "Academic":     "Guest Speaker Events",
+        "Automotive":   "Auto Expos",
+        "Craft":        "Handmade Goods Markets",
+        "Parade":       "Cultural Celebrations",
+        "Theme Park":   "Seasonal Theme Park Celebrations",
+        "Outdoor":      "Hiking Meetups",
+        "Gaming":       "Board Game Conventions",
+        "Pet":          "Pet Adoption Events",
+        "Home & Garden": "Home Improvement Expos",
     }
 
-    # Event-name keywords → specific sport type (checked before category fallback)
+    # Event-name keywords → specific event type (applied across all categories)
     _SPORT_NAME_HINTS: list[tuple[str, str]] = [
-        ("baseball",  "Baseball Game"),
-        (" mlb ",     "Baseball Game"),
-        ("basketball","Basketball Game"),
-        (" nba ",     "Basketball Game"),
-        ("hockey",    "Hockey Game"),
-        (" nhl ",     "Hockey Game"),
-        ("soccer",    "Soccer Match"),
-        (" mls ",     "Soccer Match"),
-        (" nfl ",     "American Football Game"),
-        ("tennis",    "Tennis Match"),
-        (" atp ",     "Tennis Match"),
-        (" wta ",     "Tennis Match"),
-        ("golf",      "Golf Tournament"),
-        (" pga ",     "Golf Tournament"),
-        ("boxing",    "Boxing / MMA Event"),
-        (" mma ",     "Boxing / MMA Event"),
-        (" ufc ",     "Boxing / MMA Event"),
-        ("wrestling", "Wrestling Event"),
-        (" wwe ",     "Wrestling Event"),
-        ("marathon",  "Marathons"),
-        ("triathlon", "Marathons"),
-        ("cycling",   "Cycling Races"),
-        ("yoga",      "Yoga Retreats"),
-        ("crossfit",  "CrossFit Competitions"),
+        # Sports
+        ("baseball",        "Baseball Game"),
+        (" mlb ",           "Baseball Game"),
+        ("basketball",      "Basketball Game"),
+        (" nba ",           "Basketball Game"),
+        ("hockey",          "Hockey Game"),
+        (" nhl ",           "Hockey Game"),
+        ("soccer",          "Soccer Match"),
+        (" mls ",           "Soccer Match"),
+        (" nfl ",           "American Football Game"),
+        ("tennis",          "Tennis Match"),
+        (" atp ",           "Tennis Match"),
+        (" wta ",           "Tennis Match"),
+        ("golf",            "Golf Tournament"),
+        (" pga ",           "Golf Tournament"),
+        ("boxing",          "Boxing / MMA Event"),
+        (" mma ",           "Boxing / MMA Event"),
+        (" ufc ",           "Boxing / MMA Event"),
+        ("wrestling",       "Wrestling Event"),
+        (" wwe ",           "Wrestling Event"),
+        # Fitness
+        ("marathon",        "Marathons"),
+        ("triathlon",       "Marathons"),
+        ("cycling",         "Cycling Races"),
+        ("yoga",            "Yoga Retreats"),
+        ("crossfit",        "CrossFit Competitions"),
+        ("hiking",          "Hiking Meetups"),
+        ("rock climbing",   "Rock Climbing Competitions"),
+        # Music
+        ("symphony",        "Symphony Orchestral Performances"),
+        ("orchestra",       "Symphony Orchestral Performances"),
+        ("philharmonic",    "Symphony Orchestral Performances"),
+        ("concerto",        "Concerto Performances"),
+        ("string quartet",  "String Quartets"),
+        ("chamber music",   "String Quartets"),
+        ("piano trio",      "Piano Trios"),
+        ("opera",           "Fully Staged Opera"),
+        ("baroque",         "Baroque Orchestras"),
+        ("early music",     "Baroque Orchestras"),
+        ("renaissance",     "Renaissance Vocal Ensembles"),
+        ("recital",         "Solo Recitals"),
+        ("jazz",            "Jazz Concert"),
+        ("hip-hop",         "Hip-Hop / Rap Concert"),
+        ("hip hop",         "Hip-Hop / Rap Concert"),
+        (" rap ",           "Hip-Hop / Rap Concert"),
+        ("rock concert",    "Rock Concert"),
+        ("electronic",      "Electronic / DJ Set"),
+        (" dj set",         "Electronic / DJ Set"),
+        (" dj ",            "Electronic / DJ Set"),
+        ("techno",          "Electronic / DJ Set"),
+        (" edm ",           "Electronic / DJ Set"),
+        ("r&b",             "R&B / Soul Concert"),
+        (" soul ",          "R&B / Soul Concert"),
+        ("gospel",          "Gospel Concert"),
+        ("country",         "Country Concert"),
+        ("bluegrass",       "Country Concert"),
+        ("latin",           "Latin Concert"),
+        ("salsa",           "Latin Concert"),
+        ("reggae",          "Reggae / Calypso Concert"),
+        # Dance
+        ("ballet",          "Classical Ballet"),
+        ("flamenco",        "Flamenco"),
+        ("bharatanatyam",   "Bharatanatyam"),
+        ("irish step",      "Irish Step Dance"),
+        ("african dance",   "African Dance"),
+        ("contemporary dance", "Modern Dance"),
+        # Comedy
+        ("open mic",        "Open Mic Nights"),
+        ("stand-up",        "Comedy Club Headliners"),
+        ("stand up",        "Comedy Club Headliners"),
+        ("improv",          "Short-Form Improv"),
+        ("sketch comedy",   "Sketch Comedy Performances"),
+        # Film
+        ("film festival",   "International Film Festivals"),
+        ("film screening",  "Art House Cinema Screenings"),
+        ("premiere",        "Red Carpet Premieres"),
+        ("retrospective",   "Director Retrospectives"),
+        # Literature
+        ("book launch",     "Book Launches"),
+        ("author talk",     "Author Talks"),
+        ("poetry slam",     "Poetry Slams"),
+        ("book club",       "Book Clubs"),
+        ("literary",        "Panel Discussions"),
+        # Food & Drink
+        ("wine tasting",    "Wine Tastings"),
+        ("beer festival",   "Craft Beer Events"),
+        ("beer tasting",    "Beer Samplings"),
+        ("farmers market",  "Farmers Markets"),
+        ("food festival",   "Chef Demonstrations"),
+        ("brewery",         "Brewery Tours"),
+        ("vineyard",        "Vineyard Tours"),
+        # Art
+        ("art fair",        "Art Fairs"),
+        ("gallery opening", "Museum Public Opening Receptions"),
+        ("mural",           "Murals"),
+        ("broadway",        "Broadway Show"),
+        (" play ",          "Play / Drama"),
+        ("theatre",         "Play / Drama"),
+        ("theater",         "Play / Drama"),
+        # Technology
+        ("hackathon",       "Startup Showcases"),
+        ("startup",         "Startup Showcases"),
+        (" ai ",            "AI Tech Conferences"),
+        ("cybersecurity",   "Cybersecurity Conferences"),
+        ("tech conference", "AI Tech Conferences"),
+        ("consumer electronics", "Consumer Electronics Shows"),
+        # Career
+        ("job fair",        "Job Fairs"),
+        ("career fair",     "Job Fairs"),
+        ("networking",      "Networking Expos"),
+        # Charity
+        ("gala",            "Formal Fundraising Galas"),
+        ("fundrais",        "Fundraising Dinners"),
+        ("benefit concert", "Benefit Concerts"),
+        ("charity walk",    "Charity Walks"),
+        ("charity run",     "Charity Runs"),
+        ("auction",         "Charity Auctions"),
+        # Political
+        ("rally",           "Campaign Events"),
+        ("protest",         "Protests"),
+        (" march ",         "Marches"),
+        ("town hall",       "Town Hall Meetings"),
+        # Gaming
+        ("esport",          "eSports Tournaments"),
+        ("board game",      "Board Game Conventions"),
+        ("video game",      "Video Game Expos"),
+        (" rpg ",           "Tabletop RPG Events"),
+        # Automotive
+        ("car show",        "Auto Expos"),
+        ("auto expo",       "Auto Expos"),
+        ("vintage car",     "Vintage Car Exhibitions"),
+        # Parade
+        ("pride parade",    "Pride Parades"),
+        (" parade",         "Cultural Celebrations"),
+        # Craft
+        ("craft fair",      "Handmade Goods Markets"),
+        ("makers market",   "Artisan Events"),
+        ("artisan market",  "Artisan Events"),
+        # Pet
+        ("dog show",        "Dog Shows"),
+        ("cat show",        "Cat Shows"),
+        ("pet adoption",    "Pet Adoption Events"),
+        # Outdoor
+        ("camping",         "Camping Rallies"),
+        ("survival",        "Survival Workshops"),
     ]
 
     def _resolve_event_type(self, category: str, raw: "RawEvent", db: Session) -> "EventType | None":
@@ -290,13 +426,12 @@ class CollectorRegistry:
             if et:
                 return et
 
-        # 3. For Sports/Fitness: match event name against specific sport keywords
-        if category in ("Sports", "Fitness"):
-            for keyword, preferred_type_name in self._SPORT_NAME_HINTS:
-                if keyword in event_text:
-                    et = db.query(EventType).filter_by(name=preferred_type_name).first()
-                    if et:
-                        return et
+        # 3. Match event name keywords across all categories
+        for keyword, preferred_type_name in self._SPORT_NAME_HINTS:
+            if keyword in event_text:
+                et = db.query(EventType).filter_by(name=preferred_type_name).first()
+                if et:
+                    return et
 
         # 4. Use a sensible generic fallback for the category
         fallback_name = self._CATEGORY_FALLBACK.get(category)

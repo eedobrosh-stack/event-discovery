@@ -69,9 +69,32 @@ PREDICTHQ_MAP = {
     "conferences": "Technology",
     "expos": "Technology",
     "festivals": "Festival",
-    "performing-arts": "Dance",
+    "performing-arts": "Art",
     "community": "Charity",
     "sports": "Sports",
+    "academic": "Academic",
+    "politics": "Political",
+    "religion": "Religious",
+    "outdoor": "Outdoor",
+}
+
+LUMA_MAP = {
+    "Technology":   "Technology",
+    "Networking":   "Career",
+    "Education":    "Workshop",
+    "Music":        "Music",
+    "Art":          "Art",
+    "Food":         "Food & Drink",
+    "Sports":       "Sports",
+    "Fitness":      "Fitness",
+    "Gaming":       "Gaming",
+    "Charity":      "Charity",
+    "Politics":     "Political",
+    "Religion":     "Religious",
+    "Automotive":   "Automotive",
+    "Craft":        "Craft",
+    "Outdoor":      "Outdoor",
+    "Pet":          "Pet",
 }
 
 
@@ -83,6 +106,7 @@ def map_category(source: str, raw_category: str) -> str | None:
         "eventbrite": EVENTBRITE_MAP,
         "seatgeek": SEATGEEK_MAP,
         "predicthq": PREDICTHQ_MAP,
+        "luma": LUMA_MAP,
     }
     source_map = maps.get(source, {})
     return source_map.get(raw_category)
