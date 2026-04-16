@@ -120,21 +120,23 @@ async def lifespan(app: FastAPI):
     from datetime import datetime as _dt, timedelta as _td
     _t = _dt.utcnow()
 
+    # Jobs are staggered so they don't compete for memory on startup.
+    # Heavy scraping starts at t+15 min — well after Render's health checks pass.
     scheduler.add_job(
         collect_all_events,
-        IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS, start_date=_t + _td(minutes=2)),
+        IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS, start_date=_t + _td(minutes=15)),
         id="collect_events",
         replace_existing=True,
     )
     scheduler.add_job(
         cleanup_past_events,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=35)),
         id="cleanup_past",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_venue_websites,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=45)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=50)),
         id="collect_venue_websites",
         replace_existing=True,
     )
@@ -146,43 +148,43 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         collect_platform_venues,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=60)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=65)),
         id="collect_platform_venues",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_youtube_job,
-        IntervalTrigger(hours=6, start_date=_t + _td(minutes=90)),
+        IntervalTrigger(hours=6, start_date=_t + _td(minutes=95)),
         id="enrich_youtube",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_performers_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=120)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=125)),
         id="enrich_performers",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_venue_urls_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=150)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=155)),
         id="enrich_venue_urls",
         replace_existing=True,
     )
     scheduler.add_job(
         discover_venues_job,
-        IntervalTrigger(hours=48, start_date=_t + _td(minutes=180)),
+        IntervalTrigger(hours=48, start_date=_t + _td(minutes=185)),
         id="discover_venues",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_bandsintown_job,
-        IntervalTrigger(hours=12, start_date=_t + _td(minutes=10)),
+        IntervalTrigger(hours=12, start_date=_t + _td(minutes=25)),
         id="collect_bandsintown",
         replace_existing=True,
     )
     scheduler.add_job(
         collect_techconf_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=20)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
         id="collect_techconf",
         replace_existing=True,
     )
@@ -205,6 +207,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Supercaly", lifespan=lifespan)
+
+
+# Health-check endpoint — must respond instantly, no DB / blocking work
+# Configure this path in Render → Settings → Health Check Path: /ping
+@app.get("/ping", include_in_schema=False)
+def ping():
+    return {"status": "ok"}
+
 
 # API routers
 app.include_router(auth.router)
