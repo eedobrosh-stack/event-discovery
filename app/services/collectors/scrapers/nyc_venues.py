@@ -71,7 +71,10 @@ class NYCVenueScraper(BaseCollector):
                     logger.debug(f"No HTML from {venue['name']} (blocked or unreachable)")
                     continue
 
-                soup = BeautifulSoup(html, "lxml")
+                try:
+                    soup = BeautifulSoup(html, "lxml")
+                except Exception:
+                    soup = BeautifulSoup(html, "html.parser")
                 scraper_type = venue.get("scraper", "generic")
 
                 if scraper_type == "bluenote":
