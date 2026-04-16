@@ -111,7 +111,6 @@ function setupCityAutocomplete() {
     function matchCities(q) {
         const metroMatches = allMetroAreas.filter(m =>
             m.name.toLowerCase().includes(q) ||
-            m.country.toLowerCase().includes(q) ||
             m.city_names.some(cn => cn.toLowerCase().includes(q))
         ).slice(0, 3);
 
