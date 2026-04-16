@@ -45,7 +45,7 @@ CITY_COORDS: dict[str, tuple[float, float, int]] = {
 GQL2_URL = "https://www.meetup.com/gql2"
 
 GQL_QUERY = """
-query RecommendedEvents($lat: Float!, $lon: Float!, $radius: Int!, $first: Int!) {
+query RecommendedEvents($lat: Float!, $lon: Float!, $radius: Float!, $first: Int!) {
   recommendedEvents(filter: { lat: $lat, lon: $lon, radius: $radius }, first: $first) {
     edges {
       node {
@@ -202,7 +202,7 @@ class MeetupCollector(BaseCollector):
         lat, lon, radius = coords
         payload = {
             "query": GQL_QUERY,
-            "variables": {"lat": lat, "lon": lon, "radius": radius, "first": 60},
+            "variables": {"lat": lat, "lon": lon, "radius": float(radius), "first": 60},
         }
 
         try:
