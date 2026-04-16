@@ -2,9 +2,11 @@
 
 let allCities = [];
 let allMetroAreas = [];
+let allCountries = [];
 let selectedType = null; // { kind, value, badge } — set by autocomplete
 let selectedCityId = "";
 let selectedIsMetro = false;
+let selectedIsCountry = false;
 
 const GLOBAL_CITY = { id: "", name: "🌍 Global", country: "All Cities", label: "🌍 Global — All Cities" };
 
@@ -99,8 +101,8 @@ function setupCityAutocomplete() {
         list.innerHTML = items.map(c => {
             const id    = c._isMeta ? c.city_ids : (c.id || "");
             const label = c.label || `${c.name}, ${c.country}`;
-            const cls   = c._isMeta ? " class=\"metro-option\"" : "";
-            return `<li data-id="${id}" data-label="${esc(label)}" data-ismeta="${c._isMeta ? '1' : ''}"${cls}>${esc(label)}</li>`;
+            const cls   = c._isMeta ? " class=\"metro-option\"" : c._isCountry ? " class=\"country-option\"" : "";
+            return `<li data-id="${id}" data-label="${esc(label)}" data-ismeta="${c._isMeta ? '1' : ''}" data-iscountry="${c._isCountry ? '1' : ''}"${cls}>${esc(label)}</li>`;
         }).join("");
         list.hidden = items.length === 0;
         activeIdx = -1;
@@ -111,17 +113,21 @@ function setupCityAutocomplete() {
             m.name.toLowerCase().includes(q) ||
             m.country.toLowerCase().includes(q) ||
             m.city_names.some(cn => cn.toLowerCase().includes(q))
-        ).slice(0, 4);
+        ).slice(0, 3);
+
+        const countryMatches = allCountries.filter(c =>
+            c.name.toLowerCase().includes(q)
+        ).slice(0, 3);
 
         const cityMatches = allCities
             .filter(c =>
                 c.name.toLowerCase().includes(q) ||
                 c.country.toLowerCase().includes(q)
             )
-            .slice(0, 6)
+            .slice(0, 5)
             .map(c => ({ ...c, label: `${c.name}, ${c.country}` }));
 
-        return [...metroMatches, ...cityMatches];
+        return [...metroMatches, ...countryMatches, ...cityMatches];
     }
 
     clearBtn.addEventListener("click", () => {
@@ -150,10 +156,11 @@ function setupCityAutocomplete() {
     list.addEventListener("click", e => {
         const li = e.target.closest("li");
         if (!li) return;
-        input.value    = li.dataset.label;
-        hidden.value   = li.dataset.id;
-        selectedCityId = li.dataset.id;
-        selectedIsMetro = li.dataset.ismeta === "1";
+        input.value      = li.dataset.label;
+        hidden.value     = li.dataset.id;
+        selectedCityId   = li.dataset.id;
+        selectedIsMetro  = li.dataset.ismeta === "1";
+        selectedIsCountry = li.dataset.iscountry === "1";
         clearBtn.hidden = !input.value.trim();
         list.hidden = true;
     });
@@ -215,25 +222,37 @@ function navigateToResults() {
 
     // City filter — prefer explicitly selected ID, then try text match
     if (cityId) {
-        state.cityId     = cityId;
-        state.cityLabel  = cityInput.value.trim();
-        state.cityIsMeta = selectedIsMetro;
+        state.cityId       = cityId;
+        state.cityLabel    = cityInput.value.trim();
+        state.cityIsMeta   = selectedIsMetro;
+        state.cityIsCountry = selectedIsCountry;
     } else if (cityInput.value.trim()) {
         const q = cityInput.value.trim().toLowerCase();
         // Try metro area match first
         const metroMatch = allMetroAreas.find(m => m.name.toLowerCase() === q);
         if (metroMatch) {
-            state.cityId     = metroMatch.city_ids;
-            state.cityLabel  = metroMatch.label;
-            state.cityIsMeta = true;
+            state.cityId       = metroMatch.city_ids;
+            state.cityLabel    = metroMatch.label;
+            state.cityIsMeta   = true;
+            state.cityIsCountry = false;
         } else {
-            const match = allCities.find(c =>
-                c.name.toLowerCase() === q ||
-                `${c.name}, ${c.country}`.toLowerCase() === q
-            );
-            if (match) {
-                state.cityId    = String(match.id);
-                state.cityLabel = `${match.name}, ${match.country}`;
+            // Try country match
+            const countryMatch = allCountries.find(c => c.name.toLowerCase() === q);
+            if (countryMatch) {
+                state.cityId       = `COUNTRY:${countryMatch.name}`;
+                state.cityLabel    = countryMatch.label;
+                state.cityIsMeta   = false;
+                state.cityIsCountry = true;
+            } else {
+                const match = allCities.find(c =>
+                    c.name.toLowerCase() === q ||
+                    `${c.name}, ${c.country}`.toLowerCase() === q
+                );
+                if (match) {
+                    state.cityId       = String(match.id);
+                    state.cityLabel    = `${match.name}, ${match.country}`;
+                    state.cityIsCountry = false;
+                }
             }
         }
     }
@@ -251,15 +270,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     detectCityPlaceholder();
 
     try {
-        const [citiesResp, metroResp] = await Promise.all([
+        const [citiesResp, metroResp, countriesResp] = await Promise.all([
             fetch("/api/cities"),
             fetch("/api/metro-areas"),
+            fetch("/api/cities/countries"),
         ]);
         allCities = await citiesResp.json();
         allMetroAreas = (await metroResp.json()).map(m => ({
             ...m,
             _isMeta: true,
             label: `🗺 ${m.name} (${m.city_count} cities)`,
+        }));
+        allCountries = (await countriesResp.json()).map(c => ({
+            ...c,
+            _isCountry: true,
+            id: `COUNTRY:${c.name}`,
+            label: `🌐 ${c.name} (${c.city_count} cities)`,
         }));
     } catch {}
     setupCityAutocomplete();

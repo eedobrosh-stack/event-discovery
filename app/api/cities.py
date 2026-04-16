@@ -67,3 +67,35 @@ def list_cities(db: Session = Depends(get_db)):
     _cache = _build_city_list(db)
     _cache_ts = time.time()
     return _cache
+
+
+# ── Countries endpoint ─────────────────────────────────────────────────────────
+
+_country_cache: List = []
+_country_cache_ts: float = 0.0
+
+
+@router.get("/countries")
+def list_countries(db: Session = Depends(get_db)):
+    """Return distinct countries that have cities with events, ordered by event count."""
+    global _country_cache, _country_cache_ts
+    if _country_cache and (time.time() - _country_cache_ts) < _TTL:
+        return _country_cache
+
+    rows = db.execute(text("""
+        SELECT c.country, COUNT(DISTINCT c.id) as city_count, COUNT(DISTINCT e.id) as event_count
+        FROM cities c
+        JOIN venues v ON v.city_id = c.id
+        JOIN events e ON e.venue_id = v.id
+        WHERE c.country IS NOT NULL AND c.country != ''
+        GROUP BY c.country
+        ORDER BY event_count DESC
+    """)).fetchall()
+
+    result = [
+        {"name": r[0], "city_count": r[1], "event_count": r[2]}
+        for r in rows
+    ]
+    _country_cache = result
+    _country_cache_ts = time.time()
+    return result

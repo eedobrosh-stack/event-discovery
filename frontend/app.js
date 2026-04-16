@@ -226,17 +226,25 @@ function setupTypeAutocomplete() {
 
 let allCities = [];
 let allMetroAreas = [];
+let allCountries = [];
 
 async function loadCities() {
-    const [citiesResp, metroResp] = await Promise.all([
+    const [citiesResp, metroResp, countriesResp] = await Promise.all([
         fetch("/api/cities"),
         fetch("/api/metro-areas"),
+        fetch("/api/cities/countries"),
     ]);
     allCities = await citiesResp.json();
     allMetroAreas = (await metroResp.json()).map(m => ({
         ...m,
         _isMeta: true,
         label: `🗺 ${m.name} (${m.city_count} cities)`,
+    }));
+    allCountries = (await countriesResp.json()).map(c => ({
+        ...c,
+        _isCountry: true,
+        id: `COUNTRY:${c.name}`,
+        label: `🌐 ${c.name} (${c.city_count} cities)`,
     }));
     setupCityAutocomplete();
     detectUserCity();
@@ -314,17 +322,26 @@ const GLOBAL_CITY = { id: "", name: "🌍 Global", country: "All Cities", label:
 function renderCityList(matches) {
     const list = document.getElementById("city-suggestions");
     list.innerHTML = matches.map(c => {
-        const id    = c._isMeta ? c.city_ids : (c.id || "");
+        const id    = c._isMeta ? c.city_ids : (c.id || "");  // country uses COUNTRY: prefix
         const label = c.label || `${c.name}, ${c.country}`;
-        const cls   = c._isMeta ? " class=\"metro-option\"" : "";
+        const cls   = c._isMeta ? " class=\"metro-option\"" : c._isCountry ? " class=\"country-option\"" : "";
         return `<li data-id="${id}" data-label="${label}"${cls}>${label}</li>`;
     }).join("");
     list.hidden = matches.length === 0;
 }
 
 function isMetroSelected() {
-    // A metro selection stores multiple comma-separated city IDs
-    return (document.getElementById("city-id")?.value || "").includes(",");
+    const v = document.getElementById("city-id")?.value || "";
+    return v.includes(",") && !v.startsWith("COUNTRY:");
+}
+
+function isCountrySelected() {
+    return (document.getElementById("city-id")?.value || "").startsWith("COUNTRY:");
+}
+
+function getSelectedCountry() {
+    const v = document.getElementById("city-id")?.value || "";
+    return v.startsWith("COUNTRY:") ? v.slice(8) : null;
 }
 
 function updateCityClearBtn() {
@@ -377,14 +394,18 @@ function setupCityAutocomplete() {
             m.name.toLowerCase().includes(q) ||
             m.country.toLowerCase().includes(q) ||
             m.city_names.some(cn => cn.toLowerCase().includes(q))
-        ).slice(0, 4);
+        ).slice(0, 3);
+
+        const countryMatches = allCountries.filter(c =>
+            c.name.toLowerCase().includes(q)
+        ).slice(0, 3);
 
         const cityMatches = allCities.filter(c =>
             `${c.name}, ${c.country}`.toLowerCase().includes(q)
-        ).slice(0, 8);
+        ).slice(0, 6);
 
-        // Metro areas first, then individual cities, always preceded by Global
-        const matches = [GLOBAL_CITY, ...metroMatches, ...cityMatches];
+        // Order: Global → Metros → Countries → Cities
+        const matches = [GLOBAL_CITY, ...metroMatches, ...countryMatches, ...cityMatches];
 
         renderCityList(matches);
     });
@@ -429,7 +450,8 @@ function setupCityAutocomplete() {
 }
 
 function getSelectedCityId() {
-    return document.getElementById("city-id").value;
+    const v = document.getElementById("city-id").value;
+    return isCountrySelected() ? "" : v;  // country filter is separate; don't pass as city_ids
 }
 
 function bindEvents() {
@@ -490,6 +512,8 @@ async function searchEvents() {
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (cityId) params.set("city_ids", cityId);
+    const country = getSelectedCountry();
+    if (country) params.set("country", country);
     if (startDate) params.set("start_date", startDate);
     if (endDate) params.set("end_date", endDate);
     if (search) params.set("search", search);
@@ -526,13 +550,13 @@ async function searchEvents() {
                 <span class="time-sep">${ev.start_time && ev.end_time ? "–" : ""}</span>
                 <span class="time-val">${ev.end_time || ""}</span>
               </div>
-              ${(!getSelectedCityId() || isMetroSelected()) && ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
+              ${(!getSelectedCityId() || isMetroSelected() || isCountrySelected()) && ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
             </td>
             <td>
               ${ev.venue_website_url
                 ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>`
                 : esc(ev.venue_name || "-")}
-              ${(!getSelectedCityId() || isMetroSelected()) && (ev.venue_city || ev.venue_country)
+              ${(!getSelectedCityId() || isMetroSelected() || isCountrySelected()) && (ev.venue_city || ev.venue_country)
                 ? `<div class="venue-location">${esc([ev.venue_city, ev.venue_country].filter(Boolean).join(", "))}</div>`
                 : ""}
             </td>
@@ -576,6 +600,8 @@ async function exportICS() {
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
+    const country = getSelectedCountry();
+    if (country) body.country = country;
     if (startDate) body.start_date = startDate;
     if (endDate) body.end_date = endDate;
 
@@ -603,6 +629,8 @@ async function exportCSV() {
         const body = {};
         if (typeSearch.length) body.type_search = typeSearch.join(",");
         if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
+        const country = getSelectedCountry();
+        if (country) body.country = country;
         if (startDate) body.start_date = startDate;
         if (endDate) body.end_date = endDate;
         const resp = await fetch("/api/export/csv", {
@@ -631,6 +659,8 @@ async function exportSheets() {
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
+    const country = getSelectedCountry();
+    if (country) body.country = country;
     if (startDate) body.start_date = startDate;
     if (endDate) body.end_date = endDate;
 

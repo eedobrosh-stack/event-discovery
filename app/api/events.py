@@ -10,9 +10,10 @@ from app.schemas.event import EventOut
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 
-def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search):
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None):
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, select
+    from app.models import City
 
     # Legacy: exact category filter
     if categories:
@@ -52,9 +53,17 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             ))
 
     if city_ids:
-        ids = [int(x.strip()) for x in city_ids.split(",")]
+        ids = [int(x.strip()) for x in city_ids.split(",") if x.strip().isdigit()]
         query = query.join(Venue, Event.venue_id == Venue.id).filter(
             Venue.city_id.in_(ids)
+        )
+    elif country:
+        # Country filter — join through venue→city and match country name
+        query = (
+            query
+            .join(Venue, Event.venue_id == Venue.id)
+            .join(City, Venue.city_id == City.id)
+            .filter(City.country.ilike(country))
         )
 
     query = query.filter(Event.start_date >= date.today())
@@ -73,6 +82,7 @@ def count_events(
     categories: Optional[str] = Query(None),
     type_search: Optional[str] = Query(None),
     city_ids: Optional[str] = Query(None),
+    country: Optional[str] = Query(None, description="Filter by country name"),
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     search: Optional[str] = None,
@@ -81,7 +91,7 @@ def count_events(
     from sqlalchemy import func
     query = _build_filter_query(
         db, db.query(func.count(Event.id.distinct())),
-        categories, type_search, city_ids, start_date, end_date, search
+        categories, type_search, city_ids, start_date, end_date, search, country
     )
     return {"total": query.scalar() or 0}
 
@@ -91,6 +101,7 @@ def list_events(
     categories: Optional[str] = Query(None, description="Comma-separated category names (legacy)"),
     type_search: Optional[str] = Query(None, description="Comma-separated terms; OR-searches event type name, category, and artist name"),
     city_ids: Optional[str] = Query(None, description="Comma-separated city IDs"),
+    country: Optional[str] = Query(None, description="Filter by country name"),
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     search: Optional[str] = None,
@@ -103,7 +114,7 @@ def list_events(
         selectinload(Event.event_types),
     )
     query = _build_filter_query(
-        db, base_query, categories, type_search, city_ids, start_date, end_date, search
+        db, base_query, categories, type_search, city_ids, start_date, end_date, search, country
     )
 
     events = (

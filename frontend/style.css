@@ -352,6 +352,20 @@ a:hover { text-decoration: underline; }
     color: #3730a3;
 }
 
+/* Country options — teal/emerald distinct from metro indigo */
+#city-suggestions li.country-option,
+.suggestions-list li.country-option {
+    font-weight: 600;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    color: #065f46;
+}
+
+#city-suggestions li.country-option:hover,
+#city-suggestions li.country-option.active {
+    background: #ecfdf5;
+    color: #047857;
+}
+
 /* ── Type / Performer autocomplete ───────────────────────── */
 .filter-group--wide {
     flex: 2;
