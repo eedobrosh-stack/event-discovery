@@ -11,7 +11,9 @@ from app.config import settings
 from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
 from app.api import platform_venues as platform_venues_api
+from app.api import metro_areas
 from app.api.cities import warm_cities_cache
+from app.api.metro_areas import warm_metro_cache
 from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job
 
 scheduler = AsyncIOScheduler()
@@ -106,6 +108,8 @@ async def lifespan(app: FastAPI):
         try:
             await asyncio.get_event_loop().run_in_executor(None, warm_cities_cache)
             _log.info("Cities cache warmed")
+            await asyncio.get_event_loop().run_in_executor(None, warm_metro_cache)
+            _log.info("Metro areas cache warmed")
         except Exception as e:
             _log.warning(f"Cache warm failed: {e}")
     asyncio.create_task(_deferred_startup())
@@ -201,6 +205,7 @@ app.include_router(venues.router)
 app.include_router(stats.router)
 app.include_router(suggestions.router)
 app.include_router(platform_venues_api.router)
+app.include_router(metro_areas.router)
 
 # Explicit route for admin page (StaticFiles html=True doesn't reliably resolve /admin → admin.html)
 @app.get("/admin")

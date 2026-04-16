@@ -225,10 +225,19 @@ function setupTypeAutocomplete() {
 }
 
 let allCities = [];
+let allMetroAreas = [];
 
 async function loadCities() {
-    const resp = await fetch("/api/cities");
-    allCities = await resp.json();
+    const [citiesResp, metroResp] = await Promise.all([
+        fetch("/api/cities"),
+        fetch("/api/metro-areas"),
+    ]);
+    allCities = await citiesResp.json();
+    allMetroAreas = (await metroResp.json()).map(m => ({
+        ...m,
+        _isMeta: true,
+        label: `🗺 ${m.name} (${m.city_count} cities)`,
+    }));
     setupCityAutocomplete();
     detectUserCity();
 }
@@ -304,10 +313,18 @@ const GLOBAL_CITY = { id: "", name: "🌍 Global", country: "All Cities", label:
 
 function renderCityList(matches) {
     const list = document.getElementById("city-suggestions");
-    list.innerHTML = matches.map(c =>
-        `<li data-id="${c.id}" data-label="${c.label || (c.name + ', ' + c.country)}">${c.label || (c.name + ', ' + c.country)}</li>`
-    ).join("");
+    list.innerHTML = matches.map(c => {
+        const id    = c._isMeta ? c.city_ids : (c.id || "");
+        const label = c.label || `${c.name}, ${c.country}`;
+        const cls   = c._isMeta ? " class=\"metro-option\"" : "";
+        return `<li data-id="${id}" data-label="${label}"${cls}>${label}</li>`;
+    }).join("");
     list.hidden = matches.length === 0;
+}
+
+function isMetroSelected() {
+    // A metro selection stores multiple comma-separated city IDs
+    return (document.getElementById("city-id")?.value || "").includes(",");
 }
 
 function updateCityClearBtn() {
@@ -356,12 +373,18 @@ function setupCityAutocomplete() {
             return;
         }
 
+        const metroMatches = allMetroAreas.filter(m =>
+            m.name.toLowerCase().includes(q) ||
+            m.country.toLowerCase().includes(q) ||
+            m.city_names.some(cn => cn.toLowerCase().includes(q))
+        ).slice(0, 4);
+
         const cityMatches = allCities.filter(c =>
             `${c.name}, ${c.country}`.toLowerCase().includes(q)
-        ).slice(0, 10);
+        ).slice(0, 8);
 
-        // Always show Global as first option
-        const matches = [GLOBAL_CITY, ...cityMatches];
+        // Metro areas first, then individual cities, always preceded by Global
+        const matches = [GLOBAL_CITY, ...metroMatches, ...cityMatches];
 
         renderCityList(matches);
     });
@@ -503,13 +526,13 @@ async function searchEvents() {
                 <span class="time-sep">${ev.start_time && ev.end_time ? "–" : ""}</span>
                 <span class="time-val">${ev.end_time || ""}</span>
               </div>
-              ${!getSelectedCityId() && ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
+              ${(!getSelectedCityId() || isMetroSelected()) && ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
             </td>
             <td>
               ${ev.venue_website_url
                 ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>`
                 : esc(ev.venue_name || "-")}
-              ${!getSelectedCityId() && (ev.venue_city || ev.venue_country)
+              ${(!getSelectedCityId() || isMetroSelected()) && (ev.venue_city || ev.venue_country)
                 ? `<div class="venue-location">${esc([ev.venue_city, ev.venue_country].filter(Boolean).join(", "))}</div>`
                 : ""}
             </td>
@@ -552,7 +575,7 @@ async function exportICS() {
     const { typeSearch, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
-    if (cityId) body.city_ids = [parseInt(cityId)];
+    if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     if (startDate) body.start_date = startDate;
     if (endDate) body.end_date = endDate;
 
@@ -579,7 +602,7 @@ async function exportCSV() {
         const { typeSearch, cityId, startDate, endDate } = getFilters();
         const body = {};
         if (typeSearch.length) body.type_search = typeSearch.join(",");
-        if (cityId) body.city_ids = [parseInt(cityId)];
+        if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
         if (startDate) body.start_date = startDate;
         if (endDate) body.end_date = endDate;
         const resp = await fetch("/api/export/csv", {
@@ -607,7 +630,7 @@ async function exportSheets() {
     const { typeSearch, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
-    if (cityId) body.city_ids = [parseInt(cityId)];
+    if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     if (startDate) body.start_date = startDate;
     if (endDate) body.end_date = endDate;
 

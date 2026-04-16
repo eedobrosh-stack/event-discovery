@@ -339,6 +339,19 @@ a:hover { text-decoration: underline; }
     color: #1a1a2e;
 }
 
+/* Metro area options — distinct visual treatment */
+#city-suggestions li.metro-option,
+.suggestions-list li.metro-option {
+    font-weight: 600;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+
+#city-suggestions li.metro-option:hover,
+#city-suggestions li.metro-option.active {
+    background: #eef2ff;
+    color: #3730a3;
+}
+
 /* ── Type / Performer autocomplete ───────────────────────── */
 .filter-group--wide {
     flex: 2;
