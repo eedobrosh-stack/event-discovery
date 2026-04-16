@@ -31,17 +31,46 @@ _HEADERS = {
 
 # city name → Eventbrite URL slug (state/country--city)
 CITY_SLUGS: dict[str, str] = {
-    "New York":      "ny--new-york",
-    "Los Angeles":   "ca--los-angeles",
-    "Chicago":       "il--chicago",
-    "San Francisco": "ca--san-francisco",
-    "Berkeley":      "ca--berkeley",
-    "London":        "united-kingdom--london",
-    "Berlin":        "germany--berlin",
-    "Paris":         "france--paris",
-    "Tel Aviv":      "israel--tel-aviv",
-    "Toronto":       "ontario--toronto",
-    "Sydney":        "new-south-wales--sydney",
+    # North America
+    "New York":        "ny--new-york",
+    "Los Angeles":     "ca--los-angeles",
+    "Chicago":         "il--chicago",
+    "San Francisco":   "ca--san-francisco",
+    "Berkeley":        "ca--berkeley",
+    "Miami":           "fl--miami",
+    "Austin":          "tx--austin",
+    "Seattle":         "wa--seattle",
+    "Boston":          "ma--boston",
+    "Denver":          "co--denver",
+    "Atlanta":         "ga--atlanta",
+    "Portland":        "or--portland",
+    "Nashville":       "tn--nashville",
+    "Las Vegas":       "nv--las-vegas",
+    "Toronto":         "ontario--toronto",
+    "Vancouver":       "british-columbia--vancouver",
+    "Montreal":        "quebec--montreal",
+    # Europe
+    "London":          "united-kingdom--london",
+    "Berlin":          "germany--berlin",
+    "Paris":           "france--paris",
+    "Amsterdam":       "netherlands--amsterdam",
+    "Barcelona":       "spain--barcelona",
+    "Madrid":          "spain--madrid",
+    "Lisbon":          "portugal--lisbon",
+    "Vienna":          "austria--vienna",
+    "Prague":          "czech-republic--prague",
+    "Budapest":        "hungary--budapest",
+    "Dublin":          "ireland--dublin",
+    "Zurich":          "switzerland--zurich",
+    # Middle East
+    "Tel Aviv":        "israel--tel-aviv",
+    "Jerusalem":       "israel--jerusalem",
+    # Asia-Pacific
+    "Sydney":          "new-south-wales--sydney",
+    "Melbourne":       "victoria--melbourne",
+    "Tokyo":           "japan--tokyo",
+    "Seoul":           "south-korea--seoul",
+    "Singapore":       "singapore--singapore",
 }
 
 

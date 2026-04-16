@@ -34,10 +34,9 @@ registry = CollectorRegistry()
 # Only register collectors that have credentials or are credential-free scrapers
 if settings.TICKETMASTER_KEY:
     registry.register(TicketmasterCollector())
-if settings.EVENTBRITE_TOKEN:
-    registry.register(EventbriteCollector())   # full API — better data, proper pagination
-else:
-    registry.register(EventbriteWebScraper())  # fallback: no token needed
+# Eventbrite v3 events/search API is deprecated — always use the web scraper
+# (EventbriteCollector kept in codebase for when Eventbrite restores API access)
+registry.register(EventbriteWebScraper())
 if settings.SEATGEEK_CLIENT_ID:
     registry.register(SeatGeekCollector())
 if settings.PREDICTHQ_TOKEN:
