@@ -269,6 +269,15 @@ async def scrape_venue_url(
     venue_country = city.country if city else ""
 
     # Run scraper — use platform-specific parsers when URL is recognised
+    if "techconf.directory" in venue_url:
+        from app.services.collectors.scrapers.techconf_directory import scrape_techconf_directory
+        from app.scheduler.jobs import collect_techconf_job
+        # Run the full directory job and report results
+        await collect_techconf_job()
+        # Return a summary (job handles its own DB writes)
+        return {"venue_name": "TechConf.Directory", "events_found": -1, "events_saved": -1,
+                "message": "TechConf.Directory scan triggered — check Scan Logs for results."}
+
     async with httpx.AsyncClient() as client:
         if "goshow.co.il" in venue_url:
             raw_events = await parse_goshow_venue_page(

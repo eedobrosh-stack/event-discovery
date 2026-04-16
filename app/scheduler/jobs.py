@@ -691,6 +691,105 @@ async def collect_bandsintown_job(batch: int = 150):
         db.close()
 
 
+async def collect_techconf_job():
+    """
+    Scrape techconf.directory/conferences and save upcoming tech conferences.
+    Runs daily — the directory is updated frequently with new events.
+    """
+    from app.services.collectors.scrapers.techconf_directory import scrape_techconf_directory
+    from app.models import City, Venue, Event, EventType
+
+    db = SessionLocal()
+    log = ScanLog(job_name="techconf_directory", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    found = saved = 0
+
+    try:
+        conferences = await scrape_techconf_directory()
+        found = len(conferences)
+
+        # Look up the "Tech Conference" event type once
+        tech_et = db.query(EventType).filter_by(name="Tech Conference").first()
+
+        for conf in conferences:
+            try:
+                city_name    = conf["city"] or "Online"
+                country_name = conf["country"] or ("Global" if conf["is_online"] else "")
+                is_online    = conf["is_online"]
+
+                # Resolve or create city
+                city = db.query(City).filter(
+                    func.lower(City.name) == city_name.lower()
+                ).first()
+                if not city:
+                    city = City(name=city_name, country=country_name)
+                    db.add(city)
+                    db.flush()
+
+                # Generic conference venue per city
+                venue_name = f"{city_name} Conference" if not is_online else "Online"
+                venue = db.query(Venue).filter(
+                    Venue.city_id == city.id,
+                    func.lower(Venue.name) == venue_name.lower(),
+                ).first()
+                if not venue:
+                    venue = Venue(
+                        name=venue_name,
+                        city_id=city.id,
+                        physical_city=city_name,
+                        physical_country=country_name,
+                    )
+                    db.add(venue)
+                    db.flush()
+
+                # Dedup by source_id (conference URL is unique per event)
+                source_id = f"techconf:{conf['url']}"
+                if db.query(Event.id).filter_by(
+                    scrape_source="techconf_directory", source_id=source_id
+                ).first():
+                    continue
+
+                new_ev = Event(
+                    name=conf["name"],
+                    start_date=conf["start_date"],
+                    end_date=conf["end_date"],
+                    venue_id=venue.id,
+                    venue_name=venue_name,
+                    purchase_link=conf["url"],
+                    scrape_source="techconf_directory",
+                    source_id=source_id,
+                    is_online=is_online,
+                )
+                db.add(new_ev)
+                db.flush()
+
+                # Assign Tech Conference event type
+                if tech_et and tech_et not in new_ev.event_types:
+                    new_ev.event_types.append(tech_et)
+
+                saved += 1
+            except Exception as e:
+                logger.debug(f"collect_techconf_job event error {conf.get('name')!r}: {e}")
+
+        db.commit()
+        log.status = "success"
+        log.events_found = found
+        log.events_saved = saved
+        log.notes = f"found={found} saved={saved}"
+        logger.info(f"collect_techconf_job done: found={found} saved={saved}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"collect_techconf_job error: {e}")
+        db.rollback()
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()
