@@ -225,7 +225,7 @@ class CollectorRegistry:
 
     # Generic fallback type per broad category
     _CATEGORY_FALLBACK: dict[str, str] = {
-        "Music":        "Jazz Concert",
+        "Music":        "Concert",
         "Art":          "Commercial Gallery Exhibitions",
         "Comedy":       "Open Mic Nights",
         "Dance":        "Modern Dance",
@@ -299,20 +299,38 @@ class CollectorRegistry:
         ("hip-hop",         "Hip-Hop / Rap Concert"),
         ("hip hop",         "Hip-Hop / Rap Concert"),
         (" rap ",           "Hip-Hop / Rap Concert"),
+        (" trap ",          "Hip-Hop / Rap Concert"),
         ("rock concert",    "Rock Concert"),
+        (" rock ",          "Rock Concert"),    # "Somos Rock", "punk rock", etc.
+        (" metal ",         "Rock Concert"),    # heavy metal — "metal detecting" unlikely in event names
+        (" punk ",          "Rock Concert"),
+        (" grunge ",        "Rock Concert"),
+        ("indie rock",      "Rock Concert"),
+        ("indie band",      "Rock Concert"),
+        (" pop concert",    "Pop Concert"),
+        ("pop music",       "Pop Concert"),
         ("electronic",      "Electronic / DJ Set"),
         (" dj set",         "Electronic / DJ Set"),
         (" dj ",            "Electronic / DJ Set"),
         ("techno",          "Electronic / DJ Set"),
         (" edm ",           "Electronic / DJ Set"),
+        ("house music",     "Electronic / DJ Set"),
+        (" trance ",        "Electronic / DJ Set"),
         ("r&b",             "R&B / Soul Concert"),
         (" soul ",          "R&B / Soul Concert"),
+        (" blues ",         "R&B / Soul Concert"),
+        (" funk ",          "R&B / Soul Concert"),
         ("gospel",          "Gospel Concert"),
         ("country",         "Country Concert"),
         ("bluegrass",       "Country Concert"),
+        ("folk music",      "Concert"),
+        ("folk band",       "Concert"),
         ("latin",           "Latin Concert"),
         ("salsa",           "Latin Concert"),
+        ("cumbia",          "Latin Concert"),
+        (" bossa ",         "Latin Concert"),
         ("reggae",          "Reggae / Calypso Concert"),
+        (" ska ",           "Reggae / Calypso Concert"),
         # Dance
         ("ballet",          "Classical Ballet"),
         ("flamenco",        "Flamenco"),
@@ -420,7 +438,9 @@ class CollectorRegistry:
                     return et
 
         # 2. "X vs Y" in name → always a sports game regardless of category
-        event_text = f" {(raw.name or '').lower()} "
+        # Include a short description snippet for keyword matching (avoid false positives on long text)
+        desc_snippet = (raw.description or "")[:400].lower()
+        event_text = f" {(raw.name or '').lower()} {desc_snippet} "
         if " vs " in event_text or " vs. " in event_text:
             et = db.query(EventType).filter_by(name="Sports Event").first()
             if et:
