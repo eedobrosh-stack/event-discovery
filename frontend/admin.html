@@ -129,6 +129,38 @@
 
     <!-- VENUES -->
     <div class="panel" id="panel-venues">
+
+        <!-- Scan a single venue URL -->
+        <div class="box" style="margin-bottom:1.5rem;">
+            <div class="box-header"><h2>🔍 Scrape Venue by URL</h2></div>
+            <div class="box-body">
+                <p style="font-size:0.85rem;color:#666;margin-bottom:1rem;">
+                    Paste any venue's events page URL. Supercaly will scrape it and import the events directly.
+                    The venue name and city are optional — auto-detected from the page if omitted.
+                </p>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+                    <div style="display:flex;flex-direction:column;gap:4px;flex:2;min-width:260px;">
+                        <label style="font-size:0.75rem;color:#888;text-transform:uppercase;letter-spacing:.04em;">Venue URL *</label>
+                        <input type="url" id="sv-url" placeholder="https://www.venue.com/events/"
+                               style="padding:8px 10px;border:1px solid #ddd;border-radius:5px;font-size:0.9rem;">
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:160px;">
+                        <label style="font-size:0.75rem;color:#888;text-transform:uppercase;letter-spacing:.04em;">Venue Name <span style="color:#bbb;">(opt)</span></label>
+                        <input type="text" id="sv-name" placeholder="e.g. Blue Note"
+                               style="padding:8px 10px;border:1px solid #ddd;border-radius:5px;font-size:0.9rem;">
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:140px;">
+                        <label style="font-size:0.75rem;color:#888;text-transform:uppercase;letter-spacing:.04em;">City <span style="color:#bbb;">(opt)</span></label>
+                        <input type="text" id="sv-city" placeholder="e.g. New York"
+                               style="padding:8px 10px;border:1px solid #ddd;border-radius:5px;font-size:0.9rem;">
+                    </div>
+                    <button id="sv-btn" class="btn btn-primary" style="white-space:nowrap;align-self:flex-end;">Scan Venue</button>
+                </div>
+                <div id="sv-result" style="margin-top:12px;font-size:0.88rem;padding:10px 14px;border-radius:5px;display:none;"></div>
+            </div>
+        </div>
+
+        <!-- Venues list -->
         <div class="box">
             <div class="box-header">
                 <h2>Venues</h2>
@@ -705,6 +737,52 @@ async function pvDelete(id, name) {
     await fetch(`/api/platform-venues/${id}`, {method: "DELETE"});
     loadPlatformVenues();
 }
+
+// ── Single-venue URL scraper ──────────────────────────────────────────────────
+document.getElementById("sv-btn").addEventListener("click", async () => {
+    const url    = document.getElementById("sv-url").value.trim();
+    const name   = document.getElementById("sv-name").value.trim();
+    const city   = document.getElementById("sv-city").value.trim();
+    const resEl  = document.getElementById("sv-result");
+
+    if (!url) { resEl.style.display = "block"; resEl.style.background = "#fef2f2"; resEl.style.color = "#b91c1c"; resEl.textContent = "Please enter a venue URL."; return; }
+
+    const btn = document.getElementById("sv-btn");
+    btn.disabled = true;
+    btn.textContent = "Scanning…";
+    resEl.style.display = "block";
+    resEl.style.background = "#f0f9ff";
+    resEl.style.color = "#0369a1";
+    resEl.textContent = "Fetching events from the venue website…";
+
+    try {
+        const params = new URLSearchParams({ venue_url: url });
+        if (name) params.set("venue_name", name);
+        if (city) params.set("city_name", city);
+
+        const data = await fetch(`/api/admin/scrape-venue-url?${params}`, { method: "POST" }).then(r => r.json());
+
+        if (data.error) {
+            resEl.style.background = "#fef2f2";
+            resEl.style.color = "#b91c1c";
+            resEl.textContent = `⚠ ${data.error}`;
+        } else {
+            const saved   = data.events_saved  ?? 0;
+            const found   = data.events_found  ?? saved;
+            const vname   = data.venue_name    || url;
+            resEl.style.background = "#f0fdf4";
+            resEl.style.color = "#065f46";
+            resEl.innerHTML = `✓ <strong>${esc(vname)}</strong> — found <strong>${found}</strong> events, saved <strong>${saved}</strong> new.`;
+        }
+    } catch(e) {
+        resEl.style.background = "#fef2f2";
+        resEl.style.color = "#b91c1c";
+        resEl.textContent = "Error: " + e.message;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Scan Venue";
+    }
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadOverview();
