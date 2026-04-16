@@ -10,6 +10,7 @@ from app.services.collectors.scrapers.venue_websites import scrape_venue_website
 from app.services.dedup import dedup_events
 from app.services.collectors.api.ticketmaster import TicketmasterCollector
 from app.services.collectors.scrapers.eventbrite_web import EventbriteWebScraper
+from app.services.collectors.api.eventbrite import EventbriteCollector
 from app.services.collectors.api.seatgeek import SeatGeekCollector
 from app.services.collectors.api.predicthq import PredictHQCollector
 from app.services.collectors.scrapers.nyc_venues import NYCVenueScraper
@@ -25,6 +26,7 @@ from app.services.collectors.scrapers.hatarbut import HatarbutCollector
 from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
 from app.services.collectors.scrapers.luma import LumaCollector
 from app.services.collectors.scrapers.meetup import MeetupCollector
+from app.services.collectors.api.bandsintown import BandsintownClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,10 @@ registry = CollectorRegistry()
 # Only register collectors that have credentials or are credential-free scrapers
 if settings.TICKETMASTER_KEY:
     registry.register(TicketmasterCollector())
-registry.register(EventbriteWebScraper())   # no token needed — web scraper
+if settings.EVENTBRITE_TOKEN:
+    registry.register(EventbriteCollector())   # full API — better data, proper pagination
+else:
+    registry.register(EventbriteWebScraper())  # fallback: no token needed
 if settings.SEATGEEK_CLIENT_ID:
     registry.register(SeatGeekCollector())
 if settings.PREDICTHQ_TOKEN:
@@ -546,6 +551,141 @@ async def discover_venues_job():
         log.status = "failed"
         log.notes = str(e)
         logger.error(f"discover_venues error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
+async def collect_bandsintown_job(batch: int = 150):
+    """
+    Artist-centric Bandsintown scan — queries the top `batch` performers
+    by event count and saves any upcoming events returned by the API.
+    Runs every 12 hours so the most-popular artists stay fresh.
+    """
+    import asyncio as _asyncio
+    from app.models import City, Venue, Event, Performer
+    from app.services.collectors.base import RawEvent, default_end_time
+    from datetime import date as _date
+    import urllib.parse
+
+    if not settings.BANDSINTOWN_APP_ID:
+        logger.info("collect_bandsintown_job: BANDSINTOWN_APP_ID not set — skipping")
+        return
+
+    db = SessionLocal()
+    log = ScanLog(job_name="bandsintown", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    found = saved = 0
+
+    try:
+        # Top performers by event count — most-booked artists first
+        rows = (
+            db.query(Performer.name, func.count(Event.id).label("n"))
+            .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
+            .group_by(Performer.id, Performer.name)
+            .order_by(func.count(Event.id).desc())
+            .limit(batch)
+            .all()
+        )
+        artist_names = [r[0] for r in rows]
+        logger.info(f"collect_bandsintown_job: scanning {len(artist_names)} artists")
+
+        client = BandsintownClient()
+        today = _date.today()
+
+        for artist in artist_names:
+            try:
+                events = await client.get_artist_events(artist)
+                found += len(events)
+
+                for ev in events:
+                    try:
+                        # Parse date
+                        dt_str = ev.get("datetime") or ev.get("starts_at") or ""
+                        from datetime import datetime as _dt
+                        start_dt = _dt.fromisoformat(dt_str.replace("Z", "+00:00")) if dt_str else None
+                        if not start_dt or start_dt.date() < today:
+                            continue
+
+                        # Resolve venue / city
+                        venue_data = ev.get("venue") or {}
+                        city_name    = venue_data.get("city") or ""
+                        country_name = venue_data.get("country") or ""
+                        venue_name   = venue_data.get("name") or ""
+
+                        city = db.query(City).filter(
+                            func.lower(City.name) == city_name.lower()
+                        ).first()
+                        if not city:
+                            city = City(
+                                name=city_name,
+                                country=country_name,
+                                latitude=venue_data.get("latitude"),
+                                longitude=venue_data.get("longitude"),
+                            )
+                            db.add(city)
+                            db.flush()
+
+                        venue = db.query(Venue).filter(
+                            Venue.city_id == city.id,
+                            func.lower(Venue.name) == venue_name.lower(),
+                        ).first()
+                        if not venue:
+                            venue = Venue(
+                                name=venue_name,
+                                city_id=city.id,
+                                physical_city=city_name,
+                                physical_country=country_name,
+                                latitude=venue_data.get("latitude"),
+                                longitude=venue_data.get("longitude"),
+                            )
+                            db.add(venue)
+                            db.flush()
+
+                        source_id = f"bandsintown:{ev.get('id', '')}"
+                        if db.query(Event.id).filter_by(scrape_source="bandsintown", source_id=source_id).first():
+                            continue
+
+                        lineup = ev.get("lineup") or []
+                        event_name = lineup[0] if lineup else artist
+
+                        new_ev = Event(
+                            name=event_name,
+                            artist_name=artist,
+                            start_date=start_dt.date(),
+                            start_time=start_dt.time(),
+                            venue_id=venue.id,
+                            venue_name=venue_name,
+                            purchase_link=ev.get("url"),
+                            description=ev.get("description"),
+                            scrape_source="bandsintown",
+                            source_id=source_id,
+                        )
+                        db.add(new_ev)
+                        saved += 1
+                    except Exception as e:
+                        logger.debug(f"bandsintown event error for {artist!r}: {e}")
+
+                db.commit()
+                db.expire_all()
+                await _asyncio.sleep(1.1)  # Bandsintown rate limit
+
+            except Exception as e:
+                logger.warning(f"bandsintown artist error {artist!r}: {e}")
+                db.rollback()
+
+        log.status = "success"
+        log.events_found = found
+        log.events_saved = saved
+        log.notes = f"artists={len(artist_names)} found={found} saved={saved}"
+        logger.info(f"collect_bandsintown_job done: found={found} saved={saved}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"collect_bandsintown_job error: {e}")
     finally:
         log.finished_at = datetime.utcnow()
         db.commit()

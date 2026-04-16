@@ -8,16 +8,33 @@ from app.services.collectors.base import BaseCollector, RawEvent, safe_time, def
 RA_GRAPHQL = "https://ra.co/graphql"
 
 # RA area IDs for supported cities
+# Verified by querying ra.co/graphql — IDs with 0 results removed
 CITY_AREA_IDS = {
-    "New York": 8,
-    "London": 13,
-    "Los Angeles": 23,
-    "Chicago": 17,
-    "Berlin": 34,
-    "Amsterdam": 29,
-    "Tel Aviv": 413,
-    "Paris": 31,
-    "Sydney": 61,
+    # Original 9
+    "New York":      8,
+    "London":        13,
+    "Los Angeles":   23,
+    "Chicago":       17,
+    "Berlin":        34,
+    "Amsterdam":     29,
+    "Tel Aviv":      413,
+    "Paris":         31,
+    "Sydney":        61,
+    # Priority-city gaps filled
+    "San Francisco": 39,
+    "Toronto":       52,
+    # High-event new cities (verified > 50 events each)
+    "Melbourne":     24,
+    "Tokyo":         99,
+    "Seoul":         37,
+    "Barcelona":     57,
+    "Dublin":        155,
+    "Prague":        164,
+    "Zurich":        73,
+    "Ibiza":         45,
+    "Vienna":        71,
+    "Budapest":      169,
+    "Lisbon":        146,
 }
 
 QUERY = """
