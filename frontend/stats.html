@@ -294,6 +294,115 @@
         #stats-loading { color: #aaa; padding: 40px 0; text-align: center; }
         .empty-state { color: #aaa; text-align: center; padding: 30px; }
 
+        /* ── Source Matrix ── */
+        .matrix-wrap {
+            overflow-x: auto;
+            border-radius: 10px;
+            border: 1px solid var(--border, #333);
+            margin-bottom: 28px;
+        }
+        .matrix-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+        }
+        .matrix-table thead tr.group-row th {
+            background: rgba(0,0,0,.3);
+            text-align: center;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: .07em;
+            color: #777;
+            padding: 6px 14px 5px;
+            border-bottom: 1px solid var(--border, #2a2a3a);
+        }
+        .matrix-table thead tr.group-row th.all-time-hdr { color: #9d8ff7; border-right: 2px solid rgba(124,106,247,.25); }
+        .matrix-table thead tr.group-row th.recent-hdr   { color: #4ade80; }
+        .matrix-table thead tr.col-row th {
+            background: var(--card-bg, #1e1e2e);
+            padding: 7px 10px;
+            text-align: right;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #666;
+            white-space: nowrap;
+        }
+        .matrix-table thead tr.col-row th.src-col { text-align: left; min-width: 130px; }
+        .matrix-table thead tr.col-row th.sep { border-right: 2px solid rgba(124,106,247,.2); }
+        .matrix-table tbody tr { border-top: 1px solid var(--border, #2a2a3a); transition: background .12s; }
+        .matrix-table tbody tr:hover { background: rgba(124,106,247,.06); }
+        .matrix-table td { padding: 7px 10px; vertical-align: middle; white-space: nowrap; }
+        .matrix-table td.src-cell {
+            font-weight: 600;
+            color: #ddd;
+            font-size: 0.8rem;
+            min-width: 130px;
+            max-width: 160px;
+        }
+        .matrix-table td.sep { border-right: 2px solid rgba(124,106,247,.15); }
+        .mx-cell {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 3px;
+            min-width: 68px;
+        }
+        .mx-top {
+            display: flex;
+            align-items: baseline;
+            gap: 5px;
+        }
+        .mx-n {
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+            color: #ccc;
+            font-size: 0.82rem;
+        }
+        .mx-pct {
+            font-size: 0.68rem;
+            color: #555;
+            font-variant-numeric: tabular-nums;
+        }
+        .mx-bar-bg {
+            width: 100%;
+            height: 2px;
+            background: rgba(255,255,255,.07);
+            border-radius: 1px;
+            overflow: hidden;
+        }
+        .mx-bar { height: 100%; border-radius: 1px; min-width: 1px; }
+        .mx-bar.all-time { background: #7c6af7; opacity: .7; }
+        .mx-bar.recent   { background: #4ade80; opacity: .75; }
+        .mx-silent {
+            font-size: 0.66rem;
+            color: #3a3a4a;
+            font-style: italic;
+        }
+        /* Dominant source highlight */
+        .matrix-table tbody tr.dominant td.src-cell { color: #b0a4ff; }
+        /* Silent in recent: no contribution */
+        .matrix-table tbody tr.silent-recent { opacity: .65; }
+        .mx-n.dim { color: #3a3a4a; }
+        .mx-pct.bright { color: #9d8ff7; font-weight: 600; }
+        .mx-pct.bright.green { color: #4ade80; }
+
+        /* Source type badge */
+        .src-badge {
+            display: inline-block;
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            padding: 1px 5px;
+            border-radius: 4px;
+            margin-left: 5px;
+            vertical-align: middle;
+        }
+        .src-badge.api    { background: rgba(96,165,250,.18); color: #60a5fa; }
+        .src-badge.scraper { background: rgba(251,191,36,.14); color: #fbbf24; }
+        .src-badge.free   { background: rgba(74,222,128,.13); color: #4ade80; }
+
         /* ── Coverage health section ── */
         .section-title {
             font-size: 1rem;
@@ -520,6 +629,33 @@
                 <div class="card-num" id="sum-events">–</div>
                 <div class="card-label">Upcoming events</div>
             </div>
+        </div>
+
+        <!-- ── Source Contribution Matrix ──────────────────────────────────── -->
+        <hr class="section-divider">
+        <p class="section-title">🗂️ Source Contribution
+            <span style="font-weight:400; color:#555; font-size:.75rem;">events · artists · cities</span>
+        </p>
+        <div id="matrix-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
+        <div id="matrix-wrap" class="matrix-wrap" hidden>
+            <table class="matrix-table">
+                <thead>
+                    <tr class="group-row">
+                        <th rowspan="2" class="src-col" style="text-align:left; padding:6px 10px; color:#666;">Source</th>
+                        <th colspan="3" class="all-time-hdr">All time</th>
+                        <th colspan="3" class="recent-hdr">Last 24 h</th>
+                    </tr>
+                    <tr class="col-row">
+                        <th>Events</th>
+                        <th>Artists</th>
+                        <th class="sep">Cities</th>
+                        <th>Events</th>
+                        <th>Artists</th>
+                        <th>Cities</th>
+                    </tr>
+                </thead>
+                <tbody id="matrix-body"></tbody>
+            </table>
         </div>
 
         <!-- ── Coverage Health ─────────────────────────────────────────────── -->
@@ -845,6 +981,104 @@
         }
     }
     loadPulse();
+
+    // ── Source Contribution Matrix ─────────────────────────────────────────
+    const SOURCE_META = {
+        ticketmaster:    { badge: 'API',     label: 'Ticketmaster' },
+        bandsintown:     { badge: 'API',     label: 'Bandsintown' },
+        seatgeek:        { badge: 'API',     label: 'SeatGeek' },
+        eventbrite:      { badge: 'API',     label: 'Eventbrite' },
+        predicthq:       { badge: 'API',     label: 'PredictHQ' },
+        resident_advisor:{ badge: 'free',    label: 'Resident Advisor' },
+        meetup:          { badge: 'free',    label: 'Meetup' },
+        luma:            { badge: 'free',    label: 'Luma' },
+        dice:            { badge: 'free',    label: 'Dice.fm' },
+        scraper:         { badge: 'scraper', label: 'Venue Scraper' },
+        leaan:           { badge: 'scraper', label: 'Leaan (IL)' },
+        cameri:          { badge: 'scraper', label: 'Cameri (IL)' },
+        barby:           { badge: 'scraper', label: 'Barby (IL)' },
+        levontin7:       { badge: 'scraper', label: 'Levontin 7 (IL)' },
+        secrettelaviv:   { badge: 'scraper', label: 'Secret TLV (IL)' },
+        tel_aviv_venues: { badge: 'scraper', label: 'TLV Venues (IL)' },
+        hatarbut:        { badge: 'scraper', label: 'HaTarbut (IL)' },
+        smarticket:      { badge: 'scraper', label: 'Smarticket (IL)' },
+        venuepilot:      { badge: 'free',    label: 'VenuePilot' },
+        tmisrael:        { badge: 'API',     label: 'TM Israel' },
+        goshow:          { badge: 'scraper', label: 'GoShow (IL)' },
+    };
+
+    async function loadMatrix() {
+        try {
+            const res = await fetch('/api/stats/source-matrix');
+            const d = await res.json();
+
+            const maxAllEvents  = Math.max(...d.sources.map(s => s.all_time.events.n),  1);
+            const maxAllArtists = Math.max(...d.sources.map(s => s.all_time.artists.n), 1);
+            const maxAllCities  = Math.max(...d.sources.map(s => s.all_time.cities.n),  1);
+            const maxRecEvents  = Math.max(...d.sources.map(s => s.recent.events.n),    1);
+            const maxRecArtists = Math.max(...d.sources.map(s => s.recent.artists.n),   1);
+            const maxRecCities  = Math.max(...d.sources.map(s => s.recent.cities.n),    1);
+
+            function cell(stat, max, type) {
+                const n = stat.n, pct = stat.pct;
+                const barW = Math.round(n / max * 100);
+                const nCls = n === 0 ? 'mx-n dim' : 'mx-n';
+                const pctCls = pct >= 20 ? `mx-pct ${type === 'recent' ? 'bright green' : 'bright'}` : 'mx-pct';
+                const barHTML = n > 0
+                    ? `<div class="mx-bar-bg"><div class="mx-bar ${type}" style="width:${barW}%"></div></div>`
+                    : '';
+                return `<td>
+                    <div class="mx-cell">
+                        <div class="mx-top">
+                            <span class="${nCls}">${n > 0 ? n.toLocaleString() : '–'}</span>
+                            ${pct > 0 ? `<span class="${pctCls}">${pct}%</span>` : ''}
+                        </div>
+                        ${barHTML}
+                    </div>
+                </td>`;
+            }
+
+            const topEventShare = d.sources[0]?.all_time.events.pct || 0;
+
+            document.getElementById('matrix-body').innerHTML = d.sources.map(row => {
+                const meta = SOURCE_META[row.source] || { badge: 'scraper', label: row.source };
+                const isDominant = row.all_time.events.pct >= 20;
+                const isSilent   = row.recent.events.n === 0 && row.recent.artists.n === 0;
+                const rowCls = isDominant ? 'dominant' : isSilent ? 'silent-recent' : '';
+
+                const badgeCls = meta.badge === 'API' ? 'api' : meta.badge === 'free' ? 'free' : 'scraper';
+
+                return `<tr class="${rowCls}">
+                    <td class="src-cell">
+                        ${esc(meta.label)}
+                        <span class="src-badge ${badgeCls}">${meta.badge}</span>
+                    </td>
+                    ${cell(row.all_time.events,  maxAllEvents,  'all-time')}
+                    ${cell(row.all_time.artists, maxAllArtists, 'all-time')}
+                    <td class="sep" style="padding:0;">
+                        <div style="padding:7px 10px;">
+                            <div class="mx-cell">
+                                <div class="mx-top">
+                                    <span class="${row.all_time.cities.n === 0 ? 'mx-n dim' : 'mx-n'}">${row.all_time.cities.n > 0 ? row.all_time.cities.n.toLocaleString() : '–'}</span>
+                                    ${row.all_time.cities.pct > 0 ? `<span class="${row.all_time.cities.pct >= 20 ? 'mx-pct bright' : 'mx-pct'}">${row.all_time.cities.pct}%</span>` : ''}
+                                </div>
+                                ${row.all_time.cities.n > 0 ? `<div class="mx-bar-bg"><div class="mx-bar all-time" style="width:${Math.round(row.all_time.cities.n/maxAllCities*100)}%"></div></div>` : ''}
+                            </div>
+                        </div>
+                    </td>
+                    ${cell(row.recent.events,  maxRecEvents,  'recent')}
+                    ${cell(row.recent.artists, maxRecArtists, 'recent')}
+                    ${cell(row.recent.cities,  maxRecCities,  'recent')}
+                </tr>`;
+            }).join('');
+
+            document.getElementById('matrix-loading').hidden = true;
+            document.getElementById('matrix-wrap').hidden = false;
+        } catch (e) {
+            document.getElementById('matrix-loading').textContent = 'Failed to load matrix: ' + e.message;
+        }
+    }
+    loadMatrix();
 
     // ── Source drill-down ──────────────────────────────────────────────────
     async function toggleSourceDetail(row, source, panelId) {

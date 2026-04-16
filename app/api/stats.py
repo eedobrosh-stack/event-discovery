@@ -367,3 +367,94 @@ def daily_pulse(db: Session = Depends(get_db)):
             "by_city": list(cities_map.values()),
         },
     }
+
+
+@router.get("/source-matrix")
+def source_matrix(db: Session = Depends(get_db)):
+    """
+    Two-dimensional source contribution matrix:
+      - all_time: total events / distinct artists / distinct cities per source
+      - recent: same metrics restricted to events created in the last 24 hours
+    Totals are included so the frontend can compute percentages without an
+    extra round-trip.
+    """
+    since = datetime.utcnow() - timedelta(hours=24)
+
+    def _by_source(col_expr, extra_filters=None, recent=False):
+        q = db.query(Event.scrape_source, col_expr.label("n"))
+        if extra_filters:
+            for f in extra_filters:
+                q = q.filter(f)
+        if recent:
+            q = q.filter(Event.created_at >= since)
+        return {(r[0] or "unknown"): r[1] for r in q.group_by(Event.scrape_source).all()}
+
+    def _cities_by_source(recent=False):
+        q = (
+            db.query(Event.scrape_source, func.count(func.distinct(City.id)).label("n"))
+            .join(Venue, Event.venue_id == Venue.id)
+            .join(City, Venue.city_id == City.id)
+        )
+        if recent:
+            q = q.filter(Event.created_at >= since)
+        return {(r[0] or "unknown"): r[1] for r in q.group_by(Event.scrape_source).all()}
+
+    # ── All-time ─────────────────────────────────────────────────────────────
+    all_events  = _by_source(func.count(Event.id))
+    all_artists = _by_source(
+        func.count(func.distinct(Event.artist_name)),
+        extra_filters=[Event.artist_name.isnot(None), Event.artist_name != ""],
+    )
+    all_cities  = _cities_by_source()
+
+    total_events  = sum(all_events.values())  or 1
+    total_artists = sum(all_artists.values()) or 1
+    total_cities  = sum(all_cities.values())  or 1
+
+    # ── Recent (last 24 h) ────────────────────────────────────────────────────
+    rec_events  = _by_source(func.count(Event.id), recent=True)
+    rec_artists = _by_source(
+        func.count(func.distinct(Event.artist_name)),
+        extra_filters=[Event.artist_name.isnot(None), Event.artist_name != ""],
+        recent=True,
+    )
+    rec_cities  = _cities_by_source(recent=True)
+
+    total_rec_events  = sum(rec_events.values())  or 1
+    total_rec_artists = sum(rec_artists.values()) or 1
+    total_rec_cities  = sum(rec_cities.values())  or 1
+
+    # ── Merge into source rows ────────────────────────────────────────────────
+    all_sources = sorted(
+        set(all_events) | set(all_artists) | set(all_cities),
+        key=lambda s: all_events.get(s, 0),
+        reverse=True,
+    )
+
+    def pct(n, total):
+        return round(n / total * 100, 1) if total else 0
+
+    rows = []
+    for src in all_sources:
+        rows.append({
+            "source": src,
+            "all_time": {
+                "events":  {"n": all_events.get(src, 0),  "pct": pct(all_events.get(src, 0),  total_events)},
+                "artists": {"n": all_artists.get(src, 0), "pct": pct(all_artists.get(src, 0), total_artists)},
+                "cities":  {"n": all_cities.get(src, 0),  "pct": pct(all_cities.get(src, 0),  total_cities)},
+            },
+            "recent": {
+                "events":  {"n": rec_events.get(src, 0),  "pct": pct(rec_events.get(src, 0),  total_rec_events)},
+                "artists": {"n": rec_artists.get(src, 0), "pct": pct(rec_artists.get(src, 0), total_rec_artists)},
+                "cities":  {"n": rec_cities.get(src, 0),  "pct": pct(rec_cities.get(src, 0),  total_rec_cities)},
+            },
+        })
+
+    return {
+        "as_of": datetime.utcnow().isoformat(),
+        "totals": {
+            "all_time": {"events": total_events,      "artists": total_artists,      "cities": total_cities},
+            "recent":   {"events": total_rec_events,  "artists": total_rec_artists,  "cities": total_rec_cities},
+        },
+        "sources": rows,
+    }
