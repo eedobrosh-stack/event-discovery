@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import City, Venue, Event
 from app.models.scan_log import ScanLog
+from app.services.collectors.scrapers.city_guides import CITY_GUIDES
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -458,3 +459,22 @@ def source_matrix(db: Session = Depends(get_db)):
         },
         "sources": rows,
     }
+
+
+@router.get("/city-guides")
+def city_guides_index():
+    """Return the CITY_GUIDES configuration as a structured list."""
+    result = []
+    for city, configs in CITY_GUIDES.items():
+        result.append({
+            "city": city,
+            "sources": [
+                {
+                    "url": c.base_url,
+                    "source_tag": c.source_tag,
+                    "max_pages": c.max_pages,
+                }
+                for c in configs
+            ],
+        })
+    return {"guides": result}
