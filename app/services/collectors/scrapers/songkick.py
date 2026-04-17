@@ -26,12 +26,14 @@ logger = logging.getLogger(__name__)
 # Verified by checking addressLocality of the first returned event.
 METRO_SLUGS: dict[str, str] = {
     "New York":      "7644-us-new-york-nyc",
+    "Los Angeles":   "17835-us-los-angeles",
     "Chicago":       "9426-us-chicago",
     "London":        "24426-uk-london",
     "San Francisco": "26330-us-sf-bay-area",
     "Tel Aviv":      "33176-israel-tel-aviv-jaffa",
     "Paris":         "28909-france-paris",
-    # Add more as IDs are verified:
+    # IDs below could not be discovered from an Israeli IP (Songkick geo-locks
+    # its search results). Add verified slugs here as they become known.
     # "Berlin":    "????-de-berlin",
     # "Amsterdam": "????-nl-amsterdam",
     # "Sydney":    "????-au-sydney",

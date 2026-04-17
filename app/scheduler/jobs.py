@@ -29,6 +29,7 @@ from app.services.collectors.scrapers.meetup import MeetupCollector
 from app.services.collectors.api.bandsintown import BandsintownClient
 from app.services.collectors.scrapers.songkick import SongkickCollector
 from app.services.collectors.scrapers.skiddle import SkiddleCollector
+from app.services.collectors.scrapers.allevents import AlleventsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ registry.register(HatarbutCollector())
 registry.register(VenuePilotCollector())
 registry.register(SongkickCollector())
 registry.register(SkiddleCollector())
+registry.register(AlleventsCollector())
 
 
 PRIORITY_CITIES = [
