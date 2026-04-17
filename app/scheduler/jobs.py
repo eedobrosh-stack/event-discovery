@@ -744,11 +744,19 @@ async def collect_techconf_job():
                     db.add(venue)
                     db.flush()
 
-                # Dedup by source_id (conference URL is unique per event)
+                # Dedup by source_id — but fix existing records saved with
+                # the old broken parser (is_online=True, empty venue_name)
                 source_id = f"techconf:{conf['url']}"
-                if db.query(Event.id).filter_by(
+                existing = db.query(Event).filter_by(
                     scrape_source="techconf_directory", source_id=source_id
-                ).first():
+                ).first()
+                if existing:
+                    if existing.is_online and not is_online:
+                        # Bad record from old parser — update in place
+                        existing.is_online = False
+                        existing.venue_id = venue.id
+                        existing.venue_name = venue_name
+                        existing.end_date = conf["end_date"]
                     continue
 
                 new_ev = Event(
