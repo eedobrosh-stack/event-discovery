@@ -1,16 +1,16 @@
 """
-Generic WordPress / Events-Calendar city-guide scraper.
+Generic city-guide scraper for sites that emit schema.org JSON-LD events.
 
-Each entry in CITY_GUIDES defines one city's event listing site.
-All supported sites use The Events Calendar WordPress plugin, which
-outputs schema.org JSON-LD Event blocks and paginates via /page/N/.
+Each entry in CITY_GUIDES maps a city name to one or more CityGuideConfig
+objects.  Most supported sites use The Events Calendar WordPress plugin and
+paginate via /page/N/.  Sites without pagination use max_pages=1.
 
 URL pattern: {base_url}           → page 1
-             {base_url}page/{N}/  → pages 2-N
+             {base_url}page/{N}/  → pages 2-N  (WordPress sites only)
 
 Adding a new city:
-  1. Verify the site outputs JSON-LD events (not JS-rendered).
-  2. Add an entry to CITY_GUIDES: city name → CityGuideConfig.
+  1. Verify the site outputs JSON-LD events server-side (not JS-rendered).
+  2. Add a CityGuideConfig (or list of them) to CITY_GUIDES.
   3. Deploy — no other changes needed.
 """
 from __future__ import annotations
@@ -35,22 +35,40 @@ class CityGuideConfig:
     source_tag: str = ""   # e.g. "choosechicago" — used in source_id prefix
 
 
-# City name → config
+# City name → one or more configs
 # All sites verified to return schema.org JSON-LD Event blocks server-side.
-CITY_GUIDES: dict[str, CityGuideConfig] = {
-    "Chicago": CityGuideConfig(
+# Sites marked max_pages=1 serve all events on a single page (no /page/N/ path).
+CITY_GUIDES: dict[str, list[CityGuideConfig]] = {
+    "Chicago": [CityGuideConfig(
         base_url="https://www.choosechicago.com/events/",
-        max_pages=5,
+        max_pages=10,
         source_tag="choosechicago",
-    ),
-    "Toronto": CityGuideConfig(
+    )],
+    "Toronto": [CityGuideConfig(
         base_url="https://nowtoronto.com/events/",
         max_pages=3,
         source_tag="nowtoronto",
-    ),
+    )],
+    "Melbourne": [
+        CityGuideConfig(
+            base_url="https://concreteplayground.com/melbourne/events/",
+            max_pages=1,
+            source_tag="concreteplayground_mel",
+        ),
+        CityGuideConfig(
+            base_url="https://www.whatsoninmelbourne.com/events/",
+            max_pages=3,
+            source_tag="whatsoninmelbourne",
+        ),
+    ],
+    "Sydney": [CityGuideConfig(
+        base_url="https://concreteplayground.com/sydney/events/",
+        max_pages=1,
+        source_tag="concreteplayground_syd",
+    )],
     # Add more as verified:
-    # "Seattle": CityGuideConfig(base_url="https://visitseattle.org/events/", source_tag="visitseattle"),
-    # "New Orleans": CityGuideConfig(base_url="https://www.neworleans.com/events/", source_tag="neworleans"),
+    # "Seattle": [CityGuideConfig(base_url="https://visitseattle.org/events/", source_tag="visitseattle")],
+    # "New Orleans": [CityGuideConfig(base_url="https://www.neworleans.com/events/", source_tag="neworleans")],
 }
 
 _HEADERS = {
@@ -159,51 +177,59 @@ class CityGuideCollector(BaseCollector):
         return True  # no API key needed
 
     async def collect(self, city_name: str, country_code: str = "US", **kwargs) -> list[RawEvent]:
-        config = CITY_GUIDES.get(city_name)
-        if not config:
+        configs = CITY_GUIDES.get(city_name)
+        if not configs:
             return []
 
         events: list[RawEvent] = []
         seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            for page in range(1, config.max_pages + 1):
-                if page == 1:
-                    url = config.base_url
-                else:
-                    url = f"{config.base_url}page/{page}/"
-
-                try:
-                    resp = await client.get(url, headers=_HEADERS)
-                except Exception as exc:
-                    logger.warning(f"CityGuide: request error for {city_name} p{page}: {exc}")
-                    break
-
-                if resp.status_code != 200:
-                    logger.warning(f"CityGuide: HTTP {resp.status_code} for {city_name} p{page}")
-                    break
-
-                soup = BeautifulSoup(resp.text, "lxml")
-                blocks = soup.find_all("script", type="application/ld+json")
-
-                page_count = 0
-                for block in blocks:
-                    try:
-                        data = json.loads(block.string or "")
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    items = data if isinstance(data, list) else [data]
-                    for ev in items:
-                        if ev.get("@type") not in ("Event", "MusicEvent", "EventSeries"):
-                            continue
-                        raw = _parse_event(ev, config.source_tag)
-                        if raw and raw.source_id and raw.source_id not in seen_ids:
-                            seen_ids.add(raw.source_id)
-                            events.append(raw)
-                            page_count += 1
-
-                logger.info(f"CityGuide ({config.source_tag}): {city_name} p{page} → {page_count} events")
-                if page_count == 0:
-                    break  # no events on this page — stop paginating
+            for config in configs:
+                await self._collect_config(client, city_name, config, events, seen_ids)
 
         return events
+
+    async def _collect_config(
+        self,
+        client: httpx.AsyncClient,
+        city_name: str,
+        config: CityGuideConfig,
+        events: list[RawEvent],
+        seen_ids: set[str],
+    ) -> None:
+        for page in range(1, config.max_pages + 1):
+            url = config.base_url if page == 1 else f"{config.base_url}page/{page}/"
+
+            try:
+                resp = await client.get(url, headers=_HEADERS)
+            except Exception as exc:
+                logger.warning(f"CityGuide: request error for {city_name} p{page}: {exc}")
+                break
+
+            if resp.status_code != 200:
+                logger.warning(f"CityGuide: HTTP {resp.status_code} for {city_name} p{page}")
+                break
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            blocks = soup.find_all("script", type="application/ld+json")
+
+            page_count = 0
+            for block in blocks:
+                try:
+                    data = json.loads(block.string or "")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                items = data if isinstance(data, list) else [data]
+                for ev in items:
+                    if ev.get("@type") not in ("Event", "MusicEvent", "EventSeries"):
+                        continue
+                    raw = _parse_event(ev, config.source_tag)
+                    if raw and raw.source_id and raw.source_id not in seen_ids:
+                        seen_ids.add(raw.source_id)
+                        events.append(raw)
+                        page_count += 1
+
+            logger.info(f"CityGuide ({config.source_tag}): {city_name} p{page} → {page_count} events")
+            if page_count == 0:
+                break  # no events on this page — stop paginating
