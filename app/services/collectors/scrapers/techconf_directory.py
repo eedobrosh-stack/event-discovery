@@ -79,12 +79,14 @@ async def scrape_techconf_directory() -> list[dict]:
         href = a.get("href", "")
         url = (BASE_URL + href) if href.startswith("/") else href
 
-        # Metadata lives in a nested <ul> — first child <li> items
+        # Real structure: <ul><li><p>dates</p><p>location</p>[<p>format</p>]</li></ul>
+        # One inner <li> holds multiple <p> tags — NOT separate <li> per field.
         meta_ul = li.find("ul")
-        meta_items = meta_ul.find_all("li", recursive=False) if meta_ul else []
+        inner_li = meta_ul.find("li") if meta_ul else None
+        paras = inner_li.find_all("p") if inner_li else []
 
         # ── Dates ──────────────────────────────────────────────────────────
-        date_text = meta_items[0].get_text(strip=True) if meta_items else ""
+        date_text = paras[0].get_text(strip=True) if paras else ""
         start_date = end_date = None
         if " to " in date_text:
             parts = date_text.split(" to ", 1)
@@ -97,7 +99,7 @@ async def scrape_techconf_directory() -> list[dict]:
             continue
 
         # ── Location ───────────────────────────────────────────────────────
-        location_text = meta_items[1].get_text(strip=True) if len(meta_items) > 1 else ""
+        location_text = paras[1].get_text(strip=True) if len(paras) > 1 else ""
         is_online = location_text.lower() in ("online", "virtual", "remote", "")
         city = country = ""
         if not is_online:
