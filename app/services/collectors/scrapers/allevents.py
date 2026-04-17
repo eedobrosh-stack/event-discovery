@@ -69,6 +69,7 @@ CITY_SLUGS: dict[str, str] = {
     "Singapore":     "singapore",
     "Sydney":        "sydney",
     "Melbourne":     "melbourne",
+    "Brisbane":      "brisbane",
     "Bangkok":       "bangkok",
 }
 

@@ -141,8 +141,15 @@ def _generate_candidates(city: str) -> list[str]:
         f"https://www.blogto.com/events/",           # Toronto
         f"https://www.{sl}.curbed.com/events/",
         f"https://sfstation.com/events/",             # SF
-        f"https://concreteplayground.com/{hy}/",      # AU cities
-        f"https://www.broadsheet.com.au/{hy}/",       # AU cities
+        # Concrete Playground (AU/NZ) — city-specific events path
+        f"https://concreteplayground.com/{hy}/events/",
+        f"https://concreteplayground.com/{hy}/",
+        # Broadsheet (AU/NZ)
+        f"https://www.broadsheet.com.au/{hy}/",
+        # What's On city guides
+        f"https://www.whatson{sl}.com/events/",
+        f"https://www.whatsOn{sl}.com.au/events/",
+        f"https://www.{sl}arts.org/events/",
     ]
 
     # For every base domain already in the list, also try alternate paths

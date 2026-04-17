@@ -66,6 +66,11 @@ CITY_GUIDES: dict[str, list[CityGuideConfig]] = {
         max_pages=1,
         source_tag="concreteplayground_syd",
     )],
+    "Brisbane": [CityGuideConfig(
+        base_url="https://concreteplayground.com/brisbane/events/",
+        max_pages=1,
+        source_tag="concreteplayground_bne",
+    )],
     # Add more as verified:
     # "Seattle": [CityGuideConfig(base_url="https://visitseattle.org/events/", source_tag="visitseattle")],
     # "New Orleans": [CityGuideConfig(base_url="https://www.neworleans.com/events/", source_tag="neworleans")],
