@@ -467,7 +467,7 @@ def city_guides_index(db: Session = Depends(get_db)):
     today = date.today()
 
     # Upcoming event counts per source_tag (source_id starts with "{tag}:")
-    tag_counts: dict[str, int] = {}
+    tag_counts = {}
     for city_configs in CITY_GUIDES.values():
         for c in city_configs:
             tag = c.source_tag
@@ -482,7 +482,7 @@ def city_guides_index(db: Session = Depends(get_db)):
 
     # Last run time per city from scan_logs (job_name="collect_events", detail=city_name)
     city_names = list(CITY_GUIDES.keys())
-    last_runs: dict[str, str | None] = {}
+    last_runs = {}
     if city_names:
         logs = (
             db.query(ScanLog.detail, func.max(ScanLog.started_at).label("last"))
