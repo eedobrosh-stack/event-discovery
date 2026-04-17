@@ -474,7 +474,7 @@ def city_guides_index(db: Session = Depends(get_db)):
             if not tag:
                 continue
             n = db.query(func.count(Event.id)).filter(
-                Event.source == "city_guide",
+                Event.scrape_source == "city_guide",
                 Event.source_id.like(f"{tag}:%"),
                 Event.start_date >= today,
             ).scalar() or 0
