@@ -110,6 +110,7 @@ async def parse_goshow_venue_page(
             start_time=start_time,
             end_date=end_date,
             end_time=end_time,
+            artist_name=title,
             purchase_link=purchase_link,
             venue_name=show_venue,
             venue_city=venue_city,

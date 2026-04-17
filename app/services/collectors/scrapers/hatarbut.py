@@ -115,6 +115,7 @@ def _parse_event_page(html: str, url: str) -> Optional[RawEvent]:
         start_time=start_time_,
         end_date=end_date_,
         end_time=end_time_,
+        artist_name=name,
         purchase_link=purchase_link,
         image_url=image_url,
         venue_name=VENUE_NAME,

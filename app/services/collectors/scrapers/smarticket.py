@@ -113,6 +113,7 @@ async def parse_smarticket_venue_url(
                 start_time=start_time,
                 end_date=end_date,
                 end_time=end_time,
+                artist_name=title,
                 price=price,
                 price_currency="ILS",
                 purchase_link=purchase_link,

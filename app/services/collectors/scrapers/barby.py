@@ -112,8 +112,8 @@ class BarbyCollector(BaseCollector):
         show_id = show.get("showId", "")
         purchase_link = f"{SHOW_BASE}{show_id}" if show_id else "https://www.barby.co.il"
 
-        # Guest names for artist
-        artist_name = show.get("showGuestsNames", "").strip() or None
+        # Guest names for artist — fall back to show name when not set
+        artist_name = show.get("showGuestsNames", "").strip() or show_name
 
         return RawEvent(
             name=show_name,

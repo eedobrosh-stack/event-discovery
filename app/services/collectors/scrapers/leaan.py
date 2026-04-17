@@ -196,6 +196,7 @@ class LeaanCollector(BaseCollector):
             start_time=start_time,
             end_date=end_date_val,
             end_time=end_time,
+            artist_name=name,
             price=float(price) if price else None,
             price_currency="ILS",
             image_url=image_url,
