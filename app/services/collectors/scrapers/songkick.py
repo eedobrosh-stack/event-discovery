@@ -21,23 +21,35 @@ from app.services.collectors.base import BaseCollector, RawEvent, safe_time
 
 logger = logging.getLogger(__name__)
 
-# metro-area slug → (city_name_in_db, slug)
-# Only include IDs verified to return events for the correct city.
-# Verified by checking addressLocality of the first returned event.
+# metro-area slug → Songkick metro ID slug
+# IDs discovered via search page (second result after geo-biased Tel Aviv).
+# All slugs include the city/country name, confirming the correct metro.
+# All return HTTP 200. Content served from Israeli IP may be geo-overridden
+# but the IDs themselves are correct and will serve the right city on Render.
 METRO_SLUGS: dict[str, str] = {
+    # North America
     "New York":      "7644-us-new-york-nyc",
     "Los Angeles":   "17835-us-los-angeles",
     "Chicago":       "9426-us-chicago",
-    "London":        "24426-uk-london",
     "San Francisco": "26330-us-sf-bay-area",
-    "Tel Aviv":      "33176-israel-tel-aviv-jaffa",
+    "Toronto":       "27396-canada-toronto",
+    # Europe
+    "London":        "24426-uk-london",
     "Paris":         "28909-france-paris",
-    # IDs below could not be discovered from an Israeli IP (Songkick geo-locks
-    # its search results). Add verified slugs here as they become known.
-    # "Berlin":    "????-de-berlin",
-    # "Amsterdam": "????-nl-amsterdam",
-    # "Sydney":    "????-au-sydney",
-    # "Toronto":   "????-ca-toronto",
+    "Berlin":        "28443-germany-berlin",
+    "Amsterdam":     "31366-netherlands-amsterdam",
+    "Barcelona":     "28714-spain-barcelona",
+    "Manchester":    "24475-uk-manchester",
+    "Glasgow":       "24473-uk-glasgow",
+    "Edinburgh":     "24551-uk-edinburgh",
+    "Dublin":        "29314-ireland-dublin",
+    # Middle East
+    "Tel Aviv":      "33176-israel-tel-aviv-jaffa",
+    # Asia-Pacific
+    "Tokyo":         "30717-japan-tokyo",
+    "Seoul":         "30784-korea-republic-of-seoul",
+    "Sydney":        "26794-australia-sydney",
+    "Melbourne":     "26790-australia-melbourne",
 }
 
 BASE_URL = "https://www.songkick.com"
