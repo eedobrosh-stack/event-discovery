@@ -27,6 +27,8 @@ from app.services.collectors.scrapers.venuepilot import VenuePilotCollector
 from app.services.collectors.scrapers.luma import LumaCollector
 from app.services.collectors.scrapers.meetup import MeetupCollector
 from app.services.collectors.api.bandsintown import BandsintownClient
+from app.services.collectors.scrapers.songkick import SongkickCollector
+from app.services.collectors.scrapers.skiddle import SkiddleCollector
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ registry.register(IsraelSitesCollector())
 registry.register(SmartticketCollector())
 registry.register(HatarbutCollector())
 registry.register(VenuePilotCollector())
+registry.register(SongkickCollector())
+registry.register(SkiddleCollector())
 
 
 PRIORITY_CITIES = [

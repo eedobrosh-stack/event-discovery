@@ -33,25 +33,42 @@ class TicketmasterCollector(BaseCollector):
     async def collect(self, city_name: str, country_code: str = "US", **kwargs) -> list[RawEvent]:
         country_code = COUNTRY_ISO.get(country_code, country_code)
         events = []
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                "https://app.ticketmaster.com/discovery/v2/events.json",
-                params={
-                    "apikey": settings.TICKETMASTER_KEY,
-                    "city": city_name,
-                    "countryCode": country_code,
-                    "size": 200,
-                    "sort": "date,asc",
-                    "includePriceRanges": "yes",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        _MAX_PAGES = 5  # TM caps at 5 pages × 200 = 1 000 events per city
 
-        for ev in data.get("_embedded", {}).get("events", []):
-            raw = self._transform(ev)
-            if raw:
-                events.append(raw)
+        async with httpx.AsyncClient(timeout=30) as client:
+            for page in range(_MAX_PAGES):
+                resp = await client.get(
+                    "https://app.ticketmaster.com/discovery/v2/events.json",
+                    params={
+                        "apikey": settings.TICKETMASTER_KEY,
+                        "city": city_name,
+                        "countryCode": country_code,
+                        "size": 200,
+                        "page": page,
+                        "sort": "date,asc",
+                        "includePriceRanges": "yes",
+                    },
+                )
+                if resp.status_code == 400:
+                    break  # page out of range — TM returns 400 when page > total pages
+                resp.raise_for_status()
+                data = resp.json()
+
+                page_events = data.get("_embedded", {}).get("events", [])
+                if not page_events:
+                    break
+
+                for ev in page_events:
+                    raw = self._transform(ev)
+                    if raw:
+                        events.append(raw)
+
+                # Stop if this was the last page
+                pagination = data.get("page", {})
+                total_pages = pagination.get("totalPages", 1)
+                if page + 1 >= total_pages:
+                    break
+
         return events
 
     def _transform(self, ev: dict) -> RawEvent | None:
