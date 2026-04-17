@@ -178,6 +178,95 @@
         }
 
 
+        /* Search / filter bar */
+        .stats-controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .stats-controls input {
+            flex: 1;
+            min-width: 200px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border, #333);
+            background: var(--input-bg, #15151e);
+            color: inherit;
+            font-size: 0.9rem;
+        }
+        .stats-controls select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border, #333);
+            background: var(--input-bg, #15151e);
+            color: inherit;
+            font-size: 0.9rem;
+        }
+
+        /* Cities table */
+        .stats-table-wrap {
+            overflow-x: auto;
+            border-radius: 10px;
+            border: 1px solid var(--border, #333);
+        }
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        .stats-table thead th {
+            background: var(--card-bg, #1e1e2e);
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+            color: #aaa;
+            position: sticky;
+            top: 0;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+        }
+        .stats-table thead th:hover { color: #fff; }
+        .stats-table thead th .sort-icon { margin-left: 4px; opacity: .5; }
+        .stats-table thead th.sorted .sort-icon { opacity: 1; color: var(--accent, #7c6af7); }
+        .stats-table tbody tr { border-top: 1px solid var(--border, #2a2a3a); }
+        .stats-table tbody tr:hover { background: rgba(124,106,247,.07); }
+        .stats-table td { padding: 9px 14px; white-space: nowrap; }
+        .stats-table td.city-name { font-weight: 500; }
+        .stats-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        /* Coverage bar */
+        .bar-cell { min-width: 120px; }
+        .bar-wrap { display: flex; align-items: center; gap: 8px; }
+        .bar-bg { flex:1; height:6px; background:var(--border,#333); border-radius:3px; overflow:hidden; }
+        .bar-fill { height:100%; background:var(--accent,#7c6af7); border-radius:3px; transition:width .3s; }
+        .bar-val { font-size: 0.78rem; color: #aaa; min-width: 28px; text-align: right; }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 20px;
+            font-size: 0.875rem;
+        }
+        .pagination button {
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: 1px solid var(--border, #333);
+            background: var(--card-bg, #1e1e2e);
+            color: inherit;
+            cursor: pointer;
+        }
+        .pagination button:disabled { opacity: .35; cursor: default; }
+        .pagination button:hover:not(:disabled) { border-color: var(--accent, #7c6af7); }
+        .pagination .page-info { color: #aaa; }
+
         /* Back link */
         .back-link {
             display: inline-flex;
@@ -605,13 +694,23 @@
             </div>
 
             <hr class="section-divider">
-            <p class="section-title">🏙️ Thin Coverage <span style="font-weight:400; color:#666; font-size:.78rem;">(&lt; 10 upcoming events)</span></p>
-            <div id="thin-cities-content" style="margin-bottom: 8px;"></div>
-
-            <hr class="section-divider">
             <p class="section-title">📖 City Guide Indexes <span style="font-weight:400; color:#666; font-size:.78rem;">verified JSON-LD sources</span></p>
             <div id="guide-loading" style="color:#aaa; font-size:.85rem; padding:4px 0 16px;">Loading…</div>
-            <div id="guide-list" hidden style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:4px;"></div>
+            <div id="guide-wrap" class="source-table-wrap" hidden>
+                <table class="source-table" id="guide-table">
+                    <thead>
+                        <tr>
+                            <th>City</th>
+                            <th>Source URL</th>
+                            <th>Tag</th>
+                            <th class="num">Max pages</th>
+                            <th class="num">Upcoming events</th>
+                            <th>Last run</th>
+                        </tr>
+                    </thead>
+                    <tbody id="guide-body"></tbody>
+                </table>
+            </div>
         </div>
 
         <hr class="section-divider">
@@ -637,10 +736,59 @@
             <div id="venue-result"></div>
         </div>
 
+        <div class="stats-controls">
+            <input type="text" id="city-search" placeholder="🔍  Filter by city or country…">
+            <select id="sort-by">
+                <option value="venues">Sort by Venues</option>
+                <option value="events">Sort by Events</option>
+                <option value="city">Sort by City A–Z</option>
+                <option value="country">Sort by Country A–Z</option>
+            </select>
+            <select id="sort-dir">
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+            </select>
+        </div>
+
+        <div class="stats-table-wrap">
+            <table class="stats-table">
+                <thead>
+                    <tr>
+                        <th data-col="rank">#</th>
+                        <th data-col="city">City</th>
+                        <th data-col="country">Country</th>
+                        <th data-col="venues" class="sorted">Venues <span class="sort-icon">↓</span></th>
+                        <th data-col="events">Events <span class="sort-icon"></span></th>
+                        <th class="bar-cell">Venue share</th>
+                        <th data-col="earliest">Earliest event</th>
+                        <th data-col="latest">Latest event</th>
+                    </tr>
+                </thead>
+                <tbody id="stats-body"></tbody>
+            </table>
+        </div>
+
+        <div class="pagination">
+            <button id="prev-btn" disabled>‹ Prev</button>
+            <span class="page-info" id="page-info"></span>
+            <button id="next-btn">Next ›</button>
+        </div>
+
     </div>
 </main>
 
 <script>
+    const PAGE_SIZE = 50;
+    let allData = [];
+    let filtered = [];
+    let currentPage = 0;
+    let maxVenues = 1;
+
+    function esc(str) {
+        return String(str)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     async function load() {
         try {
             const res = await fetch('/api/stats/cities');
@@ -652,18 +800,114 @@
             document.getElementById('last-updated').textContent =
                 'Updated ' + new Date().toLocaleString();
 
+            allData = json.cities;
+            maxVenues = Math.max(...allData.map(r => r.venues), 1);
+
             document.getElementById('stats-loading').hidden = true;
             document.getElementById('stats-content').hidden = false;
+
+            applyFilters();
         } catch (e) {
             document.getElementById('stats-loading').textContent = 'Failed to load stats: ' + e.message;
         }
     }
+
+    function applyFilters() {
+        const q = document.getElementById('city-search').value.toLowerCase().trim();
+        filtered = allData.filter(r =>
+            !q || r.city.toLowerCase().includes(q) || r.country.toLowerCase().includes(q)
+        );
+        sortData();
     }
 
-    function esc(str) {
-        return String(str)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    function sortData() {
+        const col = document.getElementById('sort-by').value;
+        const dir = document.getElementById('sort-dir').value === 'asc' ? 1 : -1;
+        filtered.sort((a, b) => {
+            let va = a[col] ?? '', vb = b[col] ?? '';
+            if (typeof va === 'string') return dir * va.localeCompare(vb);
+            return dir * (va - vb);
+        });
+        currentPage = 0;
+        render();
     }
+
+    function render() {
+        const start = currentPage * PAGE_SIZE;
+        const page = filtered.slice(start, start + PAGE_SIZE);
+        const tbody = document.getElementById('stats-body');
+
+        if (page.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No cities match your search.</td></tr>';
+        } else {
+            tbody.innerHTML = page.map((r, i) => {
+                const rank = start + i + 1;
+                const pct = Math.round((r.venues / maxVenues) * 100);
+                const earliest = r.earliest || '–';
+                const latest = r.latest || '–';
+                return `
+                <tr>
+                    <td class="num" style="color:#666">${rank}</td>
+                    <td class="city-name">${esc(r.city)}</td>
+                    <td>${esc(r.country)}</td>
+                    <td class="num"><strong>${r.venues.toLocaleString()}</strong></td>
+                    <td class="num">${r.events.toLocaleString()}</td>
+                    <td class="bar-cell">
+                        <div class="bar-wrap">
+                            <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+                            <span class="bar-val">${pct}%</span>
+                        </div>
+                    </td>
+                    <td style="color:#aaa">${esc(earliest)}</td>
+                    <td style="color:#aaa">${esc(latest)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+        document.getElementById('page-info').textContent =
+            `Page ${currentPage + 1} of ${Math.max(totalPages, 1)}  (${filtered.length.toLocaleString()} cities)`;
+        document.getElementById('prev-btn').disabled = currentPage === 0;
+        document.getElementById('next-btn').disabled = currentPage >= totalPages - 1;
+
+        document.querySelectorAll('.stats-table thead th').forEach(th => {
+            th.classList.remove('sorted');
+            const icon = th.querySelector('.sort-icon');
+            if (icon) icon.textContent = '';
+        });
+        const activeCol = document.getElementById('sort-by').value;
+        document.querySelectorAll('.stats-table thead th').forEach(th => {
+            if (th.dataset.col === activeCol) {
+                th.classList.add('sorted');
+                const icon = th.querySelector('.sort-icon');
+                if (icon) icon.textContent = document.getElementById('sort-dir').value === 'desc' ? '↓' : '↑';
+            }
+        });
+    }
+
+    document.querySelectorAll('.stats-table thead th[data-col]').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.col;
+            const sortByEl = document.getElementById('sort-by');
+            const sortDirEl = document.getElementById('sort-dir');
+            const opt = sortByEl.querySelector(`option[value="${col}"]`);
+            if (opt) {
+                if (sortByEl.value === col) {
+                    sortDirEl.value = sortDirEl.value === 'desc' ? 'asc' : 'desc';
+                } else {
+                    sortByEl.value = col;
+                    sortDirEl.value = 'desc';
+                }
+                sortData();
+            }
+        });
+    });
+
+    document.getElementById('city-search').addEventListener('input', applyFilters);
+    document.getElementById('sort-by').addEventListener('change', sortData);
+    document.getElementById('sort-dir').addEventListener('change', sortData);
+    document.getElementById('prev-btn').addEventListener('click', () => { currentPage--; render(); window.scrollTo(0,0); });
+    document.getElementById('next-btn').addEventListener('click', () => { currentPage++; render(); window.scrollTo(0,0); });
 
     load();
 
@@ -672,32 +916,42 @@
         try {
             const res = await fetch('/api/stats/city-guides');
             const d = await res.json();
-            const el = document.getElementById('guide-list');
 
             if (!d.guides || d.guides.length === 0) {
-                el.innerHTML = '<p style="color:#666; font-size:.85rem; margin:0;">No city guides configured yet.</p>';
-            } else {
-                el.innerHTML = d.guides.map(g => {
-                    const srcs = g.sources.map(s => {
-                        const domain = s.url.replace(/^https?:\/\//, '').split('/')[0];
-                        const pages  = s.max_pages > 1 ? `${s.max_pages}p` : '1p';
-                        return `<span style="display:block; font-size:.75rem; color:#888; margin-top:3px;">
-                            <a href="${esc(s.url)}" target="_blank" rel="noopener"
-                               style="color:#7c6af7; text-decoration:none;">${esc(domain)}</a>
-                            <span style="color:#555; margin-left:4px;">${pages}</span>
-                        </span>`;
-                    }).join('');
-                    return `
-                    <div style="background:var(--card-bg,#1e1e2e); border:1px solid var(--border,#333);
-                                border-radius:10px; padding:12px 16px; min-width:180px;">
-                        <div style="font-weight:600; font-size:.9rem; margin-bottom:4px;">🗺️ ${esc(g.city)}</div>
-                        ${srcs}
-                    </div>`;
-                }).join('');
+                document.getElementById('guide-loading').textContent = 'No city guides configured yet.';
+                return;
             }
 
+            // Expand: one row per source (city may span multiple rows)
+            const rows = [];
+            for (const g of d.guides) {
+                const lastRun = g.last_run
+                    ? new Date(g.last_run).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+                    : '–';
+                g.sources.forEach((s, i) => {
+                    const domain = s.url.replace(/^https?:\/\//, '').split('/')[0];
+                    const evCount = s.upcoming_events > 0
+                        ? `<strong>${s.upcoming_events.toLocaleString()}</strong>`
+                        : `<span style="color:#555">0</span>`;
+                    rows.push(`<tr>
+                        ${i === 0
+                            ? `<td rowspan="${g.sources.length}" style="font-weight:600; vertical-align:top; padding-top:11px;">${esc(g.city)}</td>`
+                            : ''}
+                        <td><a href="${esc(s.url)}" target="_blank" rel="noopener"
+                               style="color:#7c6af7; text-decoration:none;">${esc(domain)}</a></td>
+                        <td style="color:#888; font-size:.78rem; font-family:monospace;">${esc(s.source_tag)}</td>
+                        <td class="num">${s.max_pages}</td>
+                        <td class="num">${evCount}</td>
+                        ${i === 0
+                            ? `<td rowspan="${g.sources.length}" style="color:#aaa; font-size:.8rem; vertical-align:top; padding-top:11px;">${esc(lastRun)}</td>`
+                            : ''}
+                    </tr>`);
+                });
+            }
+
+            document.getElementById('guide-body').innerHTML = rows.join('');
             document.getElementById('guide-loading').hidden = true;
-            el.hidden = false;
+            document.getElementById('guide-wrap').hidden = false;
         } catch (e) {
             document.getElementById('guide-loading').textContent = 'Failed to load guides: ' + e.message;
         }
@@ -999,29 +1253,6 @@
                         <td>${health}</td>
                     </tr>`;
                 }).join('');
-            }
-
-            // Thin cities panel
-            const thin = d.thin_cities || [];
-            const thinEl = document.getElementById('thin-cities-content');
-            if (thin.length === 0) {
-                thinEl.innerHTML = '<p style="color:#4ade80; font-size:.88rem; margin:0;">✓ All cities have ≥ 10 upcoming events.</p>';
-            } else {
-                thinEl.innerHTML = `
-                <p style="color:#aaa; font-size:.8rem; margin:0 0 10px;">
-                    These cities have fewer than 10 upcoming events — they may need more sources or venue website scrapers.
-                </p>
-                <div style="display:flex; flex-wrap:wrap; gap:8px;">
-                    ${thin.map(c => `
-                    <span style="display:inline-flex; align-items:center; gap:5px; padding:4px 10px;
-                        background:rgba(251,191,36,.1); border:1px solid rgba(251,191,36,.25);
-                        border-radius:8px; font-size:.8rem;">
-                        <span style="color:#fbbf24;">⚠</span>
-                        <strong>${esc(c.city)}</strong>
-                        <span style="color:#888">${esc(c.country)}</span>
-                        <span style="color:#f87171; font-weight:600;">${c.upcoming}</span>
-                    </span>`).join('')}
-                </div>`;
             }
 
             document.getElementById('coverage-loading').hidden = true;

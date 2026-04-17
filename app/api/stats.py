@@ -462,17 +462,51 @@ def source_matrix(db: Session = Depends(get_db)):
 
 
 @router.get("/city-guides")
-def city_guides_index():
-    """Return the CITY_GUIDES configuration as a structured list."""
+def city_guides_index(db: Session = Depends(get_db)):
+    """Return CITY_GUIDES config enriched with live event counts and last-run info."""
+    today = date.today()
+
+    # Upcoming event counts per source_tag (source_id starts with "{tag}:")
+    tag_counts: dict[str, int] = {}
+    for city_configs in CITY_GUIDES.values():
+        for c in city_configs:
+            tag = c.source_tag
+            if not tag:
+                continue
+            n = db.query(func.count(Event.id)).filter(
+                Event.source == "city_guide",
+                Event.source_id.like(f"{tag}:%"),
+                Event.start_date >= today,
+            ).scalar() or 0
+            tag_counts[tag] = n
+
+    # Last run time per city from scan_logs (job_name="collect_events", detail=city_name)
+    city_names = list(CITY_GUIDES.keys())
+    last_runs: dict[str, str | None] = {}
+    if city_names:
+        logs = (
+            db.query(ScanLog.detail, func.max(ScanLog.started_at).label("last"))
+            .filter(
+                ScanLog.job_name == "collect_events",
+                ScanLog.detail.in_(city_names),
+                ScanLog.status == "success",
+            )
+            .group_by(ScanLog.detail)
+            .all()
+        )
+        last_runs = {r.detail: r.last.isoformat() if r.last else None for r in logs}
+
     result = []
     for city, configs in CITY_GUIDES.items():
         result.append({
             "city": city,
+            "last_run": last_runs.get(city),
             "sources": [
                 {
                     "url": c.base_url,
                     "source_tag": c.source_tag,
                     "max_pages": c.max_pages,
+                    "upcoming_events": tag_counts.get(c.source_tag, 0),
                 }
                 for c in configs
             ],
