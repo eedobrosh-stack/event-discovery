@@ -125,8 +125,18 @@ def _parse_city(address: str) -> str | None:
 
 def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent]:
     """Convert one API game dict into a RawEvent, or None if not in our city."""
-    if g.get("played", True):
+    # Primary filter: date must be today or future.
+    # Do NOT filter on g["played"] — playoff games sometimes lack this field
+    # or arrive in the API before it is set correctly.
+    utc_str = g.get("utcDate") or g.get("date") or ""
+    if not utc_str:
         return None
+    try:
+        utc_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if utc_dt.date() < date.today():
+        return None  # already past — skip regardless of played flag
 
     # Venue + city filtering
     venue_block = g.get("venue") or {}
@@ -138,17 +148,6 @@ def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent
     if not venue_city:
         return None
     if venue_city.lower() != city_name.lower():
-        return None
-
-    # Date / time — use utcDate for consistency
-    utc_str = g.get("utcDate") or g.get("date") or ""
-    if not utc_str:
-        return None
-    try:
-        utc_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-    if utc_dt.date() < date.today():
         return None
 
     # Teams
