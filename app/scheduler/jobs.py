@@ -931,7 +931,7 @@ async def enrich_spotify_job(batch: int = 200):
                         http,
                     )
                     if result:
-                        update: dict = {
+                        perf_update: dict = {
                             "spotify_id":  result["spotify_id"],
                             "spotify_url": result["spotify_url"],
                             "image_url":   result["image_url"],
@@ -940,15 +940,39 @@ async def enrich_spotify_job(batch: int = 200):
                         # Only overwrite genres/category/event_type if Spotify
                         # gives us something more specific than what we have.
                         if result["genres"]:
-                            update["genres"] = _json.dumps(result["genres"])
+                            perf_update["genres"] = _json.dumps(result["genres"])
                         if result["event_type_name"]:
-                            update["event_type_name"] = result["event_type_name"]
-                            update["category"] = result["category"]
-                            update["source"] = "spotify"
+                            perf_update["event_type_name"] = result["event_type_name"]
+                            perf_update["category"] = result["category"]
+                            perf_update["source"] = "spotify"
 
                         db.query(Performer).filter(Performer.id == perf_id).update(
-                            update, synchronize_session=False
+                            perf_update, synchronize_session=False
                         )
+
+                        # Propagate 1-10 popularity score + Spotify URL to all
+                        # events for this artist so the frontend can display it.
+                        raw_pop = result["popularity"] or 0
+                        score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
+                        event_update: dict = {}
+                        if score_1_10:
+                            event_update["artist_popularity"] = score_1_10
+                        if result["spotify_url"]:
+                            event_update["artist_spotify_url"] = result["spotify_url"]
+                        # Fill missing event image with artist photo
+                        if result["image_url"]:
+                            db.query(Event).filter(
+                                Event.artist_name == name,
+                                Event.image_url.is_(None),
+                            ).update(
+                                {"image_url": result["image_url"]},
+                                synchronize_session=False,
+                            )
+                        if event_update:
+                            db.query(Event).filter(
+                                Event.artist_name == name,
+                            ).update(event_update, synchronize_session=False)
+
                         enriched += 1
                         logger.debug(
                             f"enrich_spotify: {name!r} → {result['event_type_name']} "

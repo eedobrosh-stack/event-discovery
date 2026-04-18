@@ -15,6 +15,8 @@ class Event(Base):
     name = Column(String(500), nullable=False)
     artist_name = Column(String(255), nullable=True)
     artist_youtube_channel = Column(String(1000), nullable=True)
+    artist_popularity = Column(Integer, nullable=True)   # 1-10 derived from Spotify popularity
+    artist_spotify_url = Column(String(500), nullable=True)
     start_date = Column(Date, nullable=False)
     start_time = Column(String(10), nullable=True)
     end_date = Column(Date, nullable=True)

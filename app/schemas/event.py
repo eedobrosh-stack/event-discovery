@@ -8,6 +8,8 @@ class EventOut(BaseModel):
     name: str
     artist_name: Optional[str] = None
     artist_youtube_channel: Optional[str] = None
+    artist_popularity: Optional[int] = None    # 1-10 Spotify popularity score
+    artist_spotify_url: Optional[str] = None
     start_date: date
     start_time: Optional[str] = None
     end_date: Optional[date] = None

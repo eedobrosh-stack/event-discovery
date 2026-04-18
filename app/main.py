@@ -192,6 +192,16 @@ def _run_migrations():
         conn.commit()
 
     existing_event_cols = [c["name"] for c in insp.get_columns("events")]
+    artist_spotify_cols = {
+        "artist_popularity": "INTEGER",
+        "artist_spotify_url": "TEXT",
+    }
+    with engine.connect() as conn:
+        for col, coltype in artist_spotify_cols.items():
+            if col not in existing_event_cols:
+                conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
+        conn.commit()
+
     sports_cols = {
         "sport":       "TEXT",
         "home_team":   "TEXT",
