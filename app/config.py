@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     BANDSINTOWN_APP_ID: str = ""
     SERPER_API_KEY: str = ""       # google.serper.dev — paid fallback for venue URL search
     CRICAPI_KEY: str = ""          # cricapi.com — free 100 req/day; sign up at https://cricapi.com
+    SPOTIFY_CLIENT_ID: str = ""    # developer.spotify.com — Client Credentials flow, no user login
+    SPOTIFY_CLIENT_SECRET: str = ""
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""

@@ -14,7 +14,7 @@ from app.api import platform_venues as platform_venues_api
 from app.api import metro_areas
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, enrich_spotify_job
 
 scheduler = AsyncIOScheduler()
 
@@ -178,6 +178,19 @@ def _run_migrations():
             conn.execute(text("ALTER TABLE venues ADD COLUMN default_event_type_id INTEGER"))
             conn.commit()
 
+    existing_performer_cols = [c["name"] for c in insp.get_columns("performers")]
+    spotify_performer_cols = {
+        "spotify_id":  "TEXT",
+        "spotify_url": "TEXT",
+        "image_url":   "TEXT",
+        "popularity":  "INTEGER",
+    }
+    with engine.connect() as conn:
+        for col, coltype in spotify_performer_cols.items():
+            if col not in existing_performer_cols:
+                conn.execute(text(f"ALTER TABLE performers ADD COLUMN {col} {coltype}"))
+        conn.commit()
+
     existing_event_cols = [c["name"] for c in insp.get_columns("events")]
     sports_cols = {
         "sport":       "TEXT",
@@ -262,6 +275,12 @@ async def lifespan(app: FastAPI):
         enrich_performers_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=125)),
         id="enrich_performers",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        enrich_spotify_job,
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=140)),
+        id="enrich_spotify",
         replace_existing=True,
     )
     scheduler.add_job(

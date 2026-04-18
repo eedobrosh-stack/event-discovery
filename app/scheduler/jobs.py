@@ -882,6 +882,106 @@ async def collect_techconf_job():
         db.close()
 
 
+async def enrich_spotify_job(batch: int = 200):
+    """
+    Enrich Performer records with Spotify data: genres, image, popularity, URL.
+    Prioritises performers with no spotify_id yet, ordered by event count.
+    Runs nightly after enrich_performers_job so MusicBrainz stubs exist first.
+    """
+    import json as _json
+    import httpx as _httpx
+    from app.models import Performer
+    from app.services.spotify_lookup import lookup_spotify_artist
+
+    if not settings.SPOTIFY_CLIENT_ID or not settings.SPOTIFY_CLIENT_SECRET:
+        logger.info("enrich_spotify_job: SPOTIFY_CLIENT_ID not set — skipping")
+        return
+
+    db = SessionLocal()
+    log = ScanLog(job_name="enrich_spotify", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    enriched = 0
+    skipped = 0
+
+    try:
+        # Prioritise performers with events but no Spotify data yet
+        rows = (
+            db.query(Performer.id, Performer.name, func.count(Event.id).label("n"))
+            .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
+            .filter(
+                Performer.spotify_id.is_(None),
+                Performer.source != "not_found",   # skip confirmed-dead stubs
+            )
+            .group_by(Performer.id, Performer.name)
+            .order_by(func.count(Event.id).desc())
+            .limit(batch)
+            .all()
+        )
+        logger.info(f"enrich_spotify_job: {len(rows)} performers to enrich")
+
+        async with _httpx.AsyncClient(timeout=10) as http:
+            for perf_id, name, _n in rows:
+                try:
+                    result = await lookup_spotify_artist(
+                        name,
+                        settings.SPOTIFY_CLIENT_ID,
+                        settings.SPOTIFY_CLIENT_SECRET,
+                        http,
+                    )
+                    if result:
+                        update: dict = {
+                            "spotify_id":  result["spotify_id"],
+                            "spotify_url": result["spotify_url"],
+                            "image_url":   result["image_url"],
+                            "popularity":  result["popularity"],
+                        }
+                        # Only overwrite genres/category/event_type if Spotify
+                        # gives us something more specific than what we have.
+                        if result["genres"]:
+                            update["genres"] = _json.dumps(result["genres"])
+                        if result["event_type_name"]:
+                            update["event_type_name"] = result["event_type_name"]
+                            update["category"] = result["category"]
+                            update["source"] = "spotify"
+
+                        db.query(Performer).filter(Performer.id == perf_id).update(
+                            update, synchronize_session=False
+                        )
+                        enriched += 1
+                        logger.debug(
+                            f"enrich_spotify: {name!r} → {result['event_type_name']} "
+                            f"(pop={result['popularity']})"
+                        )
+                    else:
+                        skipped += 1
+
+                    db.commit()
+                    db.expire_all()
+                    await asyncio.sleep(0.2)   # ~5 req/s — well within Spotify limits
+
+                except Exception as e:
+                    logger.warning(f"enrich_spotify: error for {name!r}: {e}")
+                    db.rollback()
+                    skipped += 1
+
+        log.status = "success"
+        log.events_found = len(rows)
+        log.events_saved = enriched
+        log.notes = f"enriched={enriched} no_result={skipped}"
+        logger.info(f"enrich_spotify_job done: enriched={enriched} skipped={skipped}")
+
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"enrich_spotify_job error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()
