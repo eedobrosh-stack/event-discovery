@@ -168,7 +168,7 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         enrich_youtube_job,
-        IntervalTrigger(hours=6, start_date=_t + _td(minutes=95)),
+        IntervalTrigger(hours=2, start_date=_t + _td(minutes=95)),
         id="enrich_youtube",
         replace_existing=True,
     )

@@ -47,8 +47,8 @@ async def lookup_youtube_video(artist_name: str) -> str | None:
         logger.warning(f"YouTube lookup failed for '{artist_name}': {e}")
 
     _cache[key] = url
-    # Rate limit — 1 request per second
-    await asyncio.sleep(1)
+    # Rate limit: 0.5s keeps scrape fallback safe; API path doesn't need it
+    await asyncio.sleep(0.5)
     return url
 
 

@@ -273,7 +273,7 @@ async def collect_platform_venues():
         db.close()
 
 
-async def enrich_youtube_job(batch: int = 100):
+async def enrich_youtube_job(batch: int = 300):
     """Find artists with no YouTube link and look them up. Runs every 6h."""
     from sqlalchemy import func as _func, or_
     from app.services.youtube_lookup import lookup_youtube_video
@@ -291,6 +291,8 @@ async def enrich_youtube_job(batch: int = 100):
             .filter(
                 Event.artist_name.isnot(None),
                 Event.artist_name != "",
+                # Skip sports events — home_team names aren't music artists
+                Event.sport.is_(None),
                 or_(
                     Event.artist_youtube_channel.is_(None),
                     Event.artist_youtube_channel == "",
