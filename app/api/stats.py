@@ -2,7 +2,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, text
+from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,10 +24,10 @@ def city_coverage(db: Session = Depends(get_db)):
             func.count(func.distinct(Venue.id)).label("venues"),
             # Count only upcoming events (CASE keeps outer-join cities with 0 events)
             func.count(func.distinct(
-                func.case((Event.start_date >= today, Event.id), else_=None)
+                case([(Event.start_date >= today, Event.id)], else_=None)
             )).label("events"),
-            func.min(func.case((Event.start_date >= today, Event.start_date), else_=None)).label("earliest"),
-            func.max(func.case((Event.start_date >= today, Event.start_date), else_=None)).label("latest"),
+            func.min(case([(Event.start_date >= today, Event.start_date)], else_=None)).label("earliest"),
+            func.max(case([(Event.start_date >= today, Event.start_date)], else_=None)).label("latest"),
         )
         .join(Venue, Venue.city_id == City.id, isouter=True)
         .join(Event, Event.venue_id == Venue.id, isouter=True)
@@ -196,7 +196,7 @@ def source_detail(source: str, db: Session = Depends(get_db)):
             City.country,
             func.count(Event.id).label("events"),
             func.sum(
-                func.case((Event.created_at >= since, 1), else_=0)
+                case((Event.created_at >= since, 1), else_=0)
             ).label("new_events"),
         )
         .join(Venue, Venue.city_id == City.id)
