@@ -174,7 +174,7 @@ def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent
     identifier = g.get("identifier") or g.get("id") or ""
 
     return RawEvent(
-        name=f"{home_name} vs {away_name} · {comp_label}",
+        name=f"{comp_label} - {home_name} vs {away_name}",
         start_date=utc_dt.date(),
         start_time=utc_dt.strftime("%H:%M"),
         end_date=utc_dt.date(),

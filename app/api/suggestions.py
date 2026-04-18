@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Event, EventType, Venue
 
+# Sports event names follow the pattern "League - Home vs Away".
+# When a query exactly matches a league prefix (e.g. "NBA", "EuroLeague"),
+# we return only the sport suggestion and suppress all other completions.
+_MIN_SPORT_QUERY_LEN = 2
+
 router = APIRouter(prefix="/api/suggestions", tags=["suggestions"])
 
 # ── In-memory suggestions cache (5-min TTL, keyed by query string) ────────────
@@ -48,8 +53,41 @@ def get_suggestions(
     if cached is not None:
         return cached[:limit]
 
-    q_like = f"%{q}%"
+    q_stripped = q.strip()
+    q_like = f"%{q_stripped}%"
     PER_TYPE = 3
+
+    # ── Sports league early-exit ────────────────────────────────────────────────
+    # Sports events are named "League - Home vs Away" (e.g. "NBA - Spurs vs Lakers").
+    # If the query matches a league prefix, return only that sport suggestion so
+    # users can build a clean "NBA calendar" without noisy autocomplete mixing in.
+    if len(q_stripped) >= _MIN_SPORT_QUERY_LEN:
+        league_prefix = f"{q_stripped} -%"
+        sport_name_rows = (
+            db.query(Event.name, Event.sport)
+            .filter(
+                Event.sport.isnot(None),
+                Event.name.ilike(league_prefix),
+            )
+            .distinct(Event.name)
+            .limit(10)
+            .all()
+        )
+        if sport_name_rows:
+            # Extract unique league labels from event names (everything before " - ")
+            leagues: dict[str, str] = {}  # league_label → sport value
+            for name, sport in sport_name_rows:
+                if " - " in name:
+                    label = name.split(" - ")[0].strip()
+                    if label.lower().startswith(q_stripped.lower()):
+                        leagues[label] = label  # use label as the search value
+            if leagues:
+                results = [
+                    {"kind": "sport", "value": label, "label": label, "badge": "Sport"}
+                    for label in sorted(leagues)
+                ][:limit]
+                _cache_set(q, results)
+                return results
 
     # 1. Categories
     cats = (

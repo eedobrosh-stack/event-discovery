@@ -131,7 +131,7 @@ def _parse_event(raw: dict, cfg: LeagueConfig) -> Optional[RawEvent]:
     image_url = (home.get("team") or {}).get("logo") or None
 
     return RawEvent(
-        name=f"{home_name} vs {away_name} · {cfg.label}",
+        name=f"{cfg.label} - {home_name} vs {away_name}",
         start_date=utc_dt.date(),
         start_time=utc_dt.strftime("%H:%M"),
         end_date=utc_dt.date(),

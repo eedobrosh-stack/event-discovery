@@ -113,7 +113,7 @@ def _parse_match(m: dict) -> Optional[RawEvent]:
 
     league_suffix = series_name or sport_label
     return RawEvent(
-        name=f"{name} · {league_suffix}",
+        name=f"{league_suffix} - {name}",
         start_date=start_dt.date(),
         start_time=start_time,
         end_date=start_dt.date(),

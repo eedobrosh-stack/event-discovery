@@ -165,7 +165,7 @@ def _parse_meeting(m: dict, tv_channels: list[dict]) -> Optional[RawEvent]:
 
     base_name = meeting_name if str(year) in meeting_name else f"{meeting_name} {year}"
     # Prefix "Formula 1 ·" only if not already in the name
-    full_name = base_name if base_name.startswith("Formula 1") else f"{base_name} · Formula 1"
+    full_name = base_name if base_name.startswith("Formula 1 -") else f"Formula 1 - {base_name}"
 
     return RawEvent(
         name=full_name,
