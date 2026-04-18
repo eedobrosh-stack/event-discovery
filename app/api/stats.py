@@ -38,13 +38,20 @@ def city_coverage(db: Session = Depends(get_db)):
     )
 
     total_venues = sum(r.venues for r in rows)
-    total_events = sum(r.events for r in rows)
+
+    # Authoritative upcoming count: direct filter, no join (avoids excluding
+    # events whose venue_id is NULL or not yet linked to a city record)
+    total_upcoming = (
+        db.query(func.count(Event.id))
+        .filter(Event.start_date >= today)
+        .scalar() or 0
+    )
 
     return {
         "summary": {
             "cities": len(rows),
             "venues": total_venues,
-            "events": total_events,
+            "events": total_upcoming,
         },
         "cities": [
             {
