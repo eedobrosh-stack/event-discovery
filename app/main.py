@@ -85,11 +85,25 @@ def _run_migrations():
     """Apply incremental schema changes that create_all() won't handle."""
     from sqlalchemy import text, inspect
     insp = inspect(engine)
-    existing_cols = [c["name"] for c in insp.get_columns("venues")]
-    if "default_event_type_id" not in existing_cols:
+
+    existing_venue_cols = [c["name"] for c in insp.get_columns("venues")]
+    if "default_event_type_id" not in existing_venue_cols:
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE venues ADD COLUMN default_event_type_id INTEGER"))
             conn.commit()
+
+    existing_event_cols = [c["name"] for c in insp.get_columns("events")]
+    sports_cols = {
+        "sport":       "TEXT",
+        "home_team":   "TEXT",
+        "away_team":   "TEXT",
+        "tv_channels": "TEXT",   # JSON stored as TEXT in SQLite
+    }
+    with engine.connect() as conn:
+        for col, coltype in sports_cols.items():
+            if col not in existing_event_cols:
+                conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
+        conn.commit()
 
 
 @asynccontextmanager

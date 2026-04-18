@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, Date, Text,
-    ForeignKey, DateTime, Index,
+    ForeignKey, DateTime, Index, JSON,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -29,6 +29,11 @@ class Event(Base):
     is_online = Column(Boolean, default=False)
     scrape_source = Column(String(100), nullable=True)
     source_id = Column(String(255), nullable=True)
+    # ── Sports fields ────────────────────────────────────────────────────────
+    sport      = Column(String(50),  nullable=True)   # "Soccer", "NFL", "AFL" …
+    home_team  = Column(String(200), nullable=True)
+    away_team  = Column(String(200), nullable=True)
+    tv_channels = Column(JSON, nullable=True)          # [{channel, market, country, type}]
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

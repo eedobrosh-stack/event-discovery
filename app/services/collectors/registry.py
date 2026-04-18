@@ -151,6 +151,11 @@ class CollectorRegistry:
                     venue_name=raw.venue_name or (venue.name if venue else None),
                     scrape_source=raw.source,
                     source_id=raw.source_id,
+                    # Sports fields
+                    sport=raw.sport,
+                    home_team=raw.home_team,
+                    away_team=raw.away_team,
+                    tv_channels=raw.tv_channels or [],
                 )
                 db.add(event)
                 db.flush()

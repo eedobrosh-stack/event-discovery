@@ -121,6 +121,11 @@ class RawEvent:
     source: str = ""
     source_id: str = ""
     raw_categories: list[str] = field(default_factory=list)
+    # ── Sports-specific fields ───────────────────────────────────────────────
+    home_team: str | None = None
+    away_team: str | None = None
+    sport: str | None = None        # e.g. "Soccer", "Basketball", "AFL"
+    tv_channels: list[dict] | None = None  # [{channel, market, country, type}]
 
 
 class BaseCollector(ABC):
