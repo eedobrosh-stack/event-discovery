@@ -39,11 +39,7 @@ class CityGuideConfig:
 # All sites verified to return schema.org JSON-LD Event blocks server-side.
 # Sites marked max_pages=1 serve all events on a single page (no /page/N/ path).
 CITY_GUIDES: dict[str, list[CityGuideConfig]] = {
-    "Chicago": [CityGuideConfig(
-        base_url="https://www.choosechicago.com/events/",
-        max_pages=10,
-        source_tag="choosechicago",
-    )],
+    # Note: Chicago is handled by ChooseChicagoCollector (TEC REST API) — not here.
     "Toronto": [CityGuideConfig(
         base_url="https://nowtoronto.com/events/",
         max_pages=3,
@@ -86,6 +82,26 @@ _HEADERS = {
 }
 
 _ONLINE_MODE = "https://schema.org/OnlineEventAttendanceMode"
+
+
+def _extract_image_url(img) -> str | None:
+    """
+    Safely extract a single URL string from the many shapes schema.org
+    `image` can take:
+      - None or missing
+      - "https://..."  (bare string)
+      - {"@type": "ImageObject", "url": "https://..."}  (ImageObject)
+      - ["https://url1", "https://url2", ...]  (list of strings)
+      - [{"@type": "ImageObject", "url": "..."}, ...]  (list of ImageObjects)
+      - nested lists (unusual but defensive)
+    """
+    # Unwrap all list nesting — always take the first element
+    while isinstance(img, list):
+        img = img[0] if img else None
+    # Unwrap ImageObject dict
+    if isinstance(img, dict):
+        return img.get("url") or img.get("contentUrl") or None
+    return str(img) if img else None
 
 
 def _parse_event(ev: dict, source_tag: str) -> RawEvent | None:
@@ -161,7 +177,7 @@ def _parse_event(ev: dict, source_tag: str) -> RawEvent | None:
         price=price,
         price_currency=currency,
         purchase_link=url or None,
-        image_url=(_img[0] if isinstance(_img := ev.get("image"), list) else _img),
+        image_url=_extract_image_url(ev.get("image")),
         description=ev.get("description"),
         venue_name=venue_name,
         venue_address=venue_address,
