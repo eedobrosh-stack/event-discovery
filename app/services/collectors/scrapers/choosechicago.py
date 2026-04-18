@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.choosechicago.com/wp-json/tribe/events/v1/events"
 PER_PAGE = 100
-MAX_PAGES = 5          # 500 events max per run — polite ceiling
+MAX_PAGES = 2          # 200 events max per run — memory-conscious ceiling
 TIMEOUT   = 20
 
 HEADERS = {

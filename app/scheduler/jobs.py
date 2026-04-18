@@ -136,6 +136,7 @@ PRIORITY_CITIES = [
 
 async def collect_all_events():
     """Run all collectors for priority cities only to avoid memory spikes."""
+    import gc
     from sqlalchemy import and_, or_
     db = SessionLocal()
     try:
@@ -176,6 +177,7 @@ async def collect_all_events():
                 # Free all ORM objects accumulated during this city's scrape
                 # so they don't pile up across cities.
                 db.expire_all()
+                gc.collect()
     finally:
         db.close()
 

@@ -25,6 +25,7 @@ class CollectorRegistry:
 
     async def collect_all(self, city: City, db: Session) -> dict:
         """Run all registered collectors for a city, save results, return stats."""
+        import gc
         stats = {}
         for collector in self._collectors:
             try:
@@ -34,17 +35,26 @@ class CollectorRegistry:
                     lat=city.latitude,
                     lon=city.longitude,
                 )
+                fetched = len(raw_events)
                 saved = self._save_events(raw_events, city, db)
-                stats[collector.source_name] = {"fetched": len(raw_events), "saved": saved}
-                logger.info(f"{collector.source_name}: fetched={len(raw_events)}, saved={saved}")
+                stats[collector.source_name] = {"fetched": fetched, "saved": saved}
+                logger.info(f"{collector.source_name}: fetched={fetched}, saved={saved}")
             except Exception as e:
                 logger.error(f"{collector.source_name} error: {e}")
                 stats[collector.source_name] = {"error": str(e)}
+            finally:
+                # Release ORM identity map and raw event list after every collector
+                # to prevent unbounded memory growth across 20+ collectors × 30 cities.
+                del raw_events
+                db.expire_all()
+                gc.collect()
         return stats
+
+    _SAVE_BATCH = 50   # commit + expire every N events to keep identity map small
 
     def _save_events(self, raw_events: list[RawEvent], city: City, db: Session) -> int:
         saved = 0
-        for raw in raw_events:
+        for i, raw in enumerate(raw_events):
             try:
                 # Normalize: split "Event Title @ Venue Name" patterns
                 # Case 1: @ in event name  → "Concert Title @ Venue" → split
@@ -210,6 +220,12 @@ class CollectorRegistry:
                 logger.error(f"Error saving event '{raw.name}': {e}")
                 db.rollback()
                 continue
+
+            # Commit and expire every SAVE_BATCH events — prevents the SQLAlchemy
+            # identity map from accumulating hundreds of ORM objects in RAM.
+            if (i + 1) % self._SAVE_BATCH == 0:
+                db.commit()
+                db.expire_all()
 
         db.commit()
 
