@@ -24,10 +24,10 @@ def city_coverage(db: Session = Depends(get_db)):
             func.count(func.distinct(Venue.id)).label("venues"),
             # Count only upcoming events (CASE keeps outer-join cities with 0 events)
             func.count(func.distinct(
-                case([(Event.start_date >= today, Event.id)], else_=None)
+                case((Event.start_date >= today, Event.id), else_=None)
             )).label("events"),
-            func.min(case([(Event.start_date >= today, Event.start_date)], else_=None)).label("earliest"),
-            func.max(case([(Event.start_date >= today, Event.start_date)], else_=None)).label("latest"),
+            func.min(case((Event.start_date >= today, Event.start_date), else_=None)).label("earliest"),
+            func.max(case((Event.start_date >= today, Event.start_date), else_=None)).label("latest"),
         )
         .join(Venue, Venue.city_id == City.id, isouter=True)
         .join(Event, Event.venue_id == Venue.id, isouter=True)
