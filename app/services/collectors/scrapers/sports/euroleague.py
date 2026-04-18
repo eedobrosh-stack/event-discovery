@@ -73,6 +73,22 @@ def _season_codes(comp: str) -> list[str]:
         return [f"{comp}{year - 1}", f"{comp}{year}"]
 
 
+# Suburbs / districts that EuroLeague venue addresses use but whose events
+# belong to the parent metro city in our priority cities list.
+_SUBURB_TO_CITY: dict[str, str] = {
+    "marousi":       "Athens",      # Panathinaikos — Telekom Center Athens
+    "maroussi":      "Athens",
+    "piraeus":       "Athens",      # Olympiacos
+    "neo faliro":    "Athens",
+    "villeurbanne":  "Lyon",        # LDLC ASVEL — near Lyon
+    "boulogne":      "Paris",
+    "levallois":     "Paris",
+    "montpellier":   "Montpellier",
+    "vitoria":       "Vitoria-Gasteiz",
+    "vitoria-gasteiz": "Vitoria-Gasteiz",
+}
+
+
 def _parse_city(address: str) -> str | None:
     """
     Extract city name from a venue address string.
@@ -96,13 +112,14 @@ def _parse_city(address: str) -> str | None:
         if any(c.isdigit() for c in part):
             city = re.sub(r"^\d[\d\s\-]+", "", part).strip()
             if city and len(city) > 1 and not city.isdigit():
-                return city
+                return _SUBURB_TO_CITY.get(city.lower(), city)
 
     # Fallback: last non-trivial, non-digit-only part (handles "Street, City")
     for part in reversed(parts):
         city = part.strip()
         if city and len(city) > 1 and not city.isdigit():
-            return city
+            # Map suburb/district names to their parent metro city
+            return _SUBURB_TO_CITY.get(city.lower(), city)
     return None
 
 
