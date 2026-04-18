@@ -60,21 +60,33 @@ def get_stats(db: Session = Depends(get_db)):
     }
 
 
-async def _run_scrape(city_ids: Optional[List[int]]):
+async def _run_scrape(city_ids: Optional[List[int]], city_names: Optional[List[str]]):
     """Background scrape job — opens its own DB session so it outlives the request."""
+    import logging
+    from sqlalchemy import and_, or_
     from app.database import SessionLocal
+    from app.scheduler.jobs import PRIORITY_CITIES
+    _log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
         if city_ids:
             cities = db.query(City).filter(City.id.in_(city_ids)).all()
+        elif city_names:
+            cities = db.query(City).filter(
+                func.lower(City.name).in_([n.lower() for n in city_names])
+            ).all()
         else:
-            cities = db.query(City).filter(City.name == "New York").all()
-            if not cities:
-                cities = db.query(City).limit(1).all()
+            # Default: run all priority cities (same as the scheduler job)
+            cities = db.query(City).filter(
+                or_(*[
+                    and_(City.name == name, City.country == country)
+                    for name, country in PRIORITY_CITIES
+                ])
+            ).all()
+        _log.info(f"Admin scrape: {len(cities)} cities to process")
         for city in cities:
             stats = await registry.collect_all(city, db)
-            import logging
-            logging.getLogger(__name__).info(f"Scrape done for {city.name}: {stats}")
+            _log.info(f"Scrape done for {city.name}: {stats}")
     finally:
         db.close()
 
@@ -84,10 +96,21 @@ async def trigger_scrape(
     background_tasks: BackgroundTasks,
     sources: Optional[List[str]] = None,
     city_ids: Optional[List[int]] = None,
+    city_names: Optional[List[str]] = None,
 ):
-    """Kick off a scrape in the background and return immediately."""
-    background_tasks.add_task(_run_scrape, city_ids)
-    label = f"city_ids={city_ids}" if city_ids else "New York (default)"
+    """Kick off a scrape in the background and return immediately.
+
+    - No params → runs all priority cities (same as scheduler)
+    - city_ids=[1,2] → specific cities by DB id
+    - city_names=["Barcelona","Istanbul"] → specific cities by name
+    """
+    background_tasks.add_task(_run_scrape, city_ids, city_names)
+    if city_ids:
+        label = f"city_ids={city_ids}"
+    elif city_names:
+        label = f"cities={city_names}"
+    else:
+        label = "all priority cities"
     return {"message": f"Scrape started in background for {label}"}
 
 
