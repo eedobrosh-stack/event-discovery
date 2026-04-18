@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     YOUTUBE_API_KEY: str = ""
     BANDSINTOWN_APP_ID: str = ""
     SERPER_API_KEY: str = ""       # google.serper.dev — paid fallback for venue URL search
+    CRICAPI_KEY: str = ""          # cricapi.com — free 100 req/day; sign up at https://cricapi.com
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""

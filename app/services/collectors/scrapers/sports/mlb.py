@@ -19,6 +19,7 @@ from typing import Optional
 import httpx
 
 from app.services.collectors.base import BaseCollector, RawEvent
+from app.services.collectors.scrapers.sports.leagues import COUNTRY_NAME_TO_ISO2
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,9 @@ class MlbStatsApiCollector(BaseCollector):
         return True  # no API key
 
     async def collect(self, city_name: str, country_code: str = "", **kwargs) -> list[RawEvent]:
-        if (country_code or "").upper() not in ("US", "CA"):
+        # country_code is city.country (full name). Map to ISO-2.
+        iso2 = COUNTRY_NAME_TO_ISO2.get(country_code, "")
+        if iso2 not in ("US", "CA"):
             return []
 
         start = date.today()

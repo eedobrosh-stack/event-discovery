@@ -26,7 +26,7 @@ from typing import Optional
 import httpx
 
 from app.services.collectors.base import BaseCollector, RawEvent
-from app.services.collectors.scrapers.sports.leagues import ESPN_LEAGUES, LeagueConfig
+from app.services.collectors.scrapers.sports.leagues import ESPN_LEAGUES, LeagueConfig, COUNTRY_NAME_TO_ISO2
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +200,10 @@ class EspnSportsCollector(BaseCollector):
         return True  # no API key needed
 
     async def collect(self, city_name: str, country_code: str = "", **kwargs) -> list[RawEvent]:
-        # Filter leagues to the requested country
-        target_country = (country_code or "").upper()
-        leagues = [lg for lg in ESPN_LEAGUES if lg.country == target_country]
+        # country_code is actually city.country — a full name like "United Kingdom".
+        # Map it to ISO-2 to match LeagueConfig.country.
+        iso2 = COUNTRY_NAME_TO_ISO2.get(country_code, "")
+        leagues = [lg for lg in ESPN_LEAGUES if lg.matches_country(iso2)]
         if not leagues:
             return []
 
@@ -220,6 +221,6 @@ class EspnSportsCollector(BaseCollector):
 
         logger.info(
             f"ESPN sports: {len(all_events)} total fixtures for "
-            f"{target_country} ({len(leagues)} leagues)"
+            f"{iso2} / {country_code} ({len(leagues)} leagues)"
         )
         return all_events

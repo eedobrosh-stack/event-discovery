@@ -33,6 +33,8 @@ from app.services.collectors.scrapers.allevents import AlleventsCollector
 from app.services.collectors.scrapers.city_guides import CityGuideCollector
 from app.services.collectors.scrapers.sports.espn import EspnSportsCollector
 from app.services.collectors.scrapers.sports.mlb import MlbStatsApiCollector
+from app.services.collectors.scrapers.sports.openf1 import OpenF1Collector
+from app.services.collectors.scrapers.sports.cricapi import CricApiCollector
 
 logger = logging.getLogger(__name__)
 
@@ -65,26 +67,61 @@ registry.register(SongkickCollector())
 registry.register(SkiddleCollector())
 registry.register(AlleventsCollector())
 registry.register(CityGuideCollector())
-# Sports — ESPN hidden API (no key) + MLB official StatsAPI (no key)
+# Sports — ESPN hidden API (no key) + MLB official StatsAPI (no key) + OpenF1 (no key)
 registry.register(EspnSportsCollector())
 registry.register(MlbStatsApiCollector())
+registry.register(OpenF1Collector())
+# Cricket — CricAPI (free 100 req/day; set CRICAPI_KEY in .env to activate)
+registry.register(CricApiCollector())
 
 
 # (city_name, country) — must match City.country values exactly (full names).
 # Specifying country prevents collecting UK events into "London, Canada" etc.
 PRIORITY_CITIES = [
+    # ── United States ───────────────────────────────────────────────────────
     ("New York",       "United States"),
     ("Los Angeles",    "United States"),
     ("Chicago",        "United States"),
     ("San Francisco",  "United States"),
     ("Berkeley",       "United States"),
+    # ── United Kingdom ──────────────────────────────────────────────────────
     ("London",         "United Kingdom"),
+    ("Manchester",     "United Kingdom"),
+    ("Edinburgh",      "United Kingdom"),
+    # ── Germany ─────────────────────────────────────────────────────────────
     ("Berlin",         "Germany"),
+    ("Munich",         "Germany"),
+    # ── France ──────────────────────────────────────────────────────────────
     ("Paris",          "France"),
+    # ── Italy ───────────────────────────────────────────────────────────────
+    ("Rome",           "Italy"),
+    ("Milan",          "Italy"),
+    # ── Spain ───────────────────────────────────────────────────────────────
+    ("Madrid",         "Spain"),
+    ("Barcelona",      "Spain"),
+    # ── Netherlands ─────────────────────────────────────────────────────────
+    ("Amsterdam",      "Netherlands"),
+    # ── Portugal ────────────────────────────────────────────────────────────
+    ("Lisbon",         "Portugal"),
+    # ── Belgium ─────────────────────────────────────────────────────────────
+    ("Brussels",       "Belgium"),
+    # ── Turkey ──────────────────────────────────────────────────────────────
+    ("Istanbul",       "Turkey"),
+    # ── Brazil ──────────────────────────────────────────────────────────────
+    ("São Paulo",      "Brazil"),
+    ("Rio de Janeiro", "Brazil"),
+    # ── Argentina ───────────────────────────────────────────────────────────
+    ("Buenos Aires",   "Argentina"),
+    # ── Mexico ──────────────────────────────────────────────────────────────
+    ("Mexico City",    "Mexico"),
+    # ── Canada ──────────────────────────────────────────────────────────────
     ("Toronto",        "Canada"),
+    ("Vancouver",      "Canada"),
+    # ── Australia ───────────────────────────────────────────────────────────
     ("Sydney",         "Australia"),
     ("Melbourne",      "Australia"),
     ("Brisbane",       "Australia"),
+    # ── Israel ──────────────────────────────────────────────────────────────
     ("Tel Aviv",       "Israel"),
 ]
 
@@ -522,9 +559,10 @@ async def discover_venues_job():
     cities_checked = 0
     try:
         # Only run for cities that have coordinates stored
+        priority_names = [name for name, _country in PRIORITY_CITIES]
         cities = (
             db.query(City)
-            .filter(City.name.in_(PRIORITY_CITIES), City.latitude.isnot(None), City.longitude.isnot(None))
+            .filter(City.name.in_(priority_names), City.latitude.isnot(None), City.longitude.isnot(None))
             .all()
         )
         logger.info(f"discover_venues: checking {len(cities)} priority cities")
