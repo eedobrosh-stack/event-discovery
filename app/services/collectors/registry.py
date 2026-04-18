@@ -203,6 +203,39 @@ class CollectorRegistry:
                 continue
 
         db.commit()
+
+        # ── Backfill venue_id for orphans in this city ───────────────────────
+        # Events can be saved with venue_name (text) but no venue_id when
+        # the venue record didn't exist yet at save time (e.g. RA, Bandsintown).
+        # After the main loop, try to link them to now-existing venue records.
+        try:
+            orphans = (
+                db.query(Event)
+                .filter(
+                    Event.venue_id.is_(None),
+                    Event.venue_name.isnot(None),
+                    Event.venue_name != "",
+                )
+                .limit(300)
+                .all()
+            )
+            backfilled = 0
+            for ev in orphans:
+                venue = (
+                    db.query(Venue)
+                    .filter_by(name=ev.venue_name, city_id=city.id)
+                    .first()
+                )
+                if venue:
+                    ev.venue_id = venue.id
+                    backfilled += 1
+            if backfilled:
+                db.commit()
+                logger.info(f"Backfilled venue_id for {backfilled} orphaned events in {city.name}")
+        except Exception as e:
+            logger.warning(f"Venue backfill failed for {city.name}: {e}")
+            db.rollback()
+
         return saved
 
     # Venue-name keywords → preferred event type name

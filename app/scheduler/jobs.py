@@ -70,17 +70,36 @@ registry.register(EspnSportsCollector())
 registry.register(MlbStatsApiCollector())
 
 
+# (city_name, country) — must match City.country values exactly (full names).
+# Specifying country prevents collecting UK events into "London, Canada" etc.
 PRIORITY_CITIES = [
-    "New York", "Tel Aviv", "London", "Los Angeles", "Chicago",
-    "San Francisco", "Berkeley", "Berlin", "Paris", "Toronto", "Sydney",
+    ("New York",       "United States"),
+    ("Los Angeles",    "United States"),
+    ("Chicago",        "United States"),
+    ("San Francisco",  "United States"),
+    ("Berkeley",       "United States"),
+    ("London",         "United Kingdom"),
+    ("Berlin",         "Germany"),
+    ("Paris",          "France"),
+    ("Toronto",        "Canada"),
+    ("Sydney",         "Australia"),
+    ("Melbourne",      "Australia"),
+    ("Brisbane",       "Australia"),
+    ("Tel Aviv",       "Israel"),
 ]
 
 
 async def collect_all_events():
     """Run all collectors for priority cities only to avoid memory spikes."""
+    from sqlalchemy import and_, or_
     db = SessionLocal()
     try:
-        cities = db.query(City).filter(City.name.in_(PRIORITY_CITIES)).all()
+        cities = db.query(City).filter(
+            or_(*[
+                and_(City.name == name, City.country == country)
+                for name, country in PRIORITY_CITIES
+            ])
+        ).all()
         if not cities:
             cities = (
                 db.query(City)
