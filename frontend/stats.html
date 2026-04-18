@@ -21,12 +21,12 @@
         /* ── Daily Pulse cards ── */
         .pulse-grid {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: repeat(6, 1fr);
             gap: 14px;
             margin-bottom: 28px;
         }
-        @media (max-width: 900px) { .pulse-grid { grid-template-columns: repeat(3, 1fr); } }
-        @media (max-width: 560px) { .pulse-grid { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 1100px) { .pulse-grid { grid-template-columns: repeat(3, 1fr); } }
+        @media (max-width: 560px)  { .pulse-grid { grid-template-columns: 1fr 1fr; } }
 
         .pulse-card {
             background: var(--card-bg, #1e1e2e);
@@ -105,6 +105,37 @@
         .delta.up   { color: #4ade80; }
         .delta.down { color: #f87171; }
         .delta.flat { color: #555; }
+
+        /* Dedup card rows */
+        .dedup-rows {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            border-top: 1px solid var(--border, #2a2a3a);
+            padding-top: 10px;
+            margin-top: auto;
+        }
+        .dedup-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.72rem;
+        }
+        .dedup-label { color: #888; }
+        .dedup-val   { font-weight: 600; font-variant-numeric: tabular-nums; }
+        .dedup-val.kept   { color: #4ade80; }
+        .dedup-val.duped  { color: #f87171; }
+        .dedup-bar-wrap {
+            flex: 1;
+            height: 3px;
+            background: rgba(255,255,255,.07);
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 0 6px;
+        }
+        .dedup-bar { height: 100%; border-radius: 2px; }
+        .dedup-bar.kept-bar  { background: #4ade80; opacity: .7; }
+        .dedup-bar.duped-bar { background: #f87171; opacity: .7; }
 
         /* Source drill-down panel */
         .src-row { cursor: pointer; }
@@ -991,10 +1022,11 @@
                 }).join('');
             }
 
-            const ev  = d.new_events;
-            const ve  = d.new_venues;
-            const art = d.new_artists;
-            const cit = d.new_cities;
+            const ev   = d.new_events;
+            const ve   = d.new_venues;
+            const art  = d.new_artists;
+            const cit  = d.new_cities;
+            const dup  = d.dedup || {};
 
             // City breakdown: list top cities with their event counts
             const cityRows = (cit.by_city || []).slice(0, 8).map(c =>
@@ -1019,6 +1051,31 @@
                 ${delta(ev.total, ev.prev)}
                 <div class="pulse-sources">${sourceRows(ev.by_source, ev.total)}</div>
             </div>
+            ${(function() {
+                const fetched = dup.fetched || 0;
+                const kept    = dup.saved    || 0;
+                const red     = dup.redundant || 0;
+                const redPct  = dup.redundant_pct || 0;
+                const keptPct = fetched > 0 ? Math.round(kept * 100 / fetched) : 0;
+                return `
+                <div class="pulse-card">
+                    <div class="pulse-label">Scraped (24 h)</div>
+                    <div class="pulse-num" style="font-size:1.8rem;">${fetched.toLocaleString()}</div>
+                    <span class="delta flat" style="margin-bottom:8px;">events pulled from sources</span>
+                    <div class="dedup-rows">
+                        <div class="dedup-row">
+                            <span class="dedup-label">Kept</span>
+                            <div class="dedup-bar-wrap"><div class="dedup-bar kept-bar" style="width:${keptPct}%"></div></div>
+                            <span class="dedup-val kept">${kept.toLocaleString()} <span style="color:#666;font-weight:400;">(${keptPct}%)</span></span>
+                        </div>
+                        <div class="dedup-row">
+                            <span class="dedup-label">Redundant</span>
+                            <div class="dedup-bar-wrap"><div class="dedup-bar duped-bar" style="width:${redPct}%"></div></div>
+                            <span class="dedup-val duped">${red.toLocaleString()} <span style="color:#666;font-weight:400;">(${redPct}%)</span></span>
+                        </div>
+                    </div>
+                </div>`;
+            })()}
             <div class="pulse-card">
                 <div class="pulse-label">New venues</div>
                 <div class="pulse-num">${ve.total > 0 ? '+' : ''}${ve.total.toLocaleString()}</div>

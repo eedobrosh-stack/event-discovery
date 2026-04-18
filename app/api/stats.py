@@ -272,6 +272,24 @@ def daily_pulse(db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
+    # ── 1b. Dedup stats from scan_logs (collect_events jobs in last 24 h) ────
+    dedup_row = (
+        db.query(
+            func.coalesce(func.sum(ScanLog.events_found), 0).label("fetched"),
+            func.coalesce(func.sum(ScanLog.events_saved), 0).label("saved"),
+        )
+        .filter(
+            ScanLog.job_name == "collect_events",
+            ScanLog.started_at >= since,
+            ScanLog.status == "success",
+        )
+        .first()
+    )
+    total_fetched = int(dedup_row.fetched) if dedup_row else 0
+    total_dedup_saved = int(dedup_row.saved) if dedup_row else 0
+    redundant = max(0, total_fetched - total_dedup_saved)
+    redundant_pct = round(redundant * 100 / total_fetched) if total_fetched else 0
+
     # ── 2. New events in 24h by source ───────────────────────────────────────
     new_ev_rows = (
         db.query(Event.scrape_source, func.count(Event.id).label("n"))
@@ -351,6 +369,12 @@ def daily_pulse(db: Session = Depends(get_db)):
         "since": since.isoformat(),
         "total_upcoming": total_upcoming,
         "prev_upcoming": prev_upcoming,
+        "dedup": {
+            "fetched": total_fetched,
+            "saved": total_dedup_saved,
+            "redundant": redundant,
+            "redundant_pct": redundant_pct,
+        },
         "new_events": {
             "total": cur_events,
             "prev": prev_events,
