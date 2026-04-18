@@ -15,15 +15,19 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 @router.get("/cities")
 def city_coverage(db: Session = Depends(get_db)):
-    """Return venue + event counts per city, ordered by venue count desc."""
+    """Return venue + upcoming-event counts per city, ordered by venue count desc."""
+    today = date.today()
     rows = (
         db.query(
             City.name,
             City.country,
             func.count(func.distinct(Venue.id)).label("venues"),
-            func.count(func.distinct(Event.id)).label("events"),
-            func.min(Event.start_date).label("earliest"),
-            func.max(Event.start_date).label("latest"),
+            # Count only upcoming events (CASE keeps outer-join cities with 0 events)
+            func.count(func.distinct(
+                func.case((Event.start_date >= today, Event.id), else_=None)
+            )).label("events"),
+            func.min(func.case((Event.start_date >= today, Event.start_date), else_=None)).label("earliest"),
+            func.max(func.case((Event.start_date >= today, Event.start_date), else_=None)).label("latest"),
         )
         .join(Venue, Venue.city_id == City.id, isouter=True)
         .join(Event, Event.venue_id == Venue.id, isouter=True)
