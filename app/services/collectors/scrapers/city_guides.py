@@ -114,7 +114,11 @@ def _parse_event(ev: dict, source_tag: str) -> RawEvent | None:
             pass
 
     location = ev.get("location") or {}
+    if isinstance(location, str):
+        location = {}
     address  = location.get("address") or {}
+    if isinstance(address, str):
+        address = {}    # plain string — can't extract sub-fields
     geo      = location.get("geo") or {}
 
     venue_name    = location.get("name")
@@ -227,9 +231,15 @@ class CityGuideCollector(BaseCollector):
                     continue
                 items = data if isinstance(data, list) else [data]
                 for ev in items:
+                    if not isinstance(ev, dict):
+                        continue
                     if ev.get("@type") not in ("Event", "MusicEvent", "EventSeries"):
                         continue
-                    raw = _parse_event(ev, config.source_tag)
+                    try:
+                        raw = _parse_event(ev, config.source_tag)
+                    except Exception as exc:
+                        logger.debug(f"CityGuide: skipping malformed event from {city_name}: {exc}")
+                        continue
                     if raw and raw.source_id and raw.source_id not in seen_ids:
                         seen_ids.add(raw.source_id)
                         events.append(raw)
