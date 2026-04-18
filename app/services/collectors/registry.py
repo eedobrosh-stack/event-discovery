@@ -161,10 +161,19 @@ class CollectorRegistry:
                 db.flush()
 
                 # Assign event type using priority chain:
+                # 0. Sports shortcut — never go through Performer lookup for
+                #    sports events (team names would be mis-matched as music artists)
                 # 1. Artist → Performer table (event_type_name > category)
                 # 2. Venue default_event_type_id override
                 # 3. Raw categories with keyword/fallback rules
                 et = None
+
+                # Priority 0: sports events bypass Performer lookup entirely
+                if raw.sport:
+                    sport_cat = raw.sport  # e.g. "Basketball", "Football", "Formula 1"
+                    et = self._resolve_event_type(sport_cat, raw, db)
+                    if not et:
+                        et = self._resolve_event_type("Sports", raw, db)
 
                 # Priority 1: look up artist in Performer table
                 # matched_performer is already set if event name IS a performer;

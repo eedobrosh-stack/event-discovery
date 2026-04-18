@@ -10,7 +10,7 @@ channel names (US-market) for most leagues. No API key required.
 
 Each fixture becomes a RawEvent where:
   name        = "Home Team vs Away Team"
-  artist_name = home team name  (fills the artist slot for now)
+  artist_name = None (sports events are not music — avoids mis-categorization)
   home_team   = home team name
   away_team   = away team name
   sport       = league category slug
@@ -136,7 +136,7 @@ def _parse_event(raw: dict, cfg: LeagueConfig) -> Optional[RawEvent]:
         start_time=utc_dt.strftime("%H:%M"),
         end_date=utc_dt.date(),
         end_time=None,
-        artist_name=home_name,
+        artist_name=None,
         home_team=home_name,
         away_team=away_name,
         sport=cfg.category,

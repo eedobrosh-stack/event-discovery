@@ -179,7 +179,7 @@ def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent
         start_time=utc_dt.strftime("%H:%M"),
         end_date=utc_dt.date(),
         end_time=None,
-        artist_name=home_name,
+        artist_name=None,
         home_team=home_name,
         away_team=away_name,
         sport="Basketball",

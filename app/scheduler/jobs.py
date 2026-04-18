@@ -411,6 +411,8 @@ async def enrich_performers_job(batch: int = 50):
             .filter(
                 Event.artist_name.isnot(None),
                 Event.artist_name != "",
+                # Skip sports events — team names are not music artists
+                Event.sport.is_(None),
                 Event.artist_name.notin_(already_seen_sq),
             )
             .group_by(Event.artist_name)

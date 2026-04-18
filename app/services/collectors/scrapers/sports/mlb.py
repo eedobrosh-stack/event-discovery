@@ -81,7 +81,7 @@ def _parse_game(game: dict) -> Optional[RawEvent]:
         start_time=utc_dt.strftime("%H:%M"),
         end_date=utc_dt.date(),
         end_time=None,
-        artist_name=home_team,
+        artist_name=None,
         home_team=home_team,
         away_team=away_team,
         sport="Baseball",
