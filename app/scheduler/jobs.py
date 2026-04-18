@@ -124,6 +124,8 @@ PRIORITY_CITIES = [
     ("Sydney",         "Australia"),
     ("Melbourne",      "Australia"),
     ("Brisbane",       "Australia"),
+    # ── Greece ──────────────────────────────────────────────────────────────
+    ("Athens",         "Greece"),
     # ── Israel ──────────────────────────────────────────────────────────────
     ("Tel Aviv",       "Israel"),
 ]

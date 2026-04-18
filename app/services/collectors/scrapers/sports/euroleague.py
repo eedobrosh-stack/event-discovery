@@ -77,16 +77,30 @@ def _parse_city(address: str) -> str | None:
     """
     Extract city name from a venue address string.
     Handles formats like:
-      "Aristides Maillol Av S/N, 08028 Barcelona"
-      "Ha-Yatkon St 1, Tel Aviv"
-      "Abdi İpekçi Arena, Istanbul"
+      "Aristides Maillol Av S/N, 08028 Barcelona"           → "Barcelona"
+      "Yildirim … Sokak 2, 34354 Istanbul, Turkey"          → "Istanbul"
+      "25 Avenue Marechal Juin, 01000 Bourg en Bresse, France" → "Bourg en Bresse"
+      "37 Kifisias Avenue, 15123 Marousi"                   → "Marousi"
+
+    Strategy: walk backwards through comma-separated parts; prefer a part that
+    contains a digit (postal code prefix) since those reliably mark the city
+    segment.  Skip pure-text trailing parts (country names like "Turkey",
+    "France") that contain no digits.
     """
     if not address:
         return None
     parts = [p.strip() for p in address.split(",")]
+
+    # First pass: find a part with a postal code → strip it → that's the city
     for part in reversed(parts):
-        # Strip leading postal codes (digits + optional dash/space)
-        city = re.sub(r"^\d[\d\s\-]+", "", part).strip()
+        if any(c.isdigit() for c in part):
+            city = re.sub(r"^\d[\d\s\-]+", "", part).strip()
+            if city and len(city) > 1 and not city.isdigit():
+                return city
+
+    # Fallback: last non-trivial, non-digit-only part (handles "Street, City")
+    for part in reversed(parts):
+        city = part.strip()
         if city and len(city) > 1 and not city.isdigit():
             return city
     return None

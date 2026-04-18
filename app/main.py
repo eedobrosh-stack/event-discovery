@@ -58,6 +58,92 @@ def _seed_platform_venues():
         db.close()
 
 
+def _seed_priority_cities():
+    """Ensure every PRIORITY_CITIES entry exists in the cities table."""
+    import logging
+    from app.database import SessionLocal
+    from app.models import City
+    from app.scheduler.jobs import PRIORITY_CITIES
+
+    # (name, country, state, timezone, lat, lon)
+    CITY_META: dict[tuple[str, str], dict] = {
+        # ── United States ────────────────────────────────────────────────
+        ("New York",       "United States"): dict(state="NY", timezone="America/New_York",   latitude=40.7128,  longitude=-74.0060),
+        ("Los Angeles",    "United States"): dict(state="CA", timezone="America/Los_Angeles", latitude=34.0522,  longitude=-118.2437),
+        ("Chicago",        "United States"): dict(state="IL", timezone="America/Chicago",     latitude=41.8781,  longitude=-87.6298),
+        ("San Francisco",  "United States"): dict(state="CA", timezone="America/Los_Angeles", latitude=37.7749,  longitude=-122.4194),
+        ("Berkeley",       "United States"): dict(state="CA", timezone="America/Los_Angeles", latitude=37.8715,  longitude=-122.2730),
+        # ── United Kingdom ───────────────────────────────────────────────
+        ("London",         "United Kingdom"): dict(timezone="Europe/London",    latitude=51.5074,  longitude=-0.1278),
+        ("Manchester",     "United Kingdom"): dict(timezone="Europe/London",    latitude=53.4808,  longitude=-2.2426),
+        ("Edinburgh",      "United Kingdom"): dict(timezone="Europe/London",    latitude=55.9533,  longitude=-3.1883),
+        # ── Germany ──────────────────────────────────────────────────────
+        ("Berlin",         "Germany"):        dict(timezone="Europe/Berlin",    latitude=52.5200,  longitude=13.4050),
+        ("Munich",         "Germany"):        dict(timezone="Europe/Berlin",    latitude=48.1351,  longitude=11.5820),
+        # ── France ───────────────────────────────────────────────────────
+        ("Paris",          "France"):         dict(timezone="Europe/Paris",     latitude=48.8566,  longitude=2.3522),
+        # ── Italy ────────────────────────────────────────────────────────
+        ("Rome",           "Italy"):          dict(timezone="Europe/Rome",      latitude=41.9028,  longitude=12.4964),
+        ("Milan",          "Italy"):          dict(timezone="Europe/Rome",      latitude=45.4642,  longitude=9.1900),
+        # ── Spain ────────────────────────────────────────────────────────
+        ("Madrid",         "Spain"):          dict(timezone="Europe/Madrid",    latitude=40.4168,  longitude=-3.7038),
+        ("Barcelona",      "Spain"):          dict(timezone="Europe/Madrid",    latitude=41.3851,  longitude=2.1734),
+        # ── Netherlands ──────────────────────────────────────────────────
+        ("Amsterdam",      "Netherlands"):    dict(timezone="Europe/Amsterdam", latitude=52.3676,  longitude=4.9041),
+        # ── Portugal ─────────────────────────────────────────────────────
+        ("Lisbon",         "Portugal"):       dict(timezone="Europe/Lisbon",    latitude=38.7169,  longitude=-9.1399),
+        # ── Belgium ──────────────────────────────────────────────────────
+        ("Brussels",       "Belgium"):        dict(timezone="Europe/Brussels",  latitude=50.8503,  longitude=4.3517),
+        # ── Turkey ───────────────────────────────────────────────────────
+        ("Istanbul",       "Turkey"):         dict(timezone="Europe/Istanbul",  latitude=41.0082,  longitude=28.9784),
+        # ── Greece ───────────────────────────────────────────────────────
+        ("Athens",         "Greece"):         dict(timezone="Europe/Athens",    latitude=37.9838,  longitude=23.7275),
+        # ── Brazil ───────────────────────────────────────────────────────
+        ("São Paulo",      "Brazil"):         dict(timezone="America/Sao_Paulo",    latitude=-23.5505, longitude=-46.6333),
+        ("Rio de Janeiro", "Brazil"):         dict(timezone="America/Sao_Paulo",    latitude=-22.9068, longitude=-43.1729),
+        # ── Argentina ────────────────────────────────────────────────────
+        ("Buenos Aires",   "Argentina"):      dict(timezone="America/Argentina/Buenos_Aires", latitude=-34.6037, longitude=-58.3816),
+        # ── Mexico ───────────────────────────────────────────────────────
+        ("Mexico City",    "Mexico"):         dict(timezone="America/Mexico_City",  latitude=19.4326,  longitude=-99.1332),
+        # ── Canada ───────────────────────────────────────────────────────
+        ("Toronto",        "Canada"):         dict(timezone="America/Toronto",      latitude=43.6532,  longitude=-79.3832),
+        ("Vancouver",      "Canada"):         dict(timezone="America/Vancouver",    latitude=49.2827,  longitude=-123.1207),
+        # ── Australia ────────────────────────────────────────────────────
+        ("Sydney",         "Australia"):      dict(timezone="Australia/Sydney",     latitude=-33.8688, longitude=151.2093),
+        ("Melbourne",      "Australia"):      dict(timezone="Australia/Melbourne",  latitude=-37.8136, longitude=144.9631),
+        ("Brisbane",       "Australia"):      dict(timezone="Australia/Brisbane",   latitude=-27.4698, longitude=153.0251),
+        # ── Israel ───────────────────────────────────────────────────────
+        ("Tel Aviv",       "Israel"):         dict(timezone="Asia/Jerusalem",       latitude=32.0853,  longitude=34.7818),
+    }
+
+    _log = logging.getLogger(__name__)
+    db = SessionLocal()
+    added = 0
+    try:
+        for name, country in PRIORITY_CITIES:
+            exists = db.query(City).filter_by(name=name, country=country).first()
+            if exists:
+                continue
+            meta = CITY_META.get((name, country), {})
+            db.add(City(
+                name=name,
+                country=country,
+                state=meta.get("state"),
+                timezone=meta.get("timezone"),
+                latitude=meta.get("latitude"),
+                longitude=meta.get("longitude"),
+            ))
+            added += 1
+        db.commit()
+        if added:
+            _log.info(f"_seed_priority_cities: added {added} new city records")
+    except Exception as e:
+        _log.warning(f"_seed_priority_cities failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _seed_event_types():
     """Insert any event types from seed data that are not yet in the DB."""
     from app.database import SessionLocal
@@ -208,6 +294,7 @@ async def lifespan(app: FastAPI):
     async def _deferred_seed():
         await asyncio.sleep(5)
         try:
+            await asyncio.get_event_loop().run_in_executor(None, _seed_priority_cities)
             await asyncio.get_event_loop().run_in_executor(None, _seed_platform_venues)
             await asyncio.get_event_loop().run_in_executor(None, _seed_event_types)
             _log.info("Seeding complete")
