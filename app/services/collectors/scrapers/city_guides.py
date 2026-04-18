@@ -161,7 +161,7 @@ def _parse_event(ev: dict, source_tag: str) -> RawEvent | None:
         price=price,
         price_currency=currency,
         purchase_link=url or None,
-        image_url=ev.get("image"),
+        image_url=(_img[0] if isinstance(_img := ev.get("image"), list) else _img),
         description=ev.get("description"),
         venue_name=venue_name,
         venue_address=venue_address,

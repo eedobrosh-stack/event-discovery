@@ -114,14 +114,16 @@ ESPN_LEAGUES: list[LeagueConfig] = [
     LeagueConfig("soccer",              "aus.1",         "AU", "A-League",                   "Soccer"),
     LeagueConfig("rugby-league",        "3",             "AU", "NRL",                        "Rugby League",
                  use_web_domain=True),
-    LeagueConfig("rugby-union",         "aus.super.rugby", "AU", "Super Rugby Pacific",     "Rugby Union"),
+    # Super Rugby Pacific → ESPN returns HTTP 400 for all slug variants; not on their API.
+    # Big Bash League cricket → ESPN returns HTTP 404; cricket not on scoreboard API.
+    #   Cricket is handled by CricApiCollector instead.
     LeagueConfig("basketball",          "nbl",           "AU", "NBL",                        "Basketball"),
-    LeagueConfig("cricket",             "bbl",           "AU", "Big Bash League",            "Cricket"),
     # ── Canada ─────────────────────────────────────────────────────────────
     LeagueConfig("football",            "cfl",           "CA", "CFL",                        "Canadian Football"),
     # ── Israel ─────────────────────────────────────────────────────────────
     LeagueConfig("soccer",              "isr.1",         "IL", "Israeli Premier League",     "Soccer"),
-    LeagueConfig("basketball",          "isr.1",         "IL", "Israeli Basketball Premier League", "Basketball"),
+    # Israeli Basketball Premier League (BSL) → ESPN returns HTTP 400; not on their API.
+    #   Maccabi Tel Aviv's EuroLeague / EuroCup games are covered by EuroLeagueCollector.
     # ── Brazil ─────────────────────────────────────────────────────────────
     LeagueConfig("soccer",              "bra.1",         "BR", "Brasileirao",                "Soccer"),
     # ── Argentina ──────────────────────────────────────────────────────────
