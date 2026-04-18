@@ -45,12 +45,23 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 .where(Venue.name.ilike(like))
                 .scalar_subquery()
             )
-            query = query.filter(or_(
-                Event.id.in_(type_matched_event_ids),
-                Event.artist_name.ilike(like),
-                Event.name.ilike(like),
-                Event.id.in_(venue_matched_event_ids),
-            ))
+            # If the term matches any sport event name, restrict to sports only
+            # (same logic as the `search` param — prevents "NBA" → music events)
+            is_sports_term = (
+                db.query(Event.id)
+                .filter(Event.sport.isnot(None), Event.name.ilike(like))
+                .limit(1)
+                .scalar()
+            )
+            if is_sports_term:
+                query = query.filter(Event.sport.isnot(None), Event.name.ilike(like))
+            else:
+                query = query.filter(or_(
+                    Event.id.in_(type_matched_event_ids),
+                    Event.artist_name.ilike(like),
+                    Event.name.ilike(like),
+                    Event.id.in_(venue_matched_event_ids),
+                ))
 
     if city_ids:
         ids = [int(x.strip()) for x in city_ids.split(",") if x.strip().isdigit()]
@@ -72,20 +83,22 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     if end_date:
         query = query.filter(Event.start_date <= end_date)
     if search:
-        # If the search term is a sports league prefix (e.g. "NBA", "La Liga"),
-        # use a strict prefix match "NBA - %" so we never match substrings like
-        # "Birn**bau**m" or "R**NB**A Sundays".
-        league_prefix = f"{search} -%"
-        is_league = (
+        name_like = f"%{search}%"
+        # If the search term matches any *sports* event name, restrict the
+        # entire result set to sports events (sport IS NOT NULL).
+        # This prevents "NBA" matching "R-NBA-E Sundays" or "Birn-bau-m" —
+        # music events that happen to contain the substring.
+        # Works with both old ("· NBA") and new ("NBA - ") name formats.
+        is_sports_term = (
             db.query(Event.id)
-            .filter(Event.sport.isnot(None), Event.name.ilike(league_prefix))
+            .filter(Event.sport.isnot(None), Event.name.ilike(name_like))
             .limit(1)
             .scalar()
         )
-        if is_league:
-            query = query.filter(Event.name.ilike(league_prefix))
+        if is_sports_term:
+            query = query.filter(Event.sport.isnot(None), Event.name.ilike(name_like))
         else:
-            query = query.filter(Event.name.ilike(f"%{search}%"))
+            query = query.filter(Event.name.ilike(name_like))
 
     return query
 
