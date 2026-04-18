@@ -106,6 +106,51 @@
         .delta.down { color: #f87171; }
         .delta.flat { color: #555; }
 
+        /* ── Sliding Window Balance ── */
+        .window-balance {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 28px;
+        }
+        .window-col {
+            flex: 1;
+            padding: 18px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .window-col + .window-col { border-left: 1px solid var(--border, #2a2a3a); }
+        .window-col-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: .07em;
+            color: #666;
+        }
+        .window-col-num {
+            font-size: 1.9rem;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+        .window-col-num.in   { color: #4ade80; }
+        .window-col-num.out  { color: #f87171; }
+        .window-col-num.net.positive { color: #4ade80; }
+        .window-col-num.net.negative { color: #f87171; }
+        .window-col-num.net.neutral  { color: #888; }
+        .window-col-sub {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 2px;
+        }
+        @media (max-width: 600px) {
+            .window-balance { flex-direction: column; }
+            .window-col + .window-col { border-left: none; border-top: 1px solid var(--border, #2a2a3a); }
+        }
+
         /* Dedup card rows */
         .dedup-rows {
             display: flex;
@@ -651,6 +696,26 @@
         <div id="pulse-loading" style="color:#aaa; font-size:.85rem; padding:12px 0 20px;">Loading…</div>
         <div class="pulse-grid" id="pulse-grid" hidden></div>
 
+        <!-- ── Sliding Window Balance ──────────────────────────────────────── -->
+        <p class="section-title" style="margin: 28px 0 12px;">🪟 Sliding Window Balance <span style="font-weight:400; color:#555; font-size:.75rem;">last 24 hours</span></p>
+        <div class="window-balance" id="window-balance" hidden>
+            <div class="window-col">
+                <div class="window-col-label">Aged out</div>
+                <div class="window-col-num out" id="win-out">–</div>
+                <div class="window-col-sub">events that took place yesterday</div>
+            </div>
+            <div class="window-col">
+                <div class="window-col-label">Added</div>
+                <div class="window-col-num in" id="win-in">–</div>
+                <div class="window-col-sub">new upcoming events scraped in</div>
+            </div>
+            <div class="window-col">
+                <div class="window-col-label">Net balance</div>
+                <div class="window-col-num net" id="win-net">–</div>
+                <div class="window-col-sub" id="win-net-sub">change in the upcoming pool</div>
+            </div>
+        </div>
+
         <hr class="section-divider">
 
         <!-- Secondary summary -->
@@ -1097,6 +1162,27 @@
 
             document.getElementById('pulse-loading').hidden = true;
             document.getElementById('pulse-grid').hidden = false;
+
+            // ── Sliding Window Balance ──────────────────────────────────────
+            const win = d.window || {};
+            const agedOut   = win.aged_out || 0;
+            const addedIn   = win.added    || 0;
+            const netBal    = win.net      || 0;
+
+            document.getElementById('win-out').textContent = '−' + agedOut.toLocaleString();
+            document.getElementById('win-in').textContent  = '+' + addedIn.toLocaleString();
+
+            const netEl  = document.getElementById('win-net');
+            const subEl  = document.getElementById('win-net-sub');
+            const sign   = netBal >= 0 ? '+' : '−';
+            netEl.textContent = sign + Math.abs(netBal).toLocaleString();
+            netEl.className   = 'window-col-num net ' + (netBal > 0 ? 'positive' : netBal < 0 ? 'negative' : 'neutral');
+            subEl.textContent = netBal >= 0
+                ? `pool grew by ${Math.abs(netBal).toLocaleString()} events`
+                : `pool shrank by ${Math.abs(netBal).toLocaleString()} events`;
+
+            document.getElementById('window-balance').hidden = false;
+
         } catch (e) {
             document.getElementById('pulse-loading').textContent = 'Failed to load pulse: ' + e.message;
         }

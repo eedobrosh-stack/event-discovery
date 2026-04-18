@@ -279,7 +279,26 @@ def daily_pulse(db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
-    # ── 1b. Dedup stats from scan_logs (collect_events jobs in last 24 h) ────
+    # ── 1b. Sliding window balance ────────────────────────────────────────────
+    yesterday = today - timedelta(days=1)
+
+    # Events that aged out: start_date was yesterday → they've now taken place
+    aged_out = (
+        db.query(func.count(Event.id))
+        .filter(Event.start_date == yesterday)
+        .scalar() or 0
+    )
+
+    # Net-new upcoming events added in last 24 h (scraped & saved, still future)
+    added_upcoming = (
+        db.query(func.count(Event.id))
+        .filter(Event.created_at >= since, Event.start_date >= today)
+        .scalar() or 0
+    )
+
+    window_net = added_upcoming - aged_out
+
+    # ── 1c. Dedup stats from scan_logs (collect_events jobs in last 24 h) ────
     dedup_row = (
         db.query(
             func.coalesce(func.sum(ScanLog.events_found), 0).label("fetched"),
@@ -376,6 +395,11 @@ def daily_pulse(db: Session = Depends(get_db)):
         "since": since.isoformat(),
         "total_upcoming": total_upcoming,
         "prev_upcoming": prev_upcoming,
+        "window": {
+            "added": added_upcoming,
+            "aged_out": aged_out,
+            "net": window_net,
+        },
         "dedup": {
             "fetched": total_fetched,
             "saved": total_dedup_saved,
