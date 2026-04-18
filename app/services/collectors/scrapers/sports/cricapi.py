@@ -111,8 +111,9 @@ def _parse_match(m: dict) -> Optional[RawEvent]:
     home_team = teams[0] if teams else None
     away_team = teams[1] if len(teams) >= 2 else None
 
+    league_suffix = series_name or sport_label
     return RawEvent(
-        name=name,
+        name=f"{name} · {league_suffix}",
         start_date=start_dt.date(),
         start_time=start_time,
         end_date=start_dt.date(),

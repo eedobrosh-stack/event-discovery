@@ -76,7 +76,7 @@ def _parse_game(game: dict) -> Optional[RawEvent]:
     source_id = f"mlb-{game_pk}"
 
     return RawEvent(
-        name=f"{home_team} vs {away_team}",
+        name=f"{home_team} vs {away_team} · MLB",
         start_date=utc_dt.date(),
         start_time=utc_dt.strftime("%H:%M"),
         end_date=utc_dt.date(),
