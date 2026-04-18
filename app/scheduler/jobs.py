@@ -36,6 +36,7 @@ from app.services.collectors.scrapers.sports.mlb import MlbStatsApiCollector
 from app.services.collectors.scrapers.sports.openf1 import OpenF1Collector
 from app.services.collectors.scrapers.sports.cricapi import CricApiCollector
 from app.services.collectors.scrapers.sports.euroleague import EuroLeagueCollector
+from app.services.collectors.scrapers.choosechicago import ChooseChicagoCollector
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ registry.register(OpenF1Collector())
 registry.register(CricApiCollector())
 # EuroLeague + EuroCup basketball (official API, no key)
 registry.register(EuroLeagueCollector())
+# Chicago-specific — Choose Chicago TEC REST API (no key)
+registry.register(ChooseChicagoCollector())
 
 
 # (city_name, country) — must match City.country values exactly (full names).
