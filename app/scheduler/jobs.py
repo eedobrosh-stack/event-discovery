@@ -35,6 +35,7 @@ from app.services.collectors.scrapers.sports.espn import EspnSportsCollector
 from app.services.collectors.scrapers.sports.mlb import MlbStatsApiCollector
 from app.services.collectors.scrapers.sports.openf1 import OpenF1Collector
 from app.services.collectors.scrapers.sports.cricapi import CricApiCollector
+from app.services.collectors.scrapers.sports.euroleague import EuroLeagueCollector
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ registry.register(MlbStatsApiCollector())
 registry.register(OpenF1Collector())
 # Cricket — CricAPI (free 100 req/day; set CRICAPI_KEY in .env to activate)
 registry.register(CricApiCollector())
+# EuroLeague + EuroCup basketball (official API, no key)
+registry.register(EuroLeagueCollector())
 
 
 # (city_name, country) — must match City.country values exactly (full names).

@@ -70,20 +70,6 @@ COUNTRY_NAME_TO_ISO2: dict[str, str] = {
     "Austria":              "AT",
 }
 
-# ── EuroLeague / EuroCup participating countries (2024-25 season) ────────────
-# EuroLeague: Real Madrid, Barça, Baskonia, Valencia (ES) · Fenerbahçe, Efes (TR)
-#             Olympiacos, Panathinaikos (GR) · Maccabi Tel Aviv (IL)
-#             Olimpia Milano (IT) · ASVEL (FR) · Bayern, Alba (DE)
-#             Žalgiris (LT) · Crvena zvezda, Partizan (RS) · Monaco (MC)
-_EUROLEAGUE_COUNTRIES = frozenset({
-    "ES", "TR", "GR", "IL", "IT", "FR", "DE", "LT", "RS", "MC",
-})
-
-# EuroCup: overlapping set + add Netherlands (Groningen), Poland, Ukraine (if active)
-_EUROCUP_COUNTRIES = frozenset({
-    "ES", "TR", "FR", "DE", "IT", "IL", "GR", "RS", "LT", "NL",
-})
-
 # ── UEFA Champions League / Europa League ────────────────────────────────────
 # Broadest multi-country competition — essentially every European footballing nation.
 # We include our priority-city countries to avoid collecting for non-priority nations.
@@ -143,14 +129,9 @@ ESPN_LEAGUES: list[LeagueConfig] = [
     # ── Mexico ─────────────────────────────────────────────────────────────
     LeagueConfig("soccer",              "mex.1",         "MX", "Liga MX",                    "Soccer"),
 
-    # ── Multi-country: European Basketball ────────────────────────────────
-    # EuroLeague — top club basketball competition, 18 clubs across 10 countries.
-    # Collected whenever any participating country is being processed.
-    LeagueConfig("basketball",          "euroleague",    "ES", "EuroLeague Basketball",     "Basketball",
-                 extra_countries=_EUROLEAGUE_COUNTRIES),
-    # EuroCup — second tier, ~16 clubs across 10 countries.
-    LeagueConfig("basketball",          "eurocup",       "ES", "EuroCup Basketball",        "Basketball",
-                 extra_countries=_EUROCUP_COUNTRIES),
+    # NOTE: EuroLeague and EuroCup are NOT on ESPN's API.
+    # They are collected by EuroLeagueCollector (euroleague.py) using the
+    # official Euroleague Basketball API (api-live.euroleague.net/v2).
 
     # ── Multi-country: UEFA Club Competitions ─────────────────────────────
     # Collected for any European country with clubs in the competition.
