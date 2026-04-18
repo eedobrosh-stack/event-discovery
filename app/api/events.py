@@ -72,7 +72,20 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     if end_date:
         query = query.filter(Event.start_date <= end_date)
     if search:
-        query = query.filter(Event.name.ilike(f"%{search}%"))
+        # If the search term is a sports league prefix (e.g. "NBA", "La Liga"),
+        # use a strict prefix match "NBA - %" so we never match substrings like
+        # "Birn**bau**m" or "R**NB**A Sundays".
+        league_prefix = f"{search} -%"
+        is_league = (
+            db.query(Event.id)
+            .filter(Event.sport.isnot(None), Event.name.ilike(league_prefix))
+            .limit(1)
+            .scalar()
+        )
+        if is_league:
+            query = query.filter(Event.name.ilike(league_prefix))
+        else:
+            query = query.filter(Event.name.ilike(f"%{search}%"))
 
     return query
 
