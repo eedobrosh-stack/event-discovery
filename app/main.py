@@ -218,77 +218,127 @@ def _run_migrations():
 def _fix_sports_categories():
     """
     One-time repair: events collected before the sports-categorization fix
-    have sport=NULL, wrong artist_name (home team), and Music/Concert event
-    types. Detect them by name pattern and repair in-place.
+    have sport=NULL, wrong artist_name (home team), and/or Music/Concert
+    event types. Detect them by the "<League> - " name prefix and repair in
+    place. Runs on every startup (idempotent) so newly-scraped or re-ingested
+    events also get repaired if anything slipped through the registry.
     """
-    import json
     import logging
-    from sqlalchemy import text
     _log = logging.getLogger(__name__)
     from app.database import SessionLocal
     from app.models import EventType
     from app.models.event import Event
 
-    # label → (sport value, event-type name)
+    # label → (sport value, preferred event-type name from seed)
+    # Names MUST match app/seed/event_types.py — if a specific type doesn't
+    # exist, we fall back to the generic "Sports Event".
     LEAGUE_MAP = {
-        "NBA":                    ("Basketball",         "Basketball"),
-        "NHL":                    ("Ice Hockey",         "Ice Hockey"),
-        "NFL":                    ("American Football",  "American Football"),
-        "MLS":                    ("Soccer",             "Soccer"),
-        "MLB":                    ("Baseball",           "Baseball"),
-        "AFL":                    ("Australian Football","Australian Football"),
-        "NRL":                    ("Rugby League",       "Rugby League"),
-        "NBL":                    ("Basketball",         "Basketball"),
-        "CFL":                    ("Canadian Football",  "Canadian Football"),
-        "EuroLeague":             ("Basketball",         "Basketball"),
-        "EuroCup":                ("Basketball",         "Basketball"),
-        "Premier League":         ("Soccer",             "Soccer"),
-        "Bundesliga":             ("Soccer",             "Soccer"),
-        "La Liga":                ("Soccer",             "Soccer"),
-        "Serie A":                ("Soccer",             "Soccer"),
-        "Ligue 1":                ("Soccer",             "Soccer"),
-        "Eredivisie":             ("Soccer",             "Soccer"),
-        "UEFA Champions League":  ("Soccer",             "Soccer"),
-        "UEFA Europa League":     ("Soccer",             "Soccer"),
-        "Formula 1":              ("Motorsport",         "Motorsport"),
+        "NBA":                    ("Basketball",          "Basketball Game"),
+        "WNBA":                   ("Basketball",          "Basketball Game"),
+        "NHL":                    ("Ice Hockey",          "Hockey Game"),
+        "NFL":                    ("American Football",   "American Football Game"),
+        "MLS":                    ("Soccer",              "Soccer Match"),
+        "MLB":                    ("Baseball",            "Baseball Game"),
+        "AFL":                    ("Australian Football", "Sports Event"),
+        "NRL":                    ("Rugby League",        "Sports Event"),
+        "NBL":                    ("Basketball",          "Basketball Game"),
+        "CFL":                    ("Canadian Football",   "American Football Game"),
+        "EuroLeague":             ("Basketball",          "Basketball Game"),
+        "EuroCup":                ("Basketball",          "Basketball Game"),
+        "Premier League":         ("Soccer",              "Soccer Match"),
+        "Bundesliga":             ("Soccer",              "Soccer Match"),
+        "La Liga":                ("Soccer",              "Soccer Match"),
+        "Serie A":                ("Soccer",              "Soccer Match"),
+        "Ligue 1":                ("Soccer",              "Soccer Match"),
+        "Eredivisie":             ("Soccer",              "Soccer Match"),
+        "UEFA Champions League":  ("Soccer",              "Soccer Match"),
+        "UEFA Europa League":     ("Soccer",              "Soccer Match"),
+        "Formula 1":              ("Motorsport",          "Sports Event"),
     }
 
     db = SessionLocal()
     try:
+        # Pre-resolve all event types once (IDs of Music/Comedy to remove,
+        # and the Sports target for each league).
+        music_et_ids = {
+            row[0] for row in db.query(EventType.id)
+            .filter(EventType.category.in_(["Music", "Comedy"]))
+            .all()
+        }
+        sports_generic = db.query(EventType).filter_by(
+            name="Sports Event", category="Sports"
+        ).first()
+
+        # Cache: event-type name → EventType instance
+        et_cache: dict[str, EventType] = {}
+
+        def _resolve_et(name: str):
+            if name in et_cache:
+                return et_cache[name]
+            et = db.query(EventType).filter_by(name=name, category="Sports").first()
+            # Fall back to the generic "Sports Event" if specific type missing
+            if et is None:
+                et = sports_generic
+            et_cache[name] = et
+            return et
+
         fixed = 0
         for label, (sport_val, et_name) in LEAGUE_MAP.items():
             prefix = f"{label} - %"
+            # Match by name prefix regardless of current sport value — some
+            # events were partially fixed (sport set) but still carry Music
+            # event types from the original scrape.
             events = (
                 db.query(Event)
-                .filter(Event.name.ilike(prefix), Event.sport.is_(None))
+                .filter(Event.name.ilike(prefix))
                 .all()
             )
             if not events:
                 continue
 
-            # Get or create the correct Sports event type
-            sports_et = db.query(EventType).filter_by(name=et_name, category="Sports").first()
-            music_et_ids = [
-                row[0] for row in db.query(EventType.id)
-                .filter(EventType.category.in_(["Music", "Comedy"]))
-                .all()
-            ]
+            sports_et = _resolve_et(et_name)
 
             for ev in events:
-                ev.sport = sport_val
-                ev.artist_name = None   # was set to home team before fix
-                # Remove wrong (Music) event types, add correct Sports one
-                ev.event_types = [
-                    et for et in ev.event_types
-                    if et.id not in music_et_ids
-                ]
-                if sports_et and sports_et not in ev.event_types:
+                dirty = False
+                if ev.sport != sport_val:
+                    ev.sport = sport_val
+                    dirty = True
+                if ev.artist_name:
+                    # artist_name was set to home team in pre-fix events
+                    ev.artist_name = None
+                    dirty = True
+                # Strip any Music/Comedy types; add the correct Sports one.
+                current_ids = {et.id for et in (ev.event_types or [])}
+                if current_ids & music_et_ids:
+                    ev.event_types = [
+                        et for et in ev.event_types if et.id not in music_et_ids
+                    ]
+                    dirty = True
+                if sports_et and sports_et not in (ev.event_types or []):
                     ev.event_types.append(sports_et)
-                fixed += 1
+                    dirty = True
+                # Backfill YouTube highlights search URL when missing
+                if (
+                    not ev.artist_youtube_channel
+                    and ev.home_team
+                    and ev.away_team
+                ):
+                    from urllib.parse import quote_plus
+                    q = quote_plus(
+                        f"{ev.home_team} vs {ev.away_team} highlights"
+                    )
+                    ev.artist_youtube_channel = (
+                        f"https://www.youtube.com/results?search_query={q}"
+                    )
+                    dirty = True
+                if dirty:
+                    fixed += 1
 
         if fixed:
             db.commit()
             _log.info(f"_fix_sports_categories: repaired {fixed} events")
+        else:
+            _log.info("_fix_sports_categories: nothing to repair")
     except Exception as e:
         _log.warning(f"_fix_sports_categories failed: {e}")
         db.rollback()
@@ -413,7 +463,9 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_deferred_seed())
 
     async def _deferred_sports_fix():
-        await asyncio.sleep(8)
+        # Must run *after* _seed_event_types (which starts at t+5s) finishes
+        # so "Sports Event" and "Basketball Game" etc. are available to pick.
+        await asyncio.sleep(20)
         try:
             await asyncio.get_event_loop().run_in_executor(None, _fix_sports_categories)
             _log.info("Sports category repair complete")

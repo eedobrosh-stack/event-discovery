@@ -113,6 +113,16 @@ class CollectorRegistry:
                     if raw.sport and existing.name != raw.name:
                         existing.name = raw.name
                         updated = True
+                    # Backfill TV channels + YouTube highlights for sports
+                    if raw.sport and raw.tv_channels and not existing.tv_channels:
+                        existing.tv_channels = raw.tv_channels
+                        updated = True
+                    if (
+                        raw.artist_youtube_channel
+                        and not existing.artist_youtube_channel
+                    ):
+                        existing.artist_youtube_channel = raw.artist_youtube_channel
+                        updated = True
                     if updated:
                         db.commit()
                     continue
@@ -157,6 +167,7 @@ class CollectorRegistry:
                 event = Event(
                     name=raw.name,
                     artist_name=artist_name,
+                    artist_youtube_channel=raw.artist_youtube_channel,
                     start_date=raw.start_date,
                     start_time=raw.start_time,
                     end_date=end_date,

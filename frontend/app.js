@@ -552,10 +552,16 @@ async function searchEvents() {
             return a ? `<span class="artist-link" data-artist="${esc(a)}">${esc(a)}</span>` : "-";
         })();
 
+        // YouTube column: "Watch" for music (performer channel),
+        // "Highlights" for sports (YouTube search for the matchup).
+        const ytHtml = ev.artist_youtube_channel
+            ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">${ev.sport ? "Highlights" : "Watch"}</a>`
+            : "-";
+
         tr.innerHTML = `
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">${esc(ev.name)}</a>` : esc(ev.name)}</td>
             <td>${artistHtml}</td>
-            <td>${ev.artist_youtube_channel ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">Watch</a>` : "-"}</td>
+            <td>${ytHtml}</td>
             <td>${ev.start_date || "-"}</td>
             <td colspan="2" class="time-cell">
               <div class="time-row">

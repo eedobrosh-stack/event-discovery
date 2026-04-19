@@ -105,6 +105,7 @@ class RawEvent:
     end_date: date | None = None
     end_time: str | None = None
     artist_name: str | None = None
+    artist_youtube_channel: str | None = None
     description: str | None = None
     price: float | None = None
     price_currency: str = "USD"

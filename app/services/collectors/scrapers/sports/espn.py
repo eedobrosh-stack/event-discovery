@@ -197,8 +197,14 @@ def _parse_event(raw: dict, cfg: LeagueConfig) -> Optional[RawEvent]:
     local_dt, tz_str = _utc_to_local(utc_dt, venue_city)
 
     # Ticket link: Ticketmaster search for the matchup
-    team_query = f"{home_name} {away_name}".replace(" ", "+")
+    from urllib.parse import quote_plus
+    team_query = quote_plus(f"{home_name} {away_name}")
     purchase_link = f"https://www.ticketmaster.com/search?q={team_query}"
+
+    # YouTube highlights search — sports events have no performer, so we
+    # reuse artist_youtube_channel for a matchup-scoped YouTube search URL.
+    yt_query = quote_plus(f"{home_name} vs {away_name} highlights")
+    youtube_link = f"https://www.youtube.com/results?search_query={yt_query}"
 
     return RawEvent(
         name=f"{cfg.label} - {home_name} vs {away_name}",
@@ -207,6 +213,7 @@ def _parse_event(raw: dict, cfg: LeagueConfig) -> Optional[RawEvent]:
         end_date=local_dt.date(),
         end_time=None,
         artist_name=None,
+        artist_youtube_channel=youtube_link,
         home_team=home_name,
         away_team=away_name,
         sport=cfg.category,

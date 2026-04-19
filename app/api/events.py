@@ -190,5 +190,15 @@ def list_events(
             out.venue_city = e.venue.physical_city
         if e.venue and e.venue.physical_country:
             out.venue_country = e.venue.physical_country
+
+        # Synthesize a YouTube highlights search URL for sports events
+        # (sports rows have artist_name=None, so there is no performer
+        # channel to pull from).  Link target is the YouTube results page
+        # for "<Home> vs <Away> highlights".
+        if not out.artist_youtube_channel and e.sport and e.home_team and e.away_team:
+            from urllib.parse import quote_plus
+            q = quote_plus(f"{e.home_team} vs {e.away_team} highlights")
+            out.artist_youtube_channel = f"https://www.youtube.com/results?search_query={q}"
+
         results.append(out)
     return results
