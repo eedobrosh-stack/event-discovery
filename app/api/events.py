@@ -9,6 +9,24 @@ from app.schemas.event import EventOut
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
+# Exact league labels — when a search term matches one of these exactly
+# (case-insensitive), we use a strict prefix match ("NBA - %") instead of
+# a substring match ("%NBA%") to block WNBA, artist names, etc.
+def _get_sport_league_labels() -> frozenset[str]:
+    try:
+        from app.services.collectors.scrapers.sports.leagues import ESPN_LEAGUES
+        labels = {cfg.label.lower() for cfg in ESPN_LEAGUES}
+    except Exception:
+        labels = set()
+    # Add non-ESPN leagues
+    labels.update({
+        "mlb", "formula 1", "cricket", "euroleague", "eurocup",
+        "euroleague basketball", "eurocup basketball",
+    })
+    return frozenset(labels)
+
+_SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
+
 
 def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None):
     """Shared filter logic used by both list and count endpoints."""
@@ -45,23 +63,26 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 .where(Venue.name.ilike(like))
                 .scalar_subquery()
             )
-            # If the term matches any sport event name, restrict to sports only
-            # (same logic as the `search` param — prevents "NBA" → music events)
-            is_sports_term = (
-                db.query(Event.id)
-                .filter(Event.sport.isnot(None), Event.name.ilike(like))
-                .limit(1)
-                .scalar()
-            )
-            if is_sports_term:
-                query = query.filter(Event.sport.isnot(None), Event.name.ilike(like))
+            # Exact league label → strict prefix, same as `search` param
+            if term.lower() in _SPORT_LEAGUE_LABELS:
+                prefix_like = f"{term} -%"
+                query = query.filter(Event.sport.isnot(None), Event.name.ilike(prefix_like))
             else:
-                query = query.filter(or_(
-                    Event.id.in_(type_matched_event_ids),
-                    Event.artist_name.ilike(like),
-                    Event.name.ilike(like),
-                    Event.id.in_(venue_matched_event_ids),
-                ))
+                is_sports_term = (
+                    db.query(Event.id)
+                    .filter(Event.sport.isnot(None), Event.name.ilike(like))
+                    .limit(1)
+                    .scalar()
+                )
+                if is_sports_term:
+                    query = query.filter(Event.sport.isnot(None), Event.name.ilike(like))
+                else:
+                    query = query.filter(or_(
+                        Event.id.in_(type_matched_event_ids),
+                        Event.artist_name.ilike(like),
+                        Event.name.ilike(like),
+                        Event.id.in_(venue_matched_event_ids),
+                    ))
 
     if city_ids:
         ids = [int(x.strip()) for x in city_ids.split(",") if x.strip().isdigit()]
@@ -83,22 +104,25 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     if end_date:
         query = query.filter(Event.start_date <= end_date)
     if search:
-        name_like = f"%{search}%"
-        # If the search term matches any *sports* event name, restrict the
-        # entire result set to sports events (sport IS NOT NULL).
-        # This prevents "NBA" matching "R-NBA-E Sundays" or "Birn-bau-m" —
-        # music events that happen to contain the substring.
-        # Works with both old ("· NBA") and new ("NBA - ") name formats.
-        is_sports_term = (
-            db.query(Event.id)
-            .filter(Event.sport.isnot(None), Event.name.ilike(name_like))
-            .limit(1)
-            .scalar()
-        )
-        if is_sports_term:
-            query = query.filter(Event.sport.isnot(None), Event.name.ilike(name_like))
+        # Exact league label (e.g. "NBA", "Champions League") → strict prefix
+        # match so "WNBA" or music artists don't bleed into the results.
+        if search.strip().lower() in _SPORT_LEAGUE_LABELS:
+            prefix_like = f"{search.strip()} -%"
+            query = query.filter(Event.sport.isnot(None), Event.name.ilike(prefix_like))
         else:
-            query = query.filter(Event.name.ilike(name_like))
+            name_like = f"%{search}%"
+            # If the search term matches any *sports* event name, restrict the
+            # entire result set to sports events (sport IS NOT NULL).
+            is_sports_term = (
+                db.query(Event.id)
+                .filter(Event.sport.isnot(None), Event.name.ilike(name_like))
+                .limit(1)
+                .scalar()
+            )
+            if is_sports_term:
+                query = query.filter(Event.sport.isnot(None), Event.name.ilike(name_like))
+            else:
+                query = query.filter(Event.name.ilike(name_like))
 
     return query
 
