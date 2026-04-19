@@ -538,9 +538,23 @@ async function searchEvents() {
     const tbody = document.getElementById("events-body");
     events.forEach(ev => {
         const tr = document.createElement("tr");
+        // TV channels: show distinct channel names for sports events
+        const tvHtml = (() => {
+            const chs = ev.tv_channels;
+            if (!chs || !chs.length) return "-";
+            const names = [...new Set(chs.map(c => c.channel))].slice(0, 3);
+            return `<span class="tv-channels">${names.map(n => esc(n)).join(", ")}</span>`;
+        })();
+
+        // Artist column: hide for sports (artist_name is null), show for music
+        const artistHtml = (() => {
+            const a = ev.artist_name && ev.artist_name.toLowerCase() !== ev.name.toLowerCase() ? ev.artist_name : null;
+            return a ? `<span class="artist-link" data-artist="${esc(a)}">${esc(a)}</span>` : "-";
+        })();
+
         tr.innerHTML = `
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">${esc(ev.name)}</a>` : esc(ev.name)}</td>
-            <td>${(() => { const a = ev.artist_name && ev.artist_name.toLowerCase() !== ev.name.toLowerCase() ? ev.artist_name : null; return a ? `<span class="artist-link" data-artist="${esc(a)}">${esc(a)}</span>` : "-"; })()}</td>
+            <td>${artistHtml}</td>
             <td>${ev.artist_youtube_channel ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">Watch</a>` : "-"}</td>
             <td>${ev.start_date || "-"}</td>
             <td colspan="2" class="time-cell">
@@ -549,7 +563,7 @@ async function searchEvents() {
                 <span class="time-sep">${ev.start_time && ev.end_time ? "–" : ""}</span>
                 <span class="time-val">${ev.end_time || ""}</span>
               </div>
-              ${(!getSelectedCityId() || isMetroSelected() || isCountrySelected()) && ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
+              ${ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
             </td>
             <td>
               ${ev.venue_website_url
@@ -562,6 +576,7 @@ async function searchEvents() {
             <td>${formatPrice(ev.price, ev.price_currency)}</td>
             <td>${(ev.categories || []).join(", ") || "-"}</td>
             <td>${(ev.event_types || []).join(", ") || "-"}</td>
+            <td>${tvHtml}</td>
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">Buy</a>` : "-"}</td>
         `;
         tbody.appendChild(tr);

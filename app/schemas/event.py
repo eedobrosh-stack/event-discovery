@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import date, datetime
 from pydantic import BaseModel
 
@@ -29,6 +29,10 @@ class EventOut(BaseModel):
     source_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    tv_channels: Optional[List[Any]] = None    # [{channel, market, country, type}]
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    sport: Optional[str] = None
     categories: List[str] = []
     event_types: List[str] = []
 

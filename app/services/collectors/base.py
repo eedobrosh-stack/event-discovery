@@ -126,6 +126,7 @@ class RawEvent:
     away_team: str | None = None
     sport: str | None = None        # e.g. "Soccer", "Basketball", "AFL"
     tv_channels: list[dict] | None = None  # [{channel, market, country, type}]
+    venue_timezone: str | None = None      # IANA tz, e.g. "America/New_York"
 
 
 class BaseCollector(ABC):

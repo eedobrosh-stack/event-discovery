@@ -215,6 +215,87 @@ def _run_migrations():
         conn.commit()
 
 
+def _fix_sports_categories():
+    """
+    One-time repair: events collected before the sports-categorization fix
+    have sport=NULL, wrong artist_name (home team), and Music/Concert event
+    types. Detect them by name pattern and repair in-place.
+    """
+    import json
+    import logging
+    from sqlalchemy import text
+    _log = logging.getLogger(__name__)
+    from app.database import SessionLocal
+    from app.models import EventType
+    from app.models.event import Event
+
+    # label → (sport value, event-type name)
+    LEAGUE_MAP = {
+        "NBA":                    ("Basketball",         "Basketball"),
+        "NHL":                    ("Ice Hockey",         "Ice Hockey"),
+        "NFL":                    ("American Football",  "American Football"),
+        "MLS":                    ("Soccer",             "Soccer"),
+        "MLB":                    ("Baseball",           "Baseball"),
+        "AFL":                    ("Australian Football","Australian Football"),
+        "NRL":                    ("Rugby League",       "Rugby League"),
+        "NBL":                    ("Basketball",         "Basketball"),
+        "CFL":                    ("Canadian Football",  "Canadian Football"),
+        "EuroLeague":             ("Basketball",         "Basketball"),
+        "EuroCup":                ("Basketball",         "Basketball"),
+        "Premier League":         ("Soccer",             "Soccer"),
+        "Bundesliga":             ("Soccer",             "Soccer"),
+        "La Liga":                ("Soccer",             "Soccer"),
+        "Serie A":                ("Soccer",             "Soccer"),
+        "Ligue 1":                ("Soccer",             "Soccer"),
+        "Eredivisie":             ("Soccer",             "Soccer"),
+        "UEFA Champions League":  ("Soccer",             "Soccer"),
+        "UEFA Europa League":     ("Soccer",             "Soccer"),
+        "Formula 1":              ("Motorsport",         "Motorsport"),
+    }
+
+    db = SessionLocal()
+    try:
+        fixed = 0
+        for label, (sport_val, et_name) in LEAGUE_MAP.items():
+            prefix = f"{label} - %"
+            events = (
+                db.query(Event)
+                .filter(Event.name.ilike(prefix), Event.sport.is_(None))
+                .all()
+            )
+            if not events:
+                continue
+
+            # Get or create the correct Sports event type
+            sports_et = db.query(EventType).filter_by(name=et_name, category="Sports").first()
+            music_et_ids = [
+                row[0] for row in db.query(EventType.id)
+                .filter(EventType.category.in_(["Music", "Comedy"]))
+                .all()
+            ]
+
+            for ev in events:
+                ev.sport = sport_val
+                ev.artist_name = None   # was set to home team before fix
+                # Remove wrong (Music) event types, add correct Sports one
+                ev.event_types = [
+                    et for et in ev.event_types
+                    if et.id not in music_et_ids
+                ]
+                if sports_et and sports_et not in ev.event_types:
+                    ev.event_types.append(sports_et)
+                fixed += 1
+
+        if fixed:
+            db.commit()
+            _log.info(f"_fix_sports_categories: repaired {fixed} events")
+    except Exception as e:
+        _log.warning(f"_fix_sports_categories failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
@@ -330,6 +411,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             _log.warning(f"Seeding failed: {e}")
     asyncio.create_task(_deferred_seed())
+
+    async def _deferred_sports_fix():
+        await asyncio.sleep(8)
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _fix_sports_categories)
+            _log.info("Sports category repair complete")
+        except Exception as e:
+            _log.warning(f"Sports category repair failed: {e}")
+    asyncio.create_task(_deferred_sports_fix())
 
     yield
 

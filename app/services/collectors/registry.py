@@ -574,12 +574,14 @@ class CollectorRegistry:
         if venue:
             if raw.venue_website_url and not venue.website_url:
                 venue.website_url = raw.venue_website_url
+            if raw.venue_timezone and not venue.timezone:
+                venue.timezone = raw.venue_timezone
             return venue
 
         venue = Venue(
             name=raw.venue_name,
             city_id=city.id,
-            timezone=city.timezone,
+            timezone=raw.venue_timezone or city.timezone,
             street_address=raw.venue_address,
             physical_city=raw.venue_city or city.name,
             physical_country=raw.venue_country or city.country,
