@@ -144,10 +144,18 @@ def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent
     raw_address = venue_block.get("address") or ""
     venue_city = _parse_city(raw_address)
 
-    # Keep only games hosted in the requested city
-    if not venue_city:
-        return None
-    if venue_city.lower() != city_name.lower():
+    # Keep only games hosted in the requested city.
+    # Primary check: parsed city matches.  Fallback: city_name appears as a
+    # whole-word substring in the raw address (handles non-comma separators
+    # like Turkish "Zeytinburnu / Istanbul" where _parse_city can't cleanly
+    # extract the city).
+    city_match = bool(venue_city) and venue_city.lower() == city_name.lower()
+    if not city_match and raw_address:
+        pattern = rf"\b{re.escape(city_name)}\b"
+        if re.search(pattern, raw_address, flags=re.IGNORECASE):
+            city_match = True
+            venue_city = city_name  # normalize for downstream use
+    if not city_match:
         return None
 
     # Teams
