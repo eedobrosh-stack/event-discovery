@@ -66,7 +66,7 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             # Exact league label → strict prefix, same as `search` param
             if term.lower() in _SPORT_LEAGUE_LABELS:
                 prefix_like = f"{term} -%"
-                query = query.filter(Event.sport.isnot(None), Event.name.ilike(prefix_like))
+                query = query.filter(Event.name.ilike(prefix_like))
             else:
                 is_sports_term = (
                     db.query(Event.id)
@@ -106,9 +106,11 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     if search:
         # Exact league label (e.g. "NBA", "Champions League") → strict prefix
         # match so "WNBA" or music artists don't bleed into the results.
+        # No sport IS NOT NULL requirement — old events may have sport=NULL
+        # before the backfill runs; the prefix pattern is specific enough.
         if search.strip().lower() in _SPORT_LEAGUE_LABELS:
             prefix_like = f"{search.strip()} -%"
-            query = query.filter(Event.sport.isnot(None), Event.name.ilike(prefix_like))
+            query = query.filter(Event.name.ilike(prefix_like))
         else:
             name_like = f"%{search}%"
             # If the search term matches any *sports* event name, restrict the
