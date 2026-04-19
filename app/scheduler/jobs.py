@@ -8,6 +8,12 @@ from app.database import SessionLocal
 # Global lock — only one heavy scraping/enrichment job runs at a time.
 # This prevents two jobs from competing for the same 512 MB on Render.
 _heavy_job_lock = asyncio.Lock()
+
+# City batching: scrape CITY_BATCH_SIZE cities per run, rotating through
+# PRIORITY_CITIES on each invocation. All cities covered every ~24h at
+# the default 6h scrape interval with 4 batches of ~8-9 cities each.
+CITY_BATCH_SIZE = 8
+_city_batch_index = 0  # advances each run
 from app.models import City, Event, Venue, ScanLog
 from app.config import settings
 from app.services.collectors.registry import CollectorRegistry
@@ -140,8 +146,13 @@ PRIORITY_CITIES = [
 
 
 async def collect_all_events():
-    """Run all collectors for priority cities only to avoid memory spikes."""
+    """Scrape one batch of cities per run (CITY_BATCH_SIZE cities), rotating
+    through PRIORITY_CITIES on each invocation so all cities are covered
+    across multiple runs without ever loading all 34 into a single process.
+    At the default 6h interval + batch size 8: all ~34 cities refresh ~every 24h.
+    """
     import gc
+    global _city_batch_index
     from sqlalchemy import and_, or_
 
     if _heavy_job_lock.locked():
@@ -149,26 +160,30 @@ async def collect_all_events():
         return
 
     async with _heavy_job_lock:
-        # Fetch city IDs in a short-lived session, then close it
+        # Pick the current batch of city names
+        total = len(PRIORITY_CITIES)
+        start = _city_batch_index % total
+        batch_names = [
+            PRIORITY_CITIES[(start + i) % total]
+            for i in range(min(CITY_BATCH_SIZE, total))
+        ]
+        _city_batch_index = (start + CITY_BATCH_SIZE) % total
+        logger.info(
+            f"collect_all_events: batch {start//CITY_BATCH_SIZE + 1} — "
+            f"{[c[0] for c in batch_names]}"
+        )
+
+        # Resolve city IDs in a short-lived session
         with SessionLocal() as id_db:
             city_ids = [
                 row[0]
                 for row in id_db.query(City.id).filter(
                     or_(*[
                         and_(City.name == name, City.country == country)
-                        for name, country in PRIORITY_CITIES
+                        for name, country in batch_names
                     ])
                 ).all()
             ]
-            if not city_ids:
-                city_ids = [
-                    row[0]
-                    for row in id_db.query(City.id)
-                    .join(City.events)
-                    .group_by(City.id)
-                    .limit(10)
-                    .all()
-                ]
 
         for city_id in city_ids:
             # Fresh session per city — nothing leaks across cities
