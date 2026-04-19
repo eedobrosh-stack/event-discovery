@@ -103,6 +103,16 @@ class CollectorRegistry:
                             existing.start_time, existing.start_date, existing.end_date
                         )
                         updated = True
+                    # Always sync sport fields + name format (catches events
+                    # collected before the sports categorization fix)
+                    if raw.sport and existing.sport != raw.sport:
+                        existing.sport = raw.sport
+                        existing.home_team = raw.home_team
+                        existing.away_team = raw.away_team
+                        updated = True
+                    if raw.sport and existing.name != raw.name:
+                        existing.name = raw.name
+                        updated = True
                     if updated:
                         db.commit()
                     continue
