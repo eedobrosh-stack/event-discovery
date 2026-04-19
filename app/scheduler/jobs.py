@@ -1,8 +1,13 @@
+import asyncio
 import logging
 from datetime import date, timedelta, datetime
 
 from sqlalchemy import func
 from app.database import SessionLocal
+
+# Global lock — only one heavy scraping/enrichment job runs at a time.
+# This prevents two jobs from competing for the same 512 MB on Render.
+_heavy_job_lock = asyncio.Lock()
 from app.models import City, Event, Venue, ScanLog
 from app.config import settings
 from app.services.collectors.registry import CollectorRegistry
@@ -138,48 +143,59 @@ async def collect_all_events():
     """Run all collectors for priority cities only to avoid memory spikes."""
     import gc
     from sqlalchemy import and_, or_
-    db = SessionLocal()
-    try:
-        cities = db.query(City).filter(
-            or_(*[
-                and_(City.name == name, City.country == country)
-                for name, country in PRIORITY_CITIES
-            ])
-        ).all()
-        if not cities:
-            cities = (
-                db.query(City)
-                .join(City.events)
-                .group_by(City.id)
-                .limit(10)
-                .all()
-            )
-        for city in cities:
-            logger.info(f"Collecting events for {city.name}...")
-            log = ScanLog(job_name="collect_events", detail=city.name, status="running")
-            db.add(log)
-            db.commit()
-            db.refresh(log)
-            try:
-                stats = await registry.collect_all(city, db)
-                logger.info(f"{city.name} stats: {stats}")
-                log.status = "success"
-                log.events_found = sum(v.get("fetched", 0) for v in stats.values() if isinstance(v, dict))
-                log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
-                log.notes = str(stats)
-            except Exception as e:
-                logger.error(f"Error collecting {city.name}: {e}")
-                log.status = "failed"
-                log.notes = str(e)
-            finally:
-                log.finished_at = datetime.utcnow()
+
+    if _heavy_job_lock.locked():
+        logger.info("collect_all_events: another heavy job is running — skipping this run")
+        return
+
+    async with _heavy_job_lock:
+        # Fetch city IDs in a short-lived session, then close it
+        with SessionLocal() as id_db:
+            city_ids = [
+                row[0]
+                for row in id_db.query(City.id).filter(
+                    or_(*[
+                        and_(City.name == name, City.country == country)
+                        for name, country in PRIORITY_CITIES
+                    ])
+                ).all()
+            ]
+            if not city_ids:
+                city_ids = [
+                    row[0]
+                    for row in id_db.query(City.id)
+                    .join(City.events)
+                    .group_by(City.id)
+                    .limit(10)
+                    .all()
+                ]
+
+        for city_id in city_ids:
+            # Fresh session per city — nothing leaks across cities
+            with SessionLocal() as db:
+                city = db.query(City).get(city_id)
+                if not city:
+                    continue
+                logger.info(f"Collecting events for {city.name}...")
+                log = ScanLog(job_name="collect_events", detail=city.name, status="running")
+                db.add(log)
                 db.commit()
-                # Free all ORM objects accumulated during this city's scrape
-                # so they don't pile up across cities.
-                db.expire_all()
-                gc.collect()
-    finally:
-        db.close()
+                db.refresh(log)
+                try:
+                    stats = await registry.collect_all(city, db)
+                    logger.info(f"{city.name} stats: {stats}")
+                    log.status = "success"
+                    log.events_found = sum(v.get("fetched", 0) for v in stats.values() if isinstance(v, dict))
+                    log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
+                    log.notes = str(stats)
+                except Exception as e:
+                    logger.error(f"Error collecting {city.name}: {e}")
+                    log.status = "failed"
+                    log.notes = str(e)
+                finally:
+                    log.finished_at = datetime.utcnow()
+                    db.commit()
+            gc.collect()  # after session closes + all objects are released
 
 
 async def collect_venue_websites():
@@ -397,6 +413,10 @@ async def enrich_performers_job(batch: int = 50):
     from app.models import Performer
     from app.services.performer_lookup import lookup_musicbrainz, normalize
     from sqlalchemy.exc import IntegrityError
+
+    if _heavy_job_lock.locked():
+        logger.info("enrich_performers_job: another heavy job is running — skipping this run")
+        return
 
     db = SessionLocal()
     log = ScanLog(job_name="enrich_performers", status="running")
@@ -882,7 +902,7 @@ async def collect_techconf_job():
         db.close()
 
 
-async def enrich_spotify_job(batch: int = 200):
+async def enrich_spotify_job(batch: int = 50):
     """
     Enrich Performer records with Spotify data: genres, image, popularity, URL.
     Prioritises performers with no spotify_id yet, ordered by event count.
@@ -897,113 +917,118 @@ async def enrich_spotify_job(batch: int = 200):
         logger.info("enrich_spotify_job: SPOTIFY_CLIENT_ID not set — skipping")
         return
 
-    db = SessionLocal()
-    log = ScanLog(job_name="enrich_spotify", status="running")
-    db.add(log)
-    db.commit()
-    db.refresh(log)
-    enriched = 0
-    skipped = 0
+    if _heavy_job_lock.locked():
+        logger.info("enrich_spotify_job: another heavy job is running — skipping this run")
+        return
 
-    try:
-        # Prioritise performers with events but no Spotify data yet
-        rows = (
-            db.query(Performer.id, Performer.name, func.count(Event.id).label("n"))
-            .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
-            .filter(
-                Performer.spotify_id.is_(None),
-                Performer.source != "not_found",   # skip confirmed-dead stubs
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="enrich_spotify", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        enriched = 0
+        skipped = 0
+
+        try:
+            # Prioritise performers with events but no Spotify data yet
+            rows = (
+                db.query(Performer.id, Performer.name, func.count(Event.id).label("n"))
+                .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
+                .filter(
+                    Performer.spotify_id.is_(None),
+                    Performer.source != "not_found",   # skip confirmed-dead stubs
+                )
+                .group_by(Performer.id, Performer.name)
+                .order_by(func.count(Event.id).desc())
+                .limit(batch)
+                .all()
             )
-            .group_by(Performer.id, Performer.name)
-            .order_by(func.count(Event.id).desc())
-            .limit(batch)
-            .all()
-        )
-        logger.info(f"enrich_spotify_job: {len(rows)} performers to enrich")
+            logger.info(f"enrich_spotify_job: {len(rows)} performers to enrich")
 
-        async with _httpx.AsyncClient(timeout=10) as http:
-            for perf_id, name, _n in rows:
-                try:
-                    result = await lookup_spotify_artist(
-                        name,
-                        settings.SPOTIFY_CLIENT_ID,
-                        settings.SPOTIFY_CLIENT_SECRET,
-                        http,
-                    )
-                    if result:
-                        perf_update: dict = {
-                            "spotify_id":  result["spotify_id"],
-                            "spotify_url": result["spotify_url"],
-                            "image_url":   result["image_url"],
-                            "popularity":  result["popularity"],
-                        }
-                        # Only overwrite genres/category/event_type if Spotify
-                        # gives us something more specific than what we have.
-                        if result["genres"]:
-                            perf_update["genres"] = _json.dumps(result["genres"])
-                        if result["event_type_name"]:
-                            perf_update["event_type_name"] = result["event_type_name"]
-                            perf_update["category"] = result["category"]
-                            perf_update["source"] = "spotify"
-
-                        db.query(Performer).filter(Performer.id == perf_id).update(
-                            perf_update, synchronize_session=False
+            async with _httpx.AsyncClient(timeout=10) as http:
+                for perf_id, name, _n in rows:
+                    try:
+                        result = await lookup_spotify_artist(
+                            name,
+                            settings.SPOTIFY_CLIENT_ID,
+                            settings.SPOTIFY_CLIENT_SECRET,
+                            http,
                         )
+                        if result:
+                            perf_update: dict = {
+                                "spotify_id":  result["spotify_id"],
+                                "spotify_url": result["spotify_url"],
+                                "image_url":   result["image_url"],
+                                "popularity":  result["popularity"],
+                            }
+                            # Only overwrite genres/category/event_type if Spotify
+                            # gives us something more specific than what we have.
+                            if result["genres"]:
+                                perf_update["genres"] = _json.dumps(result["genres"])
+                            if result["event_type_name"]:
+                                perf_update["event_type_name"] = result["event_type_name"]
+                                perf_update["category"] = result["category"]
+                                perf_update["source"] = "spotify"
 
-                        # Propagate 1-10 popularity score + Spotify URL to all
-                        # events for this artist so the frontend can display it.
-                        raw_pop = result["popularity"] or 0
-                        score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
-                        event_update: dict = {}
-                        if score_1_10:
-                            event_update["artist_popularity"] = score_1_10
-                        if result["spotify_url"]:
-                            event_update["artist_spotify_url"] = result["spotify_url"]
-                        # Fill missing event image with artist photo
-                        if result["image_url"]:
-                            db.query(Event).filter(
-                                Event.artist_name == name,
-                                Event.image_url.is_(None),
-                            ).update(
-                                {"image_url": result["image_url"]},
-                                synchronize_session=False,
+                            db.query(Performer).filter(Performer.id == perf_id).update(
+                                perf_update, synchronize_session=False
                             )
-                        if event_update:
-                            db.query(Event).filter(
-                                Event.artist_name == name,
-                            ).update(event_update, synchronize_session=False)
 
-                        enriched += 1
-                        logger.debug(
-                            f"enrich_spotify: {name!r} → {result['event_type_name']} "
-                            f"(pop={result['popularity']})"
-                        )
-                    else:
+                            # Propagate 1-10 popularity score + Spotify URL to all
+                            # events for this artist so the frontend can display it.
+                            raw_pop = result["popularity"] or 0
+                            score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
+                            event_update: dict = {}
+                            if score_1_10:
+                                event_update["artist_popularity"] = score_1_10
+                            if result["spotify_url"]:
+                                event_update["artist_spotify_url"] = result["spotify_url"]
+                            # Fill missing event image with artist photo
+                            if result["image_url"]:
+                                db.query(Event).filter(
+                                    Event.artist_name == name,
+                                    Event.image_url.is_(None),
+                                ).update(
+                                    {"image_url": result["image_url"]},
+                                    synchronize_session=False,
+                                )
+                            if event_update:
+                                db.query(Event).filter(
+                                    Event.artist_name == name,
+                                ).update(event_update, synchronize_session=False)
+
+                            enriched += 1
+                            logger.debug(
+                                f"enrich_spotify: {name!r} → {result['event_type_name']} "
+                                f"(pop={result['popularity']})"
+                            )
+                        else:
+                            skipped += 1
+
+                        db.commit()
+                        db.expire_all()
+                        await asyncio.sleep(0.2)   # ~5 req/s — well within Spotify limits
+
+                    except Exception as e:
+                        logger.warning(f"enrich_spotify: error for {name!r}: {e}")
+                        db.rollback()
                         skipped += 1
 
-                    db.commit()
-                    db.expire_all()
-                    await asyncio.sleep(0.2)   # ~5 req/s — well within Spotify limits
+            log.status = "success"
+            log.events_found = len(rows)
+            log.events_saved = enriched
+            log.notes = f"enriched={enriched} no_result={skipped}"
+            logger.info(f"enrich_spotify_job done: enriched={enriched} skipped={skipped}")
 
-                except Exception as e:
-                    logger.warning(f"enrich_spotify: error for {name!r}: {e}")
-                    db.rollback()
-                    skipped += 1
-
-        log.status = "success"
-        log.events_found = len(rows)
-        log.events_saved = enriched
-        log.notes = f"enriched={enriched} no_result={skipped}"
-        logger.info(f"enrich_spotify_job done: enriched={enriched} skipped={skipped}")
-
-    except Exception as e:
-        log.status = "failed"
-        log.notes = str(e)
-        logger.error(f"enrich_spotify_job error: {e}")
-    finally:
-        log.finished_at = datetime.utcnow()
-        db.commit()
-        db.close()
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"enrich_spotify_job error: {e}")
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
 
 
 def cleanup_past_events():
