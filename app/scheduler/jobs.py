@@ -824,6 +824,75 @@ async def collect_bandsintown_job(batch: int = 150):
         db.close()
 
 
+_TECHCONF_DISTRICT_TO_CITY: dict[str, str] = {
+    # Singapore districts
+    "marina bay":    "Singapore",
+    "downtown core": "Singapore",
+    "orchard":       "Singapore",
+    "sentosa":       "Singapore",
+    # Dubai / UAE
+    "dubai media city": "Dubai",
+    "dubai world trade centre": "Dubai",
+    "dwtc":          "Dubai",
+    "jbr":           "Dubai",
+    # US venues often listed by venue name not city
+    "las vegas convention center": "Las Vegas",
+    # Netherlands
+    "rai amsterdam": "Amsterdam",
+}
+
+# Country names that ARE city names (city-states / capitals used as country)
+_TECHCONF_COUNTRY_IS_CITY: set[str] = {
+    "singapore", "luxembourg", "monaco",
+}
+
+
+def _resolve_techconf_city(city_name: str, country_name: str, db) -> "City":
+    """Resolve a conference city, handling districts and city-states."""
+    from app.models import City as _City
+
+    # 1. Direct exact match
+    city = db.query(_City).filter(
+        func.lower(_City.name) == city_name.lower()
+    ).first()
+    if city:
+        return city
+
+    # 2. District → known city mapping
+    mapped = _TECHCONF_DISTRICT_TO_CITY.get(city_name.lower())
+    if mapped:
+        city = db.query(_City).filter(
+            func.lower(_City.name) == mapped.lower()
+        ).first()
+        if city:
+            return city
+        city_name = mapped  # create with the proper name
+
+    # 3. Country-as-city (Singapore, Luxembourg…)
+    elif country_name.lower() in _TECHCONF_COUNTRY_IS_CITY:
+        city = db.query(_City).filter(
+            func.lower(_City.name) == country_name.lower()
+        ).first()
+        if city:
+            return city
+        city_name = country_name
+
+    # 4. Fallback: any known city in the same country
+    else:
+        fallback = db.query(_City).filter(
+            func.lower(_City.country) == country_name.lower(),
+            _City.latitude.isnot(None),
+        ).first()
+        if fallback:
+            return fallback
+
+    # 5. Create new city record
+    new_city = _City(name=city_name, country=country_name)
+    db.add(new_city)
+    db.flush()
+    return new_city
+
+
 async def collect_techconf_job():
     """
     Scrape techconf.directory/conferences and save upcoming tech conferences.
@@ -852,14 +921,8 @@ async def collect_techconf_job():
                 country_name = conf["country"] or ("Global" if conf["is_online"] else "")
                 is_online    = conf["is_online"]
 
-                # Resolve or create city
-                city = db.query(City).filter(
-                    func.lower(City.name) == city_name.lower()
-                ).first()
-                if not city:
-                    city = City(name=city_name, country=country_name)
-                    db.add(city)
-                    db.flush()
+                # Resolve or create city (handles districts + city-states)
+                city = _resolve_techconf_city(city_name, country_name, db)
 
                 # Generic conference venue per city
                 venue_name = f"{city_name} Conference" if not is_online else "Online"
