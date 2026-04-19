@@ -912,8 +912,12 @@ async def collect_techconf_job():
         conferences = await scrape_techconf_directory()
         found = len(conferences)
 
-        # Look up the "Tech Conference" event type once
-        tech_et = db.query(EventType).filter_by(name="Tech Conference").first()
+        # Look up the "Tech Conference" event type (seeded); fall back to
+        # "AI Tech Conferences" for DBs not yet re-seeded after this deploy.
+        tech_et = (
+            db.query(EventType).filter_by(name="Tech Conference").first()
+            or db.query(EventType).filter_by(name="AI Tech Conferences").first()
+        )
 
         for conf in conferences:
             try:
@@ -953,6 +957,9 @@ async def collect_techconf_job():
                         existing.venue_id = venue.id
                         existing.venue_name = venue_name
                         existing.end_date = conf["end_date"]
+                    # Backfill event type if missing (e.g. first run before seed)
+                    if tech_et and tech_et not in existing.event_types:
+                        existing.event_types.append(tech_et)
                     continue
 
                 new_ev = Event(

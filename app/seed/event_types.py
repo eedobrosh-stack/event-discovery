@@ -124,6 +124,7 @@ EVENT_TYPES = [
     {"name": "Religious Conventions", "category": "Religious", "keywords": "religious, convention, gathering"},
     {"name": "Spiritual Retreats", "category": "Religious", "keywords": "retreat, spiritual, religious"},
     # Technology
+    {"name": "Tech Conference", "category": "Technology", "keywords": "tech conference, technology, developer, software, design, web, digital, innovation"},
     {"name": "Consumer Electronics Shows", "category": "Technology", "keywords": "tech expo, electronics, technology"},
     {"name": "Startup Showcases", "category": "Technology", "keywords": "startup, showcase, technology"},
     {"name": "AI Tech Conferences", "category": "Technology", "keywords": "tech conference, AI, technology"},
