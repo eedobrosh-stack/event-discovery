@@ -219,6 +219,10 @@ async def collect_venue_websites():
     import httpx
     from sqlalchemy.orm import joinedload
 
+    if _heavy_job_lock.locked():
+        logger.info("collect_venue_websites: another heavy job is running — skipping this run")
+        return
+
     db = SessionLocal()
     log = ScanLog(job_name="venue_websites", status="running")
     db.add(log)
@@ -592,10 +596,15 @@ async def discover_venues_job():
     """
     Use OSM Overpass API to find venue nodes/ways near each priority city
     and insert any that are not already in our DB.
+    Processes CITY_BATCH_SIZE cities per run (same rotation as collect_all_events).
     """
     import asyncio
     import httpx
     from app.services.osm import overpass_discover_venues
+
+    if _heavy_job_lock.locked():
+        logger.info("discover_venues_job: another heavy job is running — skipping this run")
+        return
 
     db = SessionLocal()
     log = ScanLog(job_name="discover_venues", status="running")
@@ -605,11 +614,12 @@ async def discover_venues_job():
     new_venues = 0
     cities_checked = 0
     try:
-        # Only run for cities that have coordinates stored
+        # Process only a small batch of cities per run to cap memory usage
         priority_names = [name for name, _country in PRIORITY_CITIES]
         cities = (
             db.query(City)
             .filter(City.name.in_(priority_names), City.latitude.isnot(None), City.longitude.isnot(None))
+            .limit(CITY_BATCH_SIZE)
             .all()
         )
         logger.info(f"discover_venues: checking {len(cities)} priority cities")
@@ -681,6 +691,10 @@ async def collect_bandsintown_job(batch: int = 150):
     by event count and saves any upcoming events returned by the API.
     Runs every 12 hours so the most-popular artists stay fresh.
     """
+    if _heavy_job_lock.locked():
+        logger.info("collect_bandsintown_job: another heavy job is running — skipping this run")
+        return
+
     import asyncio as _asyncio
     from app.models import City, Venue, Event, Performer
     from app.services.collectors.base import RawEvent, default_end_time
