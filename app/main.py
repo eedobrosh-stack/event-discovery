@@ -347,6 +347,98 @@ def _fix_sports_categories():
                 if dirty:
                     fixed += 1
 
+        # ── Second pass: legacy "X vs Y" / "X vs. Y" events mis-categorized ──
+        # College sports (Stanford Cardinal Baseball vs. Florida State …) and
+        # other Ticketmaster "Sports" segment items were ingested before the
+        # "vs" shortcut was added to _resolve_event_type, so they ended up
+        # tagged as Music/Fitness/etc. instead of Sports.
+        from sqlalchemy import or_
+        from urllib.parse import quote_plus as _qp
+
+        # Name-keyword → specific sport EventType
+        _VS_SPORT_KEYWORDS = [
+            ("baseball",   "Baseball",          "Baseball Game"),
+            ("softball",   "Baseball",          "Baseball Game"),  # no Softball type — group under baseball
+            ("basketball", "Basketball",        "Basketball Game"),
+            ("hockey",     "Ice Hockey",        "Hockey Game"),
+            ("football",   "American Football", "American Football Game"),
+            ("soccer",     "Soccer",            "Soccer Match"),
+            ("tennis",     "Tennis",            "Tennis Match"),
+        ]
+
+        # Find events with "vs"/"vs." in the name that aren't currently
+        # categorized as Sports, and haven't been repaired by the league-map
+        # pass above.
+        vs_events = (
+            db.query(Event)
+            .filter(
+                or_(
+                    Event.name.ilike("% vs %"),
+                    Event.name.ilike("% vs. %"),
+                ),
+                Event.sport.is_(None),
+            )
+            .limit(2000)   # cap so startup stays fast even on huge DBs
+            .all()
+        )
+
+        for ev in vs_events:
+            # Skip if already sports-tagged
+            if ev.event_types and any(
+                et.category == "Sports" for et in ev.event_types
+            ):
+                continue
+
+            lower_name = (ev.name or "").lower()
+            # Pick the most specific sport type by name keyword
+            sport_val = None
+            et_name = "Sports Event"
+            for kw, sv, et_n in _VS_SPORT_KEYWORDS:
+                if kw in lower_name:
+                    sport_val = sv
+                    et_name = et_n
+                    break
+
+            sports_et = _resolve_et(et_name)
+            if not sports_et:
+                continue
+
+            dirty = False
+            if sport_val and ev.sport != sport_val:
+                ev.sport = sport_val
+                dirty = True
+            if ev.artist_name:
+                # home team was stored as artist_name — clear it
+                ev.artist_name = None
+                dirty = True
+            # Strip Music/Comedy/Fitness types; add the Sports one.
+            non_sports_ids = {
+                et.id for et in (ev.event_types or [])
+                if et.category != "Sports"
+            }
+            if non_sports_ids:
+                ev.event_types = [
+                    et for et in ev.event_types if et.id not in non_sports_ids
+                ]
+                dirty = True
+            if sports_et not in (ev.event_types or []):
+                ev.event_types.append(sports_et)
+                dirty = True
+            # Derive home/away from name for the YouTube highlights URL
+            if not ev.artist_youtube_channel and (" vs " in lower_name or " vs. " in lower_name):
+                sep = " vs. " if " vs. " in lower_name else " vs "
+                try:
+                    home, away = ev.name.split(sep, 1)
+                    q = _qp(f"{home.strip()} vs {away.strip()} highlights")
+                    ev.artist_youtube_channel = (
+                        f"https://www.youtube.com/results?search_query={q}"
+                    )
+                    dirty = True
+                except ValueError:
+                    pass
+            if dirty:
+                fixed += 1
+
         if fixed:
             db.commit()
             _log.info(f"_fix_sports_categories: repaired {fixed} events")
@@ -457,7 +549,10 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         collect_techconf_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
+        # First run 3 min after boot so it actually fires before any
+        # restart — at t+30 min the app had previously been OOM-killed
+        # before the timer elapsed, so it never ran.
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=3)),
         id="collect_techconf",
         replace_existing=True,
     )
