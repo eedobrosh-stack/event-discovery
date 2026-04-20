@@ -98,17 +98,11 @@ class TicketmasterCollector(BaseCollector):
 
         venue_data = (ev.get("_embedded", {}).get("venues") or [{}])[0]
 
-        # Map categories. Also detect the Sports segment so we can strip the
-        # bogus "artist" (Ticketmaster stores the home team as the primary
-        # attraction, which would otherwise go through the music-artist
-        # enrichment path and end up tagged as Music/Fitness/etc.)
+        # Map categories
         raw_cats = []
-        is_sports = False
         for clf in ev.get("classifications", []):
             seg = clf.get("segment", {})
             if seg.get("id"):
-                if seg.get("id") == "KZFzniwnSyZfZ7v7nE":   # TM "Sports" segment
-                    is_sports = True
                 mapped = map_category("ticketmaster_segment", seg["id"])
                 if mapped:
                     raw_cats.append(mapped)
@@ -117,36 +111,6 @@ class TicketmasterCollector(BaseCollector):
                 mapped = map_category("ticketmaster_genre", genre["name"])
                 if mapped and mapped not in raw_cats:
                     raw_cats.append(mapped)
-
-        # Infer specific sport from name/genre so the registry routes the
-        # event into the sports priority chain (and picks a specific event
-        # type like "Baseball Game" rather than just "Sports Event").
-        sport_val = None
-        home_team = away_team = None
-        if is_sports:
-            artist_name = None   # home team is not a music performer
-            lower_name = name.lower()
-            for kw, sv in (
-                ("baseball",   "Baseball"),
-                ("softball",   "Baseball"),
-                ("basketball", "Basketball"),
-                ("hockey",     "Ice Hockey"),
-                ("football",   "American Football"),
-                ("soccer",     "Soccer"),
-                ("tennis",     "Tennis"),
-                ("golf",       "Golf"),
-            ):
-                if kw in lower_name:
-                    sport_val = sv
-                    break
-            sport_val = sport_val or "Sports"
-            # Derive home/away from "X vs Y" or "X vs. Y" when present
-            for sep in (" vs. ", " vs "):
-                if sep in name:
-                    parts = name.split(sep, 1)
-                    home_team = parts[0].strip() or None
-                    away_team = parts[1].strip() or None
-                    break
 
         return RawEvent(
             name=name,
@@ -167,7 +131,4 @@ class TicketmasterCollector(BaseCollector):
             source="ticketmaster",
             source_id=ev.get("id", ""),
             raw_categories=raw_cats,
-            sport=sport_val,
-            home_team=home_team,
-            away_team=away_team,
         )

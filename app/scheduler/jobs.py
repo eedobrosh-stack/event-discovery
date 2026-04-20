@@ -917,11 +917,16 @@ def _resolve_techconf_city(city_name: str, country_name: str, db) -> "City":
             return city
         city_name = country_name
 
-    # 4. Create a new city record for cities we don't already track.
-    #    Earlier behaviour fell back to "any city in the same country" via
-    #    .first(), which caused e.g. "Palo Alto, US" events to be silently
-    #    mis-shelved under whichever US city happened to sort first — so
-    #    Stanford WebCamp would never show up when searching Palo Alto.
+    # 4. Fallback: any known city in the same country
+    else:
+        fallback = db.query(_City).filter(
+            func.lower(_City.country) == country_name.lower(),
+            _City.latitude.isnot(None),
+        ).first()
+        if fallback:
+            return fallback
+
+    # 5. Create new city record
     new_city = _City(name=city_name, country=country_name)
     db.add(new_city)
     db.flush()
