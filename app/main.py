@@ -492,36 +492,49 @@ async def lifespan(app: FastAPI):
                 "Paris", "Munich", "Milan", "Belgrade", "Vilnius",
                 "Kaunas", "Bologna", "Monaco", "Valencia",
             ]
-            collector = EuroLeagueCollector()
-            # Resolve cities once in a short-lived session, then release
-            with SessionLocal() as id_db:
-                city_ids = [
-                    row[0]
-                    for row in id_db.query(City.id)
-                    .filter(City.name.in_(EUROLEAGUE_HOSTS))
-                    .all()
-                ]
-            total_saved = 0
-            for city_id in city_ids:
-                # Fresh session per city so nothing leaks
-                with SessionLocal() as db:
-                    city = db.query(City).get(city_id)
-                    if not city:
-                        continue
-                    try:
-                        raw = await collector.collect(city.name, city.country)
-                        if raw:
-                            saved = main_registry._save_events(raw, city, db)
-                            total_saved += saved
-                            _log.info(
-                                f"EuroLeague seed {city.name}: "
-                                f"fetched={len(raw)} saved={saved}"
-                            )
-                    except Exception as e:
-                        _log.warning(
-                            f"EuroLeague seed {city.name} failed: {e}"
-                        )
-            _log.info(f"EuroLeague seed complete: saved {total_saved} events")
+
+            # Everything below runs in a worker thread so the sync DB work
+            # in _save_events doesn't block uvicorn's event loop.  Inside
+            # the thread, we spin up a dedicated event loop for the async
+            # EuroLeague collector HTTP calls.
+            def _run_blocking():
+                import asyncio as _aio
+                collector = EuroLeagueCollector()
+                with SessionLocal() as id_db:
+                    city_ids = [
+                        row[0]
+                        for row in id_db.query(City.id)
+                        .filter(City.name.in_(EUROLEAGUE_HOSTS))
+                        .all()
+                    ]
+                total_saved = 0
+                loop = _aio.new_event_loop()
+                try:
+                    for city_id in city_ids:
+                        with SessionLocal() as db:
+                            city = db.query(City).get(city_id)
+                            if not city:
+                                continue
+                            try:
+                                raw = loop.run_until_complete(
+                                    collector.collect(city.name, city.country)
+                                )
+                                if raw:
+                                    saved = main_registry._save_events(raw, city, db)
+                                    total_saved += saved
+                                    _log.info(
+                                        f"EuroLeague seed {city.name}: "
+                                        f"fetched={len(raw)} saved={saved}"
+                                    )
+                            except Exception as e:
+                                _log.warning(
+                                    f"EuroLeague seed {city.name} failed: {e}"
+                                )
+                finally:
+                    loop.close()
+                _log.info(f"EuroLeague seed complete: saved {total_saved} events")
+
+            await asyncio.get_event_loop().run_in_executor(None, _run_blocking)
         except Exception as e:
             _log.warning(f"EuroLeague startup seed failed: {e}")
     asyncio.create_task(_deferred_euroleague_seed())
