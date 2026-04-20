@@ -462,6 +462,7 @@ async def enrich_youtube_job(batch: int = 300):
 async def enrich_performers_job(batch: int = 50):
     """MusicBrainz lookup for new artist names → performers table. Runs nightly."""
     import asyncio
+    import json
     import httpx
     from app.models import Performer
     from app.services.performer_lookup import lookup_musicbrainz, normalize
@@ -504,12 +505,17 @@ async def enrich_performers_job(batch: int = 50):
                 try:
                     result = await lookup_musicbrainz(artist, http)
                     if result:
+                        # Performer.genres is a TEXT column — serialize the
+                        # Python list to JSON before binding.  Empty list →
+                        # NULL so we don't store "[]" noise.
+                        genres_list = result.get("genres") or []
+                        genres_json = json.dumps(genres_list) if genres_list else None
                         perf = Performer(
                             name=artist,
                             normalized_name=normalize(artist),
                             category=result.get("category"),
                             event_type_name=result.get("event_type_name"),
-                            genres=result.get("genres"),
+                            genres=genres_json,
                             mb_id=result.get("mb_id"),
                             mb_type=result.get("mb_type"),
                             source="musicbrainz",
