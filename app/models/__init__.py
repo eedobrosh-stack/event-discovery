@@ -6,5 +6,6 @@ from app.models.performer import Performer
 from app.models.pending_venue import PendingVenue
 from app.models.scan_log import ScanLog
 from app.models.platform_venue import PlatformVenue
+from app.models.job_state import JobState
 
-__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue"]
+__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState"]

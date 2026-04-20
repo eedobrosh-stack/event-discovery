@@ -214,6 +214,19 @@ def _run_migrations():
                 conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
         conn.commit()
 
+    # job_state: persistent key/value store for scheduler state (e.g. the
+    # rotating city-batch cursor) so it survives Render restarts / OOM kills.
+    if "job_state" not in insp.get_table_names():
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE TABLE job_state ("
+                "  key VARCHAR(64) PRIMARY KEY,"
+                "  value VARCHAR(255) NOT NULL,"
+                "  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                ")"
+            ))
+            conn.commit()
+
 
 def _fix_sports_categories():
     """

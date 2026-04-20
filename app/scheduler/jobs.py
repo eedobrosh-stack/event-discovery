@@ -10,11 +10,15 @@ from app.database import SessionLocal
 _heavy_job_lock = asyncio.Lock()
 
 # City batching: scrape CITY_BATCH_SIZE cities per run, rotating through
-# PRIORITY_CITIES on each invocation. All cities covered every ~24h at
-# the default 6h scrape interval with 4 batches of ~8-9 cities each.
-CITY_BATCH_SIZE = 8
-_city_batch_index = 0  # advances each run
-from app.models import City, Event, Venue, ScanLog
+# PRIORITY_CITIES on each invocation. All ~34 cities are covered over ~48h
+# at the default 6h scrape interval with 8 batches of 4 cities each.
+#
+# Batch size was lowered from 8→4 after repeated Render OOM kills during
+# large cities like New York: the process would die mid-batch and restart,
+# losing the in-memory cursor and starting over from Batch 1 every time.
+CITY_BATCH_SIZE = 4
+_BATCH_INDEX_KEY = "city_batch_index"
+from app.models import City, Event, Venue, ScanLog, JobState
 from app.config import settings
 from app.services.collectors.registry import CollectorRegistry
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
@@ -145,14 +149,41 @@ PRIORITY_CITIES = [
 ]
 
 
+def _get_batch_index() -> int:
+    """Read the rotating city-batch cursor from DB (0 if unset)."""
+    try:
+        with SessionLocal() as db:
+            row = db.query(JobState).filter_by(key=_BATCH_INDEX_KEY).first()
+            return int(row.value) if row and row.value.isdigit() else 0
+    except Exception as e:
+        logger.warning(f"_get_batch_index: DB read failed ({e}); defaulting to 0")
+        return 0
+
+
+def _set_batch_index(value: int) -> None:
+    """Persist the next city-batch cursor so it survives process restarts."""
+    try:
+        with SessionLocal() as db:
+            row = db.query(JobState).filter_by(key=_BATCH_INDEX_KEY).first()
+            if row:
+                row.value = str(value)
+            else:
+                db.add(JobState(key=_BATCH_INDEX_KEY, value=str(value)))
+            db.commit()
+    except Exception as e:
+        logger.warning(f"_set_batch_index: DB write failed ({e}); cursor not persisted")
+
+
 async def collect_all_events():
     """Scrape one batch of cities per run (CITY_BATCH_SIZE cities), rotating
     through PRIORITY_CITIES on each invocation so all cities are covered
     across multiple runs without ever loading all 34 into a single process.
-    At the default 6h interval + batch size 8: all ~34 cities refresh ~every 24h.
+    At the default 6h interval + batch size 4: all ~34 cities refresh ~every 48h.
+
+    The batch cursor is persisted in the job_state table so an OOM-kill +
+    restart doesn't reset rotation back to batch 1.
     """
     import gc
-    global _city_batch_index
     from sqlalchemy import and_, or_
 
     if _heavy_job_lock.locked():
@@ -162,12 +193,15 @@ async def collect_all_events():
     async with _heavy_job_lock:
         # Pick the current batch of city names
         total = len(PRIORITY_CITIES)
-        start = _city_batch_index % total
+        cursor = _get_batch_index()
+        start = cursor % total
         batch_names = [
             PRIORITY_CITIES[(start + i) % total]
             for i in range(min(CITY_BATCH_SIZE, total))
         ]
-        _city_batch_index = (start + CITY_BATCH_SIZE) % total
+        # Persist *before* we start work — if we OOM mid-batch, the next
+        # process run should skip ahead rather than replay the same batch.
+        _set_batch_index((start + CITY_BATCH_SIZE) % total)
         logger.info(
             f"collect_all_events: batch {start//CITY_BATCH_SIZE + 1} — "
             f"{[c[0] for c in batch_names]}"
