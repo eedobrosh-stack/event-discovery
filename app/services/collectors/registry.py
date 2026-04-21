@@ -28,6 +28,13 @@ class CollectorRegistry:
         import gc
         stats = {}
         for collector in self._collectors:
+            # Init to None so the `finally` block can safely clean up even if
+            # collector.collect(...) raises before raw_events is assigned.
+            # (Prior version crashed with UnboundLocalError whenever any
+            # collector threw — e.g. "Paris collect_events: cannot access
+            # local variable 'raw_events' where it is not associated with
+            # a value" on every HTTP timeout.)
+            raw_events = None
             try:
                 raw_events = await collector.collect(
                     city.name,
@@ -45,7 +52,7 @@ class CollectorRegistry:
             finally:
                 # Release ORM identity map and raw event list after every collector
                 # to prevent unbounded memory growth across 20+ collectors × 30 cities.
-                del raw_events
+                raw_events = None
                 db.expire_all()
                 gc.collect()
         return stats
