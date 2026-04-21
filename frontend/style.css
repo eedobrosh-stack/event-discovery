@@ -269,7 +269,17 @@ th {
     z-index: 1;
     box-shadow: 0 1px 0 #ddd; /* keeps header visible when rows scroll beneath */
 }
-tr:hover { background: #fafafa; }
+
+/* Alternating row gradients — makes adjacent events easier to visually separate */
+#events-table tbody tr:nth-child(odd) {
+    background: linear-gradient(90deg, #fbfaff 0%, #f1edff 100%);
+}
+#events-table tbody tr:nth-child(even) {
+    background: linear-gradient(90deg, #ffffff 0%, #f6f6fa 100%);
+}
+#events-table tbody tr:hover {
+    background: linear-gradient(90deg, #efeaff 0%, #e4dcff 100%);
+}
 
 a { color: #0f3460; text-decoration: none; }
 a:hover { text-decoration: underline; }
