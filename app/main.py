@@ -167,6 +167,45 @@ def _seed_event_types():
         db.close()
 
 
+def _recover_stale_scan_logs():
+    """
+    Mark any scan_log rows with status='running' older than 2h as 'stale'.
+
+    Background scraping jobs (enrich_youtube, bandsintown, etc.) write a
+    ScanLog row with status='running' before they start and only flip it to
+    'success'/'failed' in a finally block. When Render OOM-kills or redeploys
+    the worker mid-job, that finally never runs and the row is stranded.
+
+    Over days this leaves a growing graveyard of ghost rows in the admin
+    dashboard (≈8 ghost rows/day observed on prod for enrich_youtube alone,
+    and similar for bandsintown/collect_events). A single UPDATE on startup
+    cleans them up before serving.
+
+    2h threshold is well past the longest-running job (enrich_youtube ≈ 30min
+    for 300 artists) so nothing in-flight when a new process boots could
+    possibly still be legitimately 'running'.
+    """
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text(
+                "UPDATE scan_logs "
+                "SET status='stale', "
+                "    finished_at=CURRENT_TIMESTAMP, "
+                "    notes=COALESCE(notes, '') || ' [orphaned by worker restart]' "
+                "WHERE status='running' "
+                "  AND started_at < datetime('now', '-2 hours')"
+            ))
+            conn.commit()
+            if result.rowcount:
+                logging.getLogger(__name__).info(
+                    f"_recover_stale_scan_logs: marked {result.rowcount} "
+                    f"orphaned running rows as stale"
+                )
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"_recover_stale_scan_logs failed: {e}")
+
+
 def _run_migrations():
     """Apply incremental schema changes that create_all() won't handle."""
     from sqlalchemy import text, inspect
@@ -368,6 +407,7 @@ async def lifespan(app: FastAPI):
     # Create tables on startup (fast, must complete before serving)
     Base.metadata.create_all(bind=engine)
     _run_migrations()
+    _recover_stale_scan_logs()
 
     # Move cache warming to background so Render's health check passes quickly
     async def _deferred_startup():
