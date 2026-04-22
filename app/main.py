@@ -460,22 +460,36 @@ async def lifespan(app: FastAPI):
         id="collect_platform_venues",
         replace_existing=True,
     )
+    # --- Async enrichment trio: staggered so only one is alive at a time ----
+    # Each of these holds an httpx.AsyncClient open for the whole run and
+    # iterates 100-150 artists against a third-party API. Running them
+    # concurrently was the primary driver of the 2GB OOM restarts observed
+    # on 2026-04-21 (10:08 PM) and 2026-04-22 (02:29 AM, 06:32 AM).
+    #
+    # Timeline after boot (minutes):
+    #   +25  bandsintown  (~25 min,  ends +50)
+    #   +60  enrich_spotify      (~15 min, ends +75)   [was +140]
+    #   +90  enrich_performers   (~10 min, ends +100)  [was +125]
+    #   +120 enrich_youtube      (~10 min, ends +130)  [was +95, batch 300→100]
+    #
+    # enrich_youtube re-fires on a 2h cycle (+240, +360, …); at batch=100
+    # each subsequent run is ~10 min and never collides with a 24h job.
     scheduler.add_job(
-        enrich_youtube_job,
-        IntervalTrigger(hours=2, start_date=_t + _td(minutes=95)),
-        id="enrich_youtube",
+        enrich_spotify_job,
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=60)),
+        id="enrich_spotify",
         replace_existing=True,
     )
     scheduler.add_job(
         enrich_performers_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=125)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=90)),
         id="enrich_performers",
         replace_existing=True,
     )
     scheduler.add_job(
-        enrich_spotify_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=140)),
-        id="enrich_spotify",
+        enrich_youtube_job,
+        IntervalTrigger(hours=2, start_date=_t + _td(minutes=120)),
+        id="enrich_youtube",
         replace_existing=True,
     )
     scheduler.add_job(

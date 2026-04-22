@@ -389,8 +389,17 @@ async def collect_platform_venues():
         db.close()
 
 
-async def enrich_youtube_job(batch: int = 300):
-    """Find artists with no YouTube link and look them up. Runs every 6h."""
+async def enrich_youtube_job(batch: int = 100):
+    """Find artists with no YouTube link and look them up. Runs every 2h.
+
+    batch=100 (was 300): at 300 the job ran ~30min and its memory footprint
+    (httpx client + SQLAlchemy identity map + per-artist update stream)
+    consistently overlapped the other async enrichment jobs and pushed the
+    instance past the 2GB Render ceiling, causing OOM restarts that orphaned
+    this very row. At batch=100 the job runs ~10min; it still fires every
+    2h, so daily throughput is unchanged: 12 × 100 = 1200 artists/day
+    (previously 12 × 300 = 3600, but very few runs actually completed).
+    """
     from sqlalchemy import func as _func, or_
     from app.services.youtube_lookup import lookup_youtube_video
 
