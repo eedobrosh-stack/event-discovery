@@ -61,8 +61,15 @@ def get_suggestions(
     # Sports events are named "League - Home vs Away" (e.g. "NBA - Spurs vs Lakers").
     # If the query matches a league prefix, return only that sport suggestion so
     # users can build a clean "NBA calendar" without noisy autocomplete mixing in.
+    #
+    # SQL filter is a plain prefix (`{q}%`) rather than `{q} -%` so partial
+    # typing works — "Euro" needs to match "Euroleague - Real Madrid vs …",
+    # not just "Euroleague - …". The Python loop below extracts the league
+    # label (everything before " - ") and keeps only labels whose own prefix
+    # matches `q`, so non-sports names like "Eurovision" won't slip through
+    # unless they actually use the "League - Home vs Away" pattern.
     if len(q_stripped) >= _MIN_SPORT_QUERY_LEN:
-        league_prefix = f"{q_stripped} -%"
+        league_prefix = f"{q_stripped}%"
         sport_name_rows = (
             db.query(Event.name, Event.sport)
             .filter(
@@ -70,7 +77,8 @@ def get_suggestions(
                 Event.name.ilike(league_prefix),
             )
             .distinct(Event.name)
-            .limit(10)
+            .order_by(Event.name)
+            .limit(50)
             .all()
         )
         if sport_name_rows:
