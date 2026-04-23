@@ -502,6 +502,83 @@
             margin: 28px 0;
         }
 
+        /* ── Upcoming breakdown (by category / by type) ── */
+        .breakdown-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            margin-bottom: 28px;
+        }
+        @media (max-width: 760px) { .breakdown-grid { grid-template-columns: 1fr; } }
+        .breakdown-card {
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 12px;
+            padding: 16px 18px 14px;
+            display: flex;
+            flex-direction: column;
+        }
+        .bd-title {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: .07em;
+            color: #888;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .bd-sub {
+            font-size: 0.72rem;
+            color: #555;
+            margin-bottom: 12px;
+        }
+        .bd-rows {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 360px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        .bd-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+        }
+        .bd-name {
+            color: #ccc;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 0 40%;
+        }
+        .bd-bar-wrap {
+            flex: 1;
+            height: 6px;
+            background: rgba(255,255,255,.07);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .bd-bar {
+            height: 100%;
+            border-radius: 3px;
+            background: var(--accent, #7c6af7);
+            opacity: .75;
+        }
+        .bd-count {
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+            color: #ccc;
+            min-width: 64px;
+            text-align: right;
+            font-size: 0.78rem;
+        }
+        .bd-count .bd-pct { color: #666; font-weight: 400; margin-left: 4px; font-size: 0.72rem; }
+        .bd-empty { font-size: 0.8rem; color: #555; padding: 8px 0; }
+
         /* Metric cards with progress bar */
         .metric-cards {
             display: flex;
@@ -731,6 +808,25 @@
             <div class="card">
                 <div class="card-num" id="sum-events">–</div>
                 <div class="card-label">Upcoming events</div>
+            </div>
+        </div>
+
+        <!-- ── Upcoming Breakdown: by Category / by Type ───────────────────── -->
+        <hr class="section-divider">
+        <p class="section-title">🏷️ Upcoming Events Breakdown
+            <span style="font-weight:400; color:#555; font-size:.75rem;" id="breakdown-sub"></span>
+        </p>
+        <div id="breakdown-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
+        <div id="breakdown-grid" class="breakdown-grid" hidden>
+            <div class="breakdown-card">
+                <div class="bd-title">📁 By category</div>
+                <div class="bd-sub">Grouped by EventType.category</div>
+                <div class="bd-rows" id="breakdown-cat"></div>
+            </div>
+            <div class="breakdown-card">
+                <div class="bd-title">🎫 By type</div>
+                <div class="bd-sub">Grouped by EventType.name</div>
+                <div class="bd-rows" id="breakdown-type"></div>
             </div>
         </div>
 
@@ -1288,6 +1384,53 @@
         }
     }
     loadMatrix();
+
+    // ── Upcoming breakdown (by category / by type) ─────────────────────────
+    async function loadBreakdown() {
+        try {
+            const res = await fetch('/api/stats/upcoming-breakdown');
+            const d = await res.json();
+
+            const cat  = d.by_category || [];
+            const typ  = d.by_type || [];
+            const total = d.total_classified || 0;
+
+            // Share % is computed vs the displayed card's max (visually ranks
+            // long tails) but the label text uses % of classified upcoming so
+            // the two cards stay comparable.
+            function renderRows(rows, container) {
+                if (!rows.length) {
+                    container.innerHTML = '<div class="bd-empty">No classified upcoming events yet.</div>';
+                    return;
+                }
+                const maxN = rows[0].count || 1;
+                container.innerHTML = rows.map(r => {
+                    const barW = Math.round(r.count / maxN * 100);
+                    const pct  = total > 0 ? Math.round(r.count * 100 / total) : 0;
+                    return `
+                    <div class="bd-row">
+                        <span class="bd-name" title="${esc(r.name)}">${esc(r.name)}</span>
+                        <div class="bd-bar-wrap"><div class="bd-bar" style="width:${barW}%"></div></div>
+                        <span class="bd-count">${r.count.toLocaleString()}<span class="bd-pct">${pct}%</span></span>
+                    </div>`;
+                }).join('');
+            }
+
+            renderRows(cat, document.getElementById('breakdown-cat'));
+            renderRows(typ, document.getElementById('breakdown-type'));
+
+            document.getElementById('breakdown-sub').textContent =
+                total > 0
+                    ? `${total.toLocaleString()} classified upcoming events · ${cat.length} categories · ${typ.length} types`
+                    : 'No classified upcoming events';
+
+            document.getElementById('breakdown-loading').hidden = true;
+            document.getElementById('breakdown-grid').hidden = false;
+        } catch (e) {
+            document.getElementById('breakdown-loading').textContent = 'Failed to load breakdown: ' + e.message;
+        }
+    }
+    loadBreakdown();
 
     // ── Source drill-down ──────────────────────────────────────────────────
     async function toggleSourceDetail(row, source, panelId) {

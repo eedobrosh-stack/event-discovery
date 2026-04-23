@@ -6,7 +6,7 @@ from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import City, Venue, Event
+from app.models import City, Venue, Event, EventType, event_event_types
 from app.models.scan_log import ScanLog
 from app.services.collectors.scrapers.city_guides import CITY_GUIDES
 
@@ -190,6 +190,56 @@ def coverage_health(db: Session = Depends(get_db)):
             {"city": r.name, "country": r.country, "upcoming": r.upcoming}
             for r in thin_cities
         ],
+    }
+
+
+@router.get("/upcoming-breakdown")
+def upcoming_breakdown(db: Session = Depends(get_db)):
+    """
+    Breakdown of upcoming events by EventType.category and EventType.name.
+
+    An event can have multiple types assigned (via event_event_types), so we
+    use COUNT(DISTINCT event_id) in each bucket — an event with two jazz
+    types counted as one "Jazz" rather than two.
+
+    Events with no type assigned are excluded (they wouldn't contribute to
+    any category/type bucket anyway). The `total` field returns the total
+    number of upcoming events that have at least one type classified, so
+    the frontend can compute a % share per row.
+    """
+    today = date.today()
+    upcoming = Event.start_date >= today
+
+    # Shared join expression — events → event_event_types → event_types,
+    # restricted to future-dated events.
+    def _breakdown(group_col):
+        return (
+            db.query(group_col, func.count(func.distinct(Event.id)).label("n"))
+            .join(event_event_types, event_event_types.c.event_id == Event.id)
+            .join(EventType, EventType.id == event_event_types.c.event_type_id)
+            .filter(upcoming, group_col.isnot(None), group_col != "")
+            .group_by(group_col)
+            .order_by(func.count(func.distinct(Event.id)).desc())
+            .all()
+        )
+
+    by_category = _breakdown(EventType.category)
+    by_type     = _breakdown(EventType.name)
+
+    # Distinct upcoming events with at least one type — denominator for the
+    # "% of classified upcoming" stat. Matches the `with_type` metric in
+    # /api/stats/coverage so the two cards tell a consistent story.
+    classified_total = (
+        db.query(func.count(func.distinct(Event.id)))
+        .join(event_event_types, event_event_types.c.event_id == Event.id)
+        .filter(upcoming)
+        .scalar() or 0
+    )
+
+    return {
+        "total_classified": classified_total,
+        "by_category": [{"name": r[0], "count": r[1]} for r in by_category],
+        "by_type":     [{"name": r[0], "count": r[1]} for r in by_type],
     }
 
 
