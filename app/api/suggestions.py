@@ -119,7 +119,38 @@ def get_suggestions(
     event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"}
                    for name, _ in types]
 
-    # 3. Artists — simple ilike on artist_name, no date filtering for speed
+    # 3. Sports teams — `home_team` / `away_team` are dedicated columns on sport
+    # events (e.g. "Real Madrid", "Portland Trail Blazers"). Without this block
+    # a query like "Real Madrid" matches nothing — league early-exit requires a
+    # prefix on Event.name, and artist_name is NULL on sport rows.
+    sport_teams: list = []
+    if len(q_stripped) >= _MIN_SPORT_QUERY_LEN:
+        team_like = f"%{q_stripped}%"
+        home_rows = (
+            db.query(Event.home_team)
+            .filter(Event.sport.isnot(None), Event.home_team.ilike(team_like))
+            .distinct()
+            .limit(20)
+            .all()
+        )
+        away_rows = (
+            db.query(Event.away_team)
+            .filter(Event.sport.isnot(None), Event.away_team.ilike(team_like))
+            .distinct()
+            .limit(20)
+            .all()
+        )
+        # Merge home + away, dedupe by lowercase, keep canonical casing.
+        seen: dict[str, str] = {}
+        for (t,) in home_rows + away_rows:
+            if t:
+                seen.setdefault(t.lower(), t)
+        sport_teams = [
+            {"kind": "sport_team", "value": t, "label": t, "badge": "Team"}
+            for t in sorted(seen.values())
+        ][:PER_TYPE]
+
+    # 4. Artists — simple ilike on artist_name, no date filtering for speed
     artist_rows = (
         db.query(Event.artist_name)
         .filter(
@@ -133,7 +164,7 @@ def get_suggestions(
     artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"}
                for (name,) in artist_rows if name]
 
-    # 4. Venues — direct query, no event JOIN needed for speed
+    # 5. Venues — direct query, no event JOIN needed for speed
     venue_rows = (
         db.query(Venue.name, Venue.physical_city)
         .filter(Venue.name.ilike(q_like))
@@ -147,6 +178,8 @@ def get_suggestions(
         for name, city in venue_rows
     ]
 
-    results = (categories + event_types + artists + venue_results)[:limit]
+    # Team matches rank above artists/venues — they're the most specific hit
+    # for a sports-team query and the user usually wants them first.
+    results = (sport_teams + categories + event_types + artists + venue_results)[:limit]
     _cache_set(q, results)
     return results
