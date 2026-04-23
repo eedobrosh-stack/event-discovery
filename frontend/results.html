@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" href="/favicon.png">
     <title>Supercaly — Events</title>
-    <link rel="stylesheet" href="/style.css?v=8">
+    <link rel="stylesheet" href="/style.css?v=9">
 </head>
 <body>
     <header>
@@ -30,11 +30,19 @@
                 <span id="compact-text" class="compact-text compact-placeholder">Search events…</span>
                 <span id="compact-city-badge" class="compact-city-badge"></span>
             </div>
-            <!-- Export actions — always visible in compact mode -->
+            <!-- Export actions — always visible in compact mode.
+                 On mobile, labels collapse (kept for screen readers via .btn-label) so
+                 the search pill keeps most of the width. -->
             <div class="compact-actions">
-                <button id="compact-ics-btn" type="button" class="action-btn compact-action-btn">🍎 Apple / Outlook</button>
-                <button id="compact-subscribe-btn" type="button" class="action-btn compact-action-btn btn-subscribe">📅 Google Calendar</button>
-                <button id="compact-csv-btn" type="button" class="action-btn compact-action-btn">⬇ CSV</button>
+                <button id="compact-ics-btn" type="button" class="action-btn compact-action-btn" aria-label="Export to Apple or Outlook">
+                    <span class="btn-icon" aria-hidden="true">🍎</span><span class="btn-label"> Apple / Outlook</span>
+                </button>
+                <button id="compact-subscribe-btn" type="button" class="action-btn compact-action-btn btn-subscribe" aria-label="Subscribe in Google Calendar">
+                    <span class="btn-icon" aria-hidden="true">📅</span><span class="btn-label"> Google Calendar</span>
+                </button>
+                <button id="compact-csv-btn" type="button" class="action-btn compact-action-btn" aria-label="Download CSV">
+                    <span class="btn-icon" aria-hidden="true">⬇</span><span class="btn-label"> CSV</span>
+                </button>
             </div>
         </div>
 
