@@ -410,8 +410,9 @@ async def enrich_youtube_job(batch: int = 100):
     db.refresh(log)
     found = 0
     failed = 0
-    try:
-        artists = (
+
+    def _select_pending():
+        rows = (
             db.query(Event.artist_name)
             .filter(
                 Event.artist_name.isnot(None),
@@ -428,29 +429,41 @@ async def enrich_youtube_job(batch: int = 100):
             .limit(batch)
             .all()
         )
-        names = [r[0] for r in artists]
+        return [r[0] for r in rows]
+
+    def _persist(artist: str, url: str | None) -> int:
+        """Sync DB write for one artist. Returns 1 on found, 0 on not-found."""
+        if url:
+            db.query(Event).filter(Event.artist_name == artist).update(
+                {"artist_youtube_channel": url}, synchronize_session=False
+            )
+            db.commit()
+            db.expire_all()
+            return 1
+        db.query(Event).filter(
+            Event.artist_name == artist,
+            Event.artist_youtube_channel.is_(None),
+        ).update({"artist_youtube_channel": ""}, synchronize_session=False)
+        db.commit()
+        db.expire_all()
+        return 0
+
+    try:
+        # Sync query off the event loop — NOT IN / GROUP BY on ~50k rows can take seconds.
+        names = await asyncio.to_thread(_select_pending)
         logger.info(f"enrich_youtube: {len(names)} artists to enrich")
 
         for artist in names:
             try:
                 url = await lookup_youtube_video(artist)
-                if url:
-                    db.query(Event).filter(Event.artist_name == artist).update(
-                        {"artist_youtube_channel": url}, synchronize_session=False
-                    )
+                # Persist sync DB write off the event loop.
+                if await asyncio.to_thread(_persist, artist, url):
                     found += 1
                 else:
-                    # Write empty string so we don't retry endlessly
-                    db.query(Event).filter(
-                        Event.artist_name == artist,
-                        Event.artist_youtube_channel.is_(None),
-                    ).update({"artist_youtube_channel": ""}, synchronize_session=False)
                     failed += 1
-                db.commit()
-                db.expire_all()   # release session identity map after each artist
             except Exception as e:
                 logger.warning(f"enrich_youtube: error for {artist!r}: {e}")
-                db.rollback()
+                await asyncio.to_thread(db.rollback)
                 failed += 1
 
         log.status = "success"
@@ -488,10 +501,11 @@ async def enrich_performers_job(batch: int = 50):
     db.refresh(log)
     enriched = 0
     skipped = 0
-    try:
+
+    def _select_pending():
         # Push filtering to SQL — never load all artists or all performers into Python
         already_seen_sq = db.query(Performer.name).subquery()
-        pending_rows = (
+        rows = (
             db.query(Event.artist_name, func.count(Event.id).label("n"))
             .filter(
                 Event.artist_name.isnot(None),
@@ -505,55 +519,65 @@ async def enrich_performers_job(batch: int = 50):
             .limit(batch)
             .all()
         )
-        pending = [r[0] for r in pending_rows]
-        del pending_rows   # free immediately
+        return [r[0] for r in rows]
+
+    def _persist(artist: str, result: dict | None) -> tuple[int, int]:
+        """Sync DB write. Returns (enriched_delta, skipped_delta)."""
+        if result:
+            # Performer.genres is a TEXT column — serialize the Python list
+            # to JSON before binding. Empty list → NULL so we don't store "[]".
+            genres_list = result.get("genres") or []
+            genres_json = json.dumps(genres_list) if genres_list else None
+            perf = Performer(
+                name=artist,
+                normalized_name=normalize(artist),
+                category=result.get("category"),
+                event_type_name=result.get("event_type_name"),
+                genres=genres_json,
+                mb_id=result.get("mb_id"),
+                mb_type=result.get("mb_type"),
+                source="musicbrainz",
+                confidence=result.get("confidence", 1.0),
+            )
+            db.add(perf)
+            try:
+                db.commit()
+                db.expire_all()
+                return (1, 0)
+            except IntegrityError:
+                db.rollback()
+                return (0, 0)
+        # Insert a stub so we don't retry
+        stub = Performer(
+            name=artist,
+            normalized_name=normalize(artist),
+            source="not_found",
+            confidence=0.0,
+        )
+        db.add(stub)
+        try:
+            db.commit()
+            db.expire_all()
+            return (0, 1)
+        except IntegrityError:
+            db.rollback()
+            return (0, 0)
+
+    try:
+        # Sync NOT IN + GROUP BY off the event loop.
+        pending = await asyncio.to_thread(_select_pending)
         logger.info(f"enrich_performers: {len(pending)} new artists to look up")
 
         async with httpx.AsyncClient(timeout=15) as http:
             for artist in pending:
                 try:
                     result = await lookup_musicbrainz(artist, http)
-                    if result:
-                        # Performer.genres is a TEXT column — serialize the
-                        # Python list to JSON before binding.  Empty list →
-                        # NULL so we don't store "[]" noise.
-                        genres_list = result.get("genres") or []
-                        genres_json = json.dumps(genres_list) if genres_list else None
-                        perf = Performer(
-                            name=artist,
-                            normalized_name=normalize(artist),
-                            category=result.get("category"),
-                            event_type_name=result.get("event_type_name"),
-                            genres=genres_json,
-                            mb_id=result.get("mb_id"),
-                            mb_type=result.get("mb_type"),
-                            source="musicbrainz",
-                            confidence=result.get("confidence", 1.0),
-                        )
-                        db.add(perf)
-                        try:
-                            db.commit()
-                            enriched += 1
-                        except IntegrityError:
-                            db.rollback()
-                    else:
-                        # Insert a stub so we don't retry
-                        stub = Performer(
-                            name=artist,
-                            normalized_name=normalize(artist),
-                            source="not_found",
-                            confidence=0.0,
-                        )
-                        db.add(stub)
-                        try:
-                            db.commit()
-                            skipped += 1
-                        except IntegrityError:
-                            db.rollback()
-                    db.expire_all()   # release session identity map after each artist
+                    e_d, s_d = await asyncio.to_thread(_persist, artist, result)
+                    enriched += e_d
+                    skipped += s_d
                 except Exception as e:
                     logger.warning(f"enrich_performers: error for {artist!r}: {e}")
-                    db.rollback()
+                    await asyncio.to_thread(db.rollback)
                     skipped += 1
 
         log.status = "success"
@@ -1073,9 +1097,9 @@ async def enrich_spotify_job(batch: int = 150):
         enriched = 0
         skipped = 0
 
-        try:
+        def _select_pending():
             # Prioritise performers with events but no Spotify data yet
-            rows = (
+            return (
                 db.query(Performer.id, Performer.name, func.count(Event.id).label("n"))
                 .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
                 .filter(
@@ -1087,6 +1111,66 @@ async def enrich_spotify_job(batch: int = 150):
                 .limit(batch)
                 .all()
             )
+
+        def _persist(perf_id: int, name: str, result: dict | None) -> int:
+            """Sync DB write. Returns 1 on enriched, 0 on skipped."""
+            if not result:
+                db.commit()
+                db.expire_all()
+                return 0
+            perf_update: dict = {
+                "spotify_id":  result["spotify_id"],
+                "spotify_url": result["spotify_url"],
+                "image_url":   result["image_url"],
+                "popularity":  result["popularity"],
+            }
+            # Only overwrite genres/category/event_type if Spotify
+            # gives us something more specific than what we have.
+            if result["genres"]:
+                perf_update["genres"] = _json.dumps(result["genres"])
+            if result["event_type_name"]:
+                perf_update["event_type_name"] = result["event_type_name"]
+                perf_update["category"] = result["category"]
+                perf_update["source"] = "spotify"
+
+            db.query(Performer).filter(Performer.id == perf_id).update(
+                perf_update, synchronize_session=False
+            )
+
+            # Propagate 1-10 popularity score + Spotify URL to all
+            # events for this artist so the frontend can display it.
+            raw_pop = result["popularity"] or 0
+            score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
+            event_update: dict = {}
+            if score_1_10:
+                event_update["artist_popularity"] = score_1_10
+            if result["spotify_url"]:
+                event_update["artist_spotify_url"] = result["spotify_url"]
+            # Fill missing event image with artist photo
+            if result["image_url"]:
+                db.query(Event).filter(
+                    Event.artist_name == name,
+                    Event.image_url.is_(None),
+                ).update(
+                    {"image_url": result["image_url"]},
+                    synchronize_session=False,
+                )
+            if event_update:
+                db.query(Event).filter(
+                    Event.artist_name == name,
+                ).update(event_update, synchronize_session=False)
+
+            db.commit()
+            db.expire_all()
+            logger.debug(
+                f"enrich_spotify: {name!r} → {result['event_type_name']} "
+                f"(pop={result['popularity']})"
+            )
+            return 1
+
+        try:
+            # Sync query off the event loop
+            rows = await asyncio.to_thread(_select_pending)
             logger.info(f"enrich_spotify_job: {len(rows)} performers to enrich")
 
             async with _httpx.AsyncClient(timeout=10) as http:
@@ -1098,64 +1182,15 @@ async def enrich_spotify_job(batch: int = 150):
                             settings.SPOTIFY_CLIENT_SECRET,
                             http,
                         )
-                        if result:
-                            perf_update: dict = {
-                                "spotify_id":  result["spotify_id"],
-                                "spotify_url": result["spotify_url"],
-                                "image_url":   result["image_url"],
-                                "popularity":  result["popularity"],
-                            }
-                            # Only overwrite genres/category/event_type if Spotify
-                            # gives us something more specific than what we have.
-                            if result["genres"]:
-                                perf_update["genres"] = _json.dumps(result["genres"])
-                            if result["event_type_name"]:
-                                perf_update["event_type_name"] = result["event_type_name"]
-                                perf_update["category"] = result["category"]
-                                perf_update["source"] = "spotify"
-
-                            db.query(Performer).filter(Performer.id == perf_id).update(
-                                perf_update, synchronize_session=False
-                            )
-
-                            # Propagate 1-10 popularity score + Spotify URL to all
-                            # events for this artist so the frontend can display it.
-                            raw_pop = result["popularity"] or 0
-                            score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
-                            event_update: dict = {}
-                            if score_1_10:
-                                event_update["artist_popularity"] = score_1_10
-                            if result["spotify_url"]:
-                                event_update["artist_spotify_url"] = result["spotify_url"]
-                            # Fill missing event image with artist photo
-                            if result["image_url"]:
-                                db.query(Event).filter(
-                                    Event.artist_name == name,
-                                    Event.image_url.is_(None),
-                                ).update(
-                                    {"image_url": result["image_url"]},
-                                    synchronize_session=False,
-                                )
-                            if event_update:
-                                db.query(Event).filter(
-                                    Event.artist_name == name,
-                                ).update(event_update, synchronize_session=False)
-
+                        if await asyncio.to_thread(_persist, perf_id, name, result):
                             enriched += 1
-                            logger.debug(
-                                f"enrich_spotify: {name!r} → {result['event_type_name']} "
-                                f"(pop={result['popularity']})"
-                            )
                         else:
                             skipped += 1
-
-                        db.commit()
-                        db.expire_all()
                         await asyncio.sleep(0.2)   # ~5 req/s — well within Spotify limits
 
                     except Exception as e:
                         logger.warning(f"enrich_spotify: error for {name!r}: {e}")
-                        db.rollback()
+                        await asyncio.to_thread(db.rollback)
                         skipped += 1
 
             log.status = "success"
