@@ -1209,6 +1209,192 @@ async def enrich_spotify_job(batch: int = 150):
             db.close()
 
 
+# ---------------------------------------------------------------------------
+# Mevalim (IL event aggregator) — dedicated multi-venue collector
+# ---------------------------------------------------------------------------
+# Mevalim lists shows across 40+ Israeli cities at the real venues they happen
+# at. We CANNOT run it through the CollectorRegistry's city-loop because that
+# pipeline pins every venue to the `city` param passed in (registry.py:601),
+# which would mis-attach every Mevalim venue to Tel Aviv. Same shape as
+# collect_techconf_job: resolve the real city per event, find-or-create the
+# real venue, save directly.
+
+# Raw category (from sitemap URL) → EventType name. These names match seeds
+# in app/seed/event_types.py — verified present in prod DB.
+_MEVALIM_CATEGORY_EVENT_TYPE: dict[str, str] = {
+    "Music":    "Pop Concert",               # default concert bucket for mevalim
+    "Comedy":   "Comedy Club Headliners",
+    "Stand-up": "Comedy Club Headliners",
+    "Theater":  "Play / Drama",
+    "Family":   "Play / Drama",               # kids' shows are typically plays
+    "Children": "Play / Drama",
+}
+
+
+def _resolve_mevalim_city(city_name: str, db) -> "City":
+    """Find-or-create an Israeli city by canonical English name."""
+    from app.models import City as _City
+
+    city = db.query(_City).filter(
+        func.lower(_City.name) == city_name.lower(),
+        func.lower(_City.country) == "israel",
+    ).first()
+    if city:
+        return city
+
+    # Some legacy rows may have country NULL — match by name only as fallback.
+    city = db.query(_City).filter(
+        func.lower(_City.name) == city_name.lower()
+    ).first()
+    if city:
+        if not city.country:
+            city.country = "Israel"
+        return city
+
+    new_city = _City(name=city_name, country="Israel")
+    db.add(new_city)
+    db.flush()
+    return new_city
+
+
+async def collect_mevalim_job():
+    """
+    Scrape mevalim.co.il and save upcoming events across all IL cities.
+
+    The Mevalim site is an event AGGREGATOR — each show happens at a real
+    venue (not at "Mevalim"). This job parses every JSON-LD Event from the
+    Yoast sitemap pages and attributes each event to its actual venue/city.
+    Runs daily; full crawl takes ~2 min for ~1500 candidate URLs.
+    """
+    from app.services.collectors.scrapers.mevalim import scrape_mevalim
+    from app.models import City, Venue, Event, EventType
+
+    if _heavy_job_lock.locked():
+        logger.info("collect_mevalim_job: another heavy job is running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="mevalim", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        found = saved = updated = skipped_no_city = 0
+
+        try:
+            events = await scrape_mevalim()
+            found = len(events)
+
+            # Pre-fetch event type rows once — avoids per-event lookups in a
+            # loop that can hit 500+ events.
+            et_cache: dict[str, "EventType"] = {}
+            for cat_name, et_name in _MEVALIM_CATEGORY_EVENT_TYPE.items():
+                et = db.query(EventType).filter_by(name=et_name).first()
+                if et:
+                    et_cache[cat_name] = et
+
+            for raw in events:
+                try:
+                    if not raw.venue_city:
+                        skipped_no_city += 1
+                        continue
+
+                    city = _resolve_mevalim_city(raw.venue_city, db)
+
+                    # Real venue (per event, city-pinned). If we've seen this
+                    # venue name in this city before, reuse it.
+                    venue = db.query(Venue).filter(
+                        Venue.city_id == city.id,
+                        func.lower(Venue.name) == raw.venue_name.lower(),
+                    ).first()
+                    if not venue:
+                        venue = Venue(
+                            name=raw.venue_name,
+                            city_id=city.id,
+                            street_address=raw.venue_address,
+                            physical_city=raw.venue_city,
+                            physical_country=raw.venue_country or "Israel",
+                        )
+                        db.add(venue)
+                        db.flush()
+
+                    # Dedup by canonical offer URL (scraper sets source_id to
+                    # tickets.mevalim.co.il/event/{id}).
+                    existing = db.query(Event).filter_by(
+                        scrape_source="mevalim", source_id=raw.source_id
+                    ).first()
+                    if existing:
+                        # Refresh core fields in case date/venue/price changed
+                        existing.start_date   = raw.start_date
+                        existing.start_time   = raw.start_time
+                        existing.end_date     = raw.end_date
+                        existing.end_time     = raw.end_time
+                        existing.price        = raw.price
+                        existing.price_currency = raw.price_currency
+                        existing.purchase_link = raw.purchase_link
+                        existing.venue_id     = venue.id
+                        existing.venue_name   = raw.venue_name
+                        updated += 1
+                        continue
+
+                    new_ev = Event(
+                        name=raw.name,
+                        start_date=raw.start_date,
+                        start_time=raw.start_time,
+                        end_date=raw.end_date,
+                        end_time=raw.end_time,
+                        price=raw.price,
+                        price_currency=raw.price_currency,
+                        purchase_link=raw.purchase_link,
+                        image_url=raw.image_url,
+                        venue_id=venue.id,
+                        venue_name=raw.venue_name,
+                        scrape_source="mevalim",
+                        source_id=raw.source_id,
+                        is_online=False,
+                    )
+                    db.add(new_ev)
+                    db.flush()
+
+                    # Assign event type from the first raw_category that has a
+                    # mapping. Categories come from the sitemap URL prefix so
+                    # they're authoritative for the show's genre.
+                    for cat_name in (raw.raw_categories or []):
+                        et = et_cache.get(cat_name)
+                        if et and et not in new_ev.event_types:
+                            new_ev.event_types.append(et)
+                            break
+
+                    saved += 1
+                except Exception as e:
+                    logger.debug(
+                        f"collect_mevalim_job event error {raw.name!r}: {e}"
+                    )
+                    db.rollback()
+
+            db.commit()
+            log.status = "success"
+            log.events_found = found
+            log.events_saved = saved
+            log.notes = (
+                f"found={found} saved={saved} updated={updated} "
+                f"skipped_no_city={skipped_no_city}"
+            )
+            logger.info(
+                f"collect_mevalim_job done: found={found} saved={saved} "
+                f"updated={updated} skipped_no_city={skipped_no_city}"
+            )
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"collect_mevalim_job error: {e}")
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()
