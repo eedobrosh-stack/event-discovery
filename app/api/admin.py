@@ -624,6 +624,119 @@ def fix_venue_event_types(payload: dict, db: Session = Depends(get_db)):
     }
 
 
+# ── Admin: bulk event deletion (cleanup of mis-attributed / stale rows) ──────
+
+@router.post("/delete-events")
+def delete_events(payload: dict, db: Session = Depends(get_db)):
+    """
+    Delete Event rows matching a set of filters, plus their event_type links
+    and — optionally — orphaned Venue rows left behind.
+
+    Body (all filters AND-ed together; at least one non-null required):
+        {
+            "scrape_source":        "venue_web",                   # exact match
+            "venue_name_contains":  "מבלים",                        # LIKE %…%
+            "venue_id":             42,                             # exact
+            "source_id_contains":   "tickets.mevalim.co.il",        # LIKE %…%
+            "delete_orphan_venues": true,                           # default true
+            "confirm":              false                           # default false
+        }
+
+    With confirm=false (default) this is a DRY RUN — returns the matched IDs
+    and counts but changes nothing. Set confirm=true to actually delete.
+    """
+    scrape_source       = (payload.get("scrape_source") or "").strip() or None
+    venue_name_contains = (payload.get("venue_name_contains") or "").strip() or None
+    venue_id            = payload.get("venue_id")
+    source_id_contains  = (payload.get("source_id_contains") or "").strip() or None
+    delete_orphan_venues = bool(payload.get("delete_orphan_venues", True))
+    confirm              = bool(payload.get("confirm", False))
+
+    if not any([scrape_source, venue_name_contains, venue_id, source_id_contains]):
+        return {
+            "error": "Must provide at least one filter: scrape_source, "
+                     "venue_name_contains, venue_id, or source_id_contains"
+        }
+
+    q = db.query(Event.id, Event.name, Event.start_date, Event.venue_id,
+                 Event.venue_name, Event.scrape_source, Event.source_id)
+    if scrape_source:
+        q = q.filter(Event.scrape_source == scrape_source)
+    if venue_name_contains:
+        q = q.filter(Event.venue_name.like(f"%{venue_name_contains}%"))
+    if venue_id is not None:
+        q = q.filter(Event.venue_id == int(venue_id))
+    if source_id_contains:
+        q = q.filter(Event.source_id.like(f"%{source_id_contains}%"))
+
+    matched = q.all()
+    event_ids     = [r.id for r in matched]
+    touched_venue_ids = {r.venue_id for r in matched if r.venue_id is not None}
+
+    sample = [
+        {
+            "id": r.id,
+            "name": (r.name or "")[:60],
+            "start_date": str(r.start_date),
+            "venue_name": (r.venue_name or "")[:60],
+            "scrape_source": r.scrape_source,
+            "source_id": (r.source_id or "")[:100],
+        }
+        for r in matched[:20]
+    ]
+
+    if not confirm:
+        return {
+            "dry_run": True,
+            "matched": len(event_ids),
+            "touched_venues": len(touched_venue_ids),
+            "sample_events": sample,
+            "message": f"DRY RUN — would delete {len(event_ids)} events. "
+                       f"Re-post with confirm=true to execute.",
+        }
+
+    if not event_ids:
+        return {"dry_run": False, "matched": 0, "deleted_events": 0,
+                "deleted_venues": 0, "message": "Nothing matched."}
+
+    # 1. Drop event_type associations (FK to events)
+    db.execute(
+        event_event_types.delete().where(
+            event_event_types.c.event_id.in_(event_ids)
+        )
+    )
+    # 2. Drop the events
+    deleted_events = (
+        db.query(Event).filter(Event.id.in_(event_ids))
+        .delete(synchronize_session=False)
+    )
+
+    # 3. Optionally sweep orphan venues — only those with zero remaining events.
+    deleted_venues = 0
+    deleted_venue_names: list[str] = []
+    if delete_orphan_venues and touched_venue_ids:
+        for vid in touched_venue_ids:
+            remaining = db.query(Event.id).filter(Event.venue_id == vid).first()
+            if remaining:
+                continue
+            v = db.query(Venue).filter(Venue.id == vid).first()
+            if v:
+                deleted_venue_names.append(v.name)
+                db.delete(v)
+                deleted_venues += 1
+
+    db.commit()
+
+    return {
+        "dry_run": False,
+        "matched": len(event_ids),
+        "deleted_events": deleted_events,
+        "deleted_venues": deleted_venues,
+        "deleted_venue_names": deleted_venue_names,
+        "sample_events": sample,
+    }
+
+
 # ── Admin Dashboard: Bulk Uploads (staged, no immediate scraping) ─────────────
 
 @router.post("/upload/venues")
