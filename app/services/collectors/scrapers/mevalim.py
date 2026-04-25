@@ -37,6 +37,7 @@ import logging
 import re
 from datetime import date
 from typing import Optional
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -240,6 +241,38 @@ def _extract_json_ld_events(html: str) -> list[dict]:
     return events
 
 
+_H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.DOTALL | re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _extract_page_h1(html: str) -> str:
+    """First <h1> text on the page, stripped of HTML tags.
+
+    Used to recover full performer names that Mevalim's kids-shows JSON-LD
+    truncates to the URL slug — e.g. JSON-LD `name` is just "מיקי" while
+    the H1 says "מיקי מוכתר - הופעות 2026". Stand-up pages don't have this
+    issue (their JSON-LD already carries the full name), so the override
+    in `_parse_event` only fires when the H1 strictly extends the JSON-LD
+    name.
+    """
+    m = _H1_RE.search(html)
+    if not m:
+        return ""
+    return _TAG_RE.sub("", m.group(1)).strip()
+
+
+def _strip_suffix(name: str) -> str:
+    """Drop a trailing ' - <suffix>' segment from a Mevalim title/H1.
+
+    Mevalim H1s follow the pattern '<Performer> - <descriptor>' (e.g.
+    'מיקי מוכתר - הופעות 2026', 'שחר חסון - הופעות 2026'). Returning
+    just the first segment gives us the canonical performer name.
+    """
+    if " - " in name:
+        return name.split(" - ", 1)[0].strip()
+    return name.strip()
+
+
 def _str(val) -> str:
     return str(val).strip() if val else ""
 
@@ -262,10 +295,21 @@ def _categories_from_url(url: str) -> list[str]:
     return []
 
 
-def _parse_event(item: dict, page_url: str) -> Optional[RawEvent]:
+def _parse_event(item: dict, page_url: str, page_h1: str = "") -> Optional[RawEvent]:
     name = _str(item.get("name"))
     if not name:
         return None
+
+    # Recover full performer name when Mevalim's JSON-LD carries only the URL
+    # slug (kids-shows: name="מיקי" while H1 says "מיקי מוכתר - הופעות 2026").
+    # Only override when the H1 stem strictly EXTENDS the JSON-LD name — that
+    # way we never replace a correct JSON-LD name (Shahar Hasson's stand-up
+    # page already has the full "שחר חסון" in JSON-LD; H1 stem is identical
+    # so this branch is a no-op for it).
+    if page_h1:
+        h1_stem = _strip_suffix(page_h1)
+        if h1_stem and h1_stem != name and len(h1_stem) > len(name) and name in h1_stem:
+            name = h1_stem
 
     start_raw = _str(item.get("startDate"))
     if not start_raw:
@@ -320,10 +364,19 @@ def _parse_event(item: dict, page_url: str) -> Optional[RawEvent]:
         price_currency = _str(offers.get("priceCurrency")) or "ILS"
         offer_url = _str(offers.get("url"))
 
-    # Reject archive-page shadow events (offer URL circles back to mevalim).
-    # The real per-show event with the ticket-provider URL will be picked up
-    # when we crawl that performer's detail page.
-    if not offer_url or "mevalim.co.il" in offer_url:
+    # Reject archive-page shadow events whose offer URL points back at the
+    # main mevalim.co.il site (one performer's archive entry circles to that
+    # performer's detail page on the same site, with the same offer URL as
+    # all of their other shows — useless for dedup and not the real ticket).
+    #
+    # CRITICAL: only reject the MAIN-SITE host. The `tickets.mevalim.co.il`
+    # subdomain is Mevalim's own ticketing platform — kids-shows use it
+    # exclusively (every Mickey Mukhtar show has tickets.mevalim.co.il/event/),
+    # and stand-up pages emit it alongside external smarticket URLs. A loose
+    # `"mevalim.co.il" in offer_url` check incorrectly drops the tickets
+    # subdomain too, making every kids-show invisible.
+    offer_host = urlparse(offer_url).netloc.lower() if offer_url else ""
+    if not offer_url or offer_host in ("mevalim.co.il", "www.mevalim.co.il"):
         return None
 
     purchase_link = offer_url
@@ -372,9 +425,10 @@ async def _fetch_page_events(
         finally:
             await asyncio.sleep(DELAY)
 
+    page_h1 = _extract_page_h1(html)
     events: list[RawEvent] = []
     for item in _extract_json_ld_events(html):
-        parsed = _parse_event(item, url)
+        parsed = _parse_event(item, url, page_h1)
         if parsed is not None:
             events.append(parsed)
     return events
