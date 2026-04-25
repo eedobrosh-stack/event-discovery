@@ -201,12 +201,46 @@ def get_suggestions(
         for cid, name, country in city_rows
     ]
 
+    # 7. Event names — covers performers / conferences whose name lives only
+    # in Event.name. Mevalim stores the comedian's name there (with
+    # artist_name=NULL); techconf stores the conference name. Without this
+    # branch, autocomplete is blind to anything those collectors produce —
+    # "שחר חסון" and "Stir Trek" both return [] otherwise.
+    #
+    # Dedupe against the artist branch so a Spotify-enriched performer
+    # doesn't appear twice (once as Artist, once as Event with the same
+    # label). Filter to upcoming events so expired shows don't pollute.
+    artist_names_seen = {a["value"].lower() for a in artists if a.get("value")}
+    today = datetime.utcnow().date()
+    event_name_rows = (
+        db.query(Event.name)
+        .filter(
+            Event.name.ilike(q_like),
+            Event.start_date >= today,
+        )
+        .distinct()
+        .order_by(Event.name)
+        .limit(PER_TYPE + 5)  # buffer for the dedupe + sport-name filter below
+        .all()
+    )
+    event_results = [
+        {"kind": "event", "value": name, "label": name, "badge": "Event"}
+        for (name,) in event_name_rows
+        if name and name.lower() not in artist_names_seen
+        # Skip "League - Home vs Away" rows — those are sport events already
+        # surfaced as Team / Sport suggestions; raw event-name listings here
+        # would just be noise ("NBA - Spurs vs Lakers" et al).
+        and " - " not in name
+    ][:PER_TYPE]
+
     # Order: cities first (a city click is the strongest navigational
     # signal — "Karmiel" almost always means "show me Karmiel's calendar"
     # rather than "find an event with Karmiel in its name"), then sports
-    # teams, then everything else.
+    # teams, then event-name matches (high-confidence: a literal title hit),
+    # then everything else.
     results = (
-        city_results + sport_teams + categories + event_types + artists + venue_results
+        city_results + sport_teams + event_results
+        + categories + event_types + artists + venue_results
     )[:limit]
     _cache_set(q, results)
     return results
