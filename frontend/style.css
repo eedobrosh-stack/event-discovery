@@ -500,6 +500,7 @@ a:hover { text-decoration: underline; }
 .sugg-badge--event_type { background: #f3e8ff; color: #6b21a8; }
 .sugg-badge--performer { background: #e8fdf5; color: #065f46; }
 .sugg-badge--sport_team { background: #fdecea; color: #b91c1c; }
+.sugg-badge--city      { background: #e6f7ff; color: #075985; }
 
 .artist-link {
     color: #1a73e8;

@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Event, EventType, Venue
+from app.models import City, Event, EventType, Venue
 
 # Sports event names follow the pattern "League - Home vs Away".
 # When a query exactly matches a league prefix (e.g. "NBA", "EuroLeague"),
@@ -164,10 +165,13 @@ def get_suggestions(
     artists = [{"kind": "performer", "value": name, "label": name, "badge": "Artist"}
                for (name,) in artist_rows if name]
 
-    # 5. Venues — direct query, no event JOIN needed for speed
+    # 5. Venues — match against venue name OR its physical_city, so an English
+    # query like "Tel Aviv" surfaces Hebrew-named venues whose physical_city is
+    # "Tel Aviv". Without the physical_city branch, only literal name hits
+    # qualify and Hebrew-named IL venues are unreachable from English queries.
     venue_rows = (
         db.query(Venue.name, Venue.physical_city)
-        .filter(Venue.name.ilike(q_like))
+        .filter(or_(Venue.name.ilike(q_like), Venue.physical_city.ilike(q_like)))
         .distinct()
         .limit(PER_TYPE)
         .all()
@@ -178,8 +182,31 @@ def get_suggestions(
         for name, city in venue_rows
     ]
 
-    # Team matches rank above artists/venues — they're the most specific hit
-    # for a sports-team query and the user usually wants them first.
-    results = (sport_teams + categories + event_types + artists + venue_results)[:limit]
+    # 6. Cities — direct match on City.name, returns the cityId so the
+    # frontend can populate the city filter (NOT a type-search chip — those
+    # would just look for the literal city string in event/venue/type names
+    # and miss Hebrew-named venues entirely).
+    city_rows = (
+        db.query(City.id, City.name, City.country)
+        .filter(City.name.ilike(q_like))
+        .order_by(City.name)
+        .limit(PER_TYPE)
+        .all()
+    )
+    city_results = [
+        {"kind": "city",
+         "value": str(cid),
+         "label": f"{name}, {country}" if country else name,
+         "badge": "City"}
+        for cid, name, country in city_rows
+    ]
+
+    # Order: cities first (a city click is the strongest navigational
+    # signal — "Karmiel" almost always means "show me Karmiel's calendar"
+    # rather than "find an event with Karmiel in its name"), then sports
+    # teams, then everything else.
+    results = (
+        city_results + sport_teams + categories + event_types + artists + venue_results
+    )[:limit]
     _cache_set(q, results)
     return results
