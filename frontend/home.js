@@ -36,7 +36,27 @@ function setupTypeAutocomplete() {
     }
 
     function selectItem(li) {
-        selectedType = { kind: li.dataset.kind, value: li.dataset.value, badge: li.dataset.badge };
+        const kind = li.dataset.kind;
+        // City picks aren't a type filter — they belong in the city box. Move
+        // the selection over there and clear the type input so the user can
+        // still add a type/performer/category on top of the city.
+        if (kind === "city") {
+            const cityInput  = document.getElementById("home-city-input");
+            const cityHidden = document.getElementById("home-city-id");
+            const cityClear  = document.getElementById("home-city-clear");
+            const label = li.textContent.trim().replace(/^City\s*/, "");
+            if (cityInput && cityHidden) {
+                cityInput.value  = label;
+                cityHidden.value = li.dataset.value;
+                if (cityClear) cityClear.hidden = false;
+            }
+            input.value = "";
+            selectedType = null;
+            list.hidden = true;
+            activeIdx = -1;
+            return;
+        }
+        selectedType = { kind, value: li.dataset.value, badge: li.dataset.badge };
         input.value = li.dataset.value;
         list.hidden = true;
         activeIdx = -1;

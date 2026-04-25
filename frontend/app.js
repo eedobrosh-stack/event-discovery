@@ -142,6 +142,29 @@ function setupTypeAutocomplete() {
         const kind  = li.dataset.kind;
         const value = li.dataset.value;
         const badge = li.dataset.badge;
+        const label = li.textContent.trim().replace(/^City\s*/, "");
+
+        // City clicks aren't type filters — they navigate to that city's
+        // calendar. Push the value (a numeric cityId) into the city filter
+        // so the existing city_ids query path picks it up.
+        if (kind === "city") {
+            const cityInput  = document.getElementById("city-input");
+            const cityHidden = document.getElementById("city-id");
+            if (cityInput && cityHidden) {
+                cityInput.value  = label;
+                cityHidden.value = value;
+                if (typeof updateCityClearBtn === "function") updateCityClearBtn();
+            }
+            input.value = "";
+            list.hidden = true;
+            list.innerHTML = "";
+            activeIdx = -1;
+            offset = 0;
+            document.getElementById("events-body").innerHTML = "";
+            searchEvents();
+            return;
+        }
+
         // Avoid duplicates
         if (!selectedTypeFilters.find(f => f.kind === kind && f.value === value)) {
             selectedTypeFilters.push({ kind, value, badge });
