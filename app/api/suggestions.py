@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -212,6 +212,15 @@ def get_suggestions(
     # label). Filter to upcoming events so expired shows don't pollute.
     artist_names_seen = {a["value"].lower() for a in artists if a.get("value")}
     today = datetime.utcnow().date()
+    # Rank by relevance so an exact match like "JAX" beats noisy substring
+    # hits ("2026 Jax Waves...", "OneJax Awards"...) which would otherwise
+    # sort alphabetically ahead of it and crowd out the small PER_TYPE slot.
+    q_lower = q_stripped.lower()
+    relevance = case(
+        (func.lower(Event.name) == q_lower, 0),                # exact
+        (Event.name.ilike(f"{q_stripped}%"), 1),               # prefix
+        else_=2,                                                # substring
+    )
     event_name_rows = (
         db.query(Event.name)
         .filter(
@@ -219,7 +228,7 @@ def get_suggestions(
             Event.start_date >= today,
         )
         .distinct()
-        .order_by(Event.name)
+        .order_by(relevance, Event.start_date, Event.name)
         .limit(PER_TYPE + 5)  # buffer for the dedupe + sport-name filter below
         .all()
     )
