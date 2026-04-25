@@ -28,6 +28,27 @@ def _get_sport_league_labels() -> frozenset[str]:
 _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 
 
+def _word_boundary_ilike(col, term: str):
+    """OR-clause matching `term` only at word boundaries in `col`, expressed
+    as ILIKE patterns so SQLite handles it without a regex extension.
+
+    Used to decide whether a search term *is* a sports term — e.g. "NBA"
+    matches "NBA - Spurs vs Lakers" (boundary), but "JAX" does NOT match
+    "Eredivisie - Ajax Amsterdam" (Ajax embeds JAX without a boundary).
+    Without this, short tokens that happen to be substrings of sport team
+    names (JAX→Ajax, FOX→Foxes, PSG→PSG…) silently lock the result set
+    into sports-only mode and hide non-sport hits like the JAX tech
+    conference.
+    """
+    from sqlalchemy import or_
+    return or_(
+        col.ilike(f"{term} %"),     # at start: "NBA - Spurs..."
+        col.ilike(f"% {term} %"),   # in middle
+        col.ilike(f"% {term}"),     # at end
+        col.ilike(term),            # exact match (whole name)
+    )
+
+
 def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None):
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, select
@@ -68,9 +89,14 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 prefix_like = f"{term} -%"
                 query = query.filter(Event.name.ilike(prefix_like))
             else:
+                # Whole-word check so "JAX" doesn't match "Ajax Amsterdam"
+                # and lock the entire result set to sports.
                 is_sports_term = (
                     db.query(Event.id)
-                    .filter(Event.sport.isnot(None), Event.name.ilike(like))
+                    .filter(
+                        Event.sport.isnot(None),
+                        _word_boundary_ilike(Event.name, term),
+                    )
                     .limit(1)
                     .scalar()
                 )
@@ -113,11 +139,17 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             query = query.filter(Event.name.ilike(prefix_like))
         else:
             name_like = f"%{search}%"
-            # If the search term matches any *sports* event name, restrict the
-            # entire result set to sports events (sport IS NOT NULL).
+            # If the search term matches any *sports* event name as a whole
+            # word, restrict the result set to sports events. Whole-word
+            # matching prevents short tokens like "JAX" (substring of Ajax),
+            # "FOX" (Foxes), or "PSG" (PSGs) from auto-locking results into
+            # sports-only mode and hiding the JAX tech conference et al.
             is_sports_term = (
                 db.query(Event.id)
-                .filter(Event.sport.isnot(None), Event.name.ilike(name_like))
+                .filter(
+                    Event.sport.isnot(None),
+                    _word_boundary_ilike(Event.name, search.strip()),
+                )
                 .limit(1)
                 .scalar()
             )
