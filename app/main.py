@@ -429,7 +429,9 @@ async def lifespan(app: FastAPI):
     _t = _dt.utcnow()
 
     # Jobs are staggered so they don't compete for memory on startup.
-    # Heavy scraping starts at t+15 min — well after Render's health checks pass.
+    # Light daily jobs (techconf t+3, mevalim t+6) run first so a redeploy
+    # within 15 min doesn't keep pushing them out. Heavy scraping starts at
+    # t+15 min — well after Render's health checks pass.
     scheduler.add_job(
         collect_all_events,
         IntervalTrigger(hours=settings.SCRAPE_INTERVAL_HOURS, start_date=_t + _td(minutes=15)),
@@ -510,18 +512,26 @@ async def lifespan(app: FastAPI):
         id="collect_bandsintown",
         replace_existing=True,
     )
+    # techconf + mevalim run BEFORE the heavy scraping window opens at t+15.
+    # Render auto-redeploys reset _t on every push, so a job scheduled at
+    # t+30 keeps getting bumped if pushes land within 30 min of each other.
+    # Worse: bandsintown (t+25, ~25 min runtime) blocks the asyncio loop, so
+    # APScheduler's 1s misfire_grace_time silently drops any +30…+50 trigger
+    # that fires while bandsintown is still running. Result: techconf hadn't
+    # successfully run since 2026-04-20 even though PR #8 landed on Apr 21.
+    # Moving these to t+3 / t+6 lets them complete before bandsintown starts
+    # and well before any reasonable redeploy cadence.
     scheduler.add_job(
         collect_techconf_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=30)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=3)),
         id="collect_techconf",
         replace_existing=True,
     )
-    # Mevalim (IL event aggregator) — starts at t+45 to avoid overlapping
-    # with collect_techconf (t+30) and cleanup_past (t+35). Full crawl takes
-    # ~2 min via 4 concurrent workers; honours the _heavy_job_lock internally.
+    # Mevalim (IL event aggregator) — full crawl takes ~2 min via 4 concurrent
+    # workers; honours the _heavy_job_lock internally.
     scheduler.add_job(
         collect_mevalim_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=45)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=6)),
         id="collect_mevalim",
         replace_existing=True,
     )
