@@ -155,7 +155,16 @@ def get_suggestions(
             for t in sorted(seen.values())
         ][:PER_TYPE]
 
-    # 4. Artists — word-aware match on artist_name, no date filtering for speed
+    # 4. Artists — word-aware match on artist_name, no date filtering for speed.
+    # Rank by exact > prefix > word-start so "Sting" beats "Stingrays" in the
+    # Artist slot; alphabetical otherwise would let plurals/extensions sort
+    # ahead of the literal hit the user almost certainly wants.
+    q_lower_artist = q_stripped.lower()
+    artist_relevance = case(
+        (func.lower(Event.artist_name) == q_lower_artist, 0),    # exact
+        (Event.artist_name.ilike(f"{q_stripped}%"), 1),          # prefix
+        else_=2,                                                  # word-start
+    )
     artist_rows = (
         db.query(Event.artist_name)
         .filter(
@@ -163,6 +172,7 @@ def get_suggestions(
             name_match_ilike(Event.artist_name, q_stripped),
         )
         .distinct()
+        .order_by(artist_relevance, Event.artist_name)
         .limit(PER_TYPE + 2)
         .all()
     )
@@ -230,14 +240,17 @@ def get_suggestions(
         and " - " not in name
     ][:PER_TYPE]
 
-    # Order: sports teams, then event-name matches (high-confidence: a literal
-    # title hit), then everything else. Cities are deliberately NOT surfaced
-    # here — the dedicated Location box on both home and results pages owns
-    # city navigation; mixing cities into the type/performer suggestions just
-    # leaks irrelevant rows like "Blowing Rock" when a user types "rock".
+    # Order: artists first (the dominant intent for music-driven searches —
+    # "stin" → user almost always means Sting), then sports teams (won't
+    # collide with artists since teams aren't named "Sting"), then literal
+    # event-name hits, then everything else. Cities are deliberately NOT
+    # surfaced here — the dedicated Location box on both home and results
+    # pages owns city navigation; mixing cities into the type/performer
+    # suggestions just leaks irrelevant rows like "Blowing Rock" when a user
+    # types "rock".
     results = (
-        sport_teams + event_results
-        + categories + event_types + artists + venue_results
+        artists + sport_teams + event_results
+        + categories + event_types + venue_results
     )[:limit]
     _cache_set(q, results)
     return results

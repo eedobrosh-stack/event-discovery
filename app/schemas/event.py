@@ -54,3 +54,4 @@ class ExportRequest(BaseModel):
     city_ids: List[int] = []
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    artist_exact: Optional[str] = None  # comma-separated exact artist names

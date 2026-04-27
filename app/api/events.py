@@ -36,10 +36,23 @@ _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 # app/api/_search_filters.py and are reused by suggestions.py too.
 
 
-def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None):
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None):
     """Shared filter logic used by both list and count endpoints."""
-    from sqlalchemy import or_, select
+    from sqlalchemy import or_, func, select
     from app.models import City
+
+    # Strict artist filter — used when the user clicked an "Artist" suggestion
+    # in autocomplete. Exact case-insensitive match on artist_name so "Sting"
+    # returns ONLY Sting events, never "Stingrays" or "DJ Stingray". Multiple
+    # values (comma-separated) are OR'd.
+    if artist_exact:
+        names = [n.strip() for n in artist_exact.split(",") if n.strip()]
+        if names:
+            lowered = [n.lower() for n in names]
+            query = query.filter(
+                Event.artist_name.isnot(None),
+                func.lower(Event.artist_name).in_(lowered),
+            )
 
     # Legacy: exact category filter
     if categories:
@@ -170,12 +183,14 @@ def count_events(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     search: Optional[str] = None,
+    artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import func
     query = _build_filter_query(
         db, db.query(func.count(Event.id.distinct())),
-        categories, type_search, city_ids, start_date, end_date, search, country
+        categories, type_search, city_ids, start_date, end_date, search, country,
+        artist_exact=artist_exact,
     )
     return {"total": query.scalar() or 0}
 
@@ -189,6 +204,7 @@ def list_events(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     search: Optional[str] = None,
+    artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     limit: int = Query(50, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -198,7 +214,8 @@ def list_events(
         selectinload(Event.event_types),
     )
     query = _build_filter_query(
-        db, base_query, categories, type_search, city_ids, start_date, end_date, search, country
+        db, base_query, categories, type_search, city_ids, start_date, end_date, search, country,
+        artist_exact=artist_exact,
     )
 
     events = (
