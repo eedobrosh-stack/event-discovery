@@ -13,6 +13,7 @@ from app.database import Base, engine
 from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
 from app.api import platform_venues as platform_venues_api
 from app.api import metro_areas
+from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
 from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job
@@ -653,6 +654,7 @@ app.include_router(stats.router)
 app.include_router(suggestions.router)
 app.include_router(platform_venues_api.router)
 app.include_router(metro_areas.router)
+app.include_router(version_api.router)
 
 # Explicit route for admin page (StaticFiles html=True doesn't reliably resolve /admin → admin.html)
 @app.get("/admin")
