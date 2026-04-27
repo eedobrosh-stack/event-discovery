@@ -156,12 +156,61 @@ JSONLD_EVENT_TYPES = {
     "VisualArtsEvent", "ExhibitionEvent",
 }
 
-# Sitemap heuristics — URL substrings strongly correlated with event pages
+# Sitemap heuristics — URL substrings strongly correlated with event pages.
+# Covers the languages our city sweep targets, plus a few generic English
+# patterns that show up cross-locale (`/whats-on/`, `/programme/`, `/tickets/`).
+# We keep this permissive: false positives here only inflate scores a bit;
+# false negatives kill genuine aggregators (the previous version missed
+# `eventi/`, `akce/`, `agenda/`, `tapahtumat/`, etc., which auto-skipped real
+# regional aggregators in the 17-city sweep).
 EVENT_URL_PATTERNS = re.compile(
-    r"/(events?|shows?|concerts?|gigs?|veranstaltung|evenement|evenement|"
-    r"evento|spectacle|aufführung|アクティビティ|이벤트|공연|wydarzenia|etkinlik)/",
+    # English / generic
+    r"/(events?|shows?|concerts?|gigs?|performances?|"
+    r"whats[-_]?on|what'?s[-_]?on|programme|calendar|tickets?|"
+    # Romance
+    r"eventos?|eventi|evenement|evenements|événement|événements|"
+    r"espet[áa]culos|spectacles?|conciertos|concerti|concertos|"
+    # Germanic
+    r"veranstaltung|veranstaltungen|programm|konzerte?|"
+    r"auff[uü]hrungen?|evenementen|voorstellingen|agenda|uit|"
+    # Slavic
+    r"wydarzenia|koncerty|akce|"
+    # Uralic / Finno-Ugric
+    r"rendezv[ée]ny|rendezv[ée]nyek|programok|koncertek|tapahtumat|"
+    # Turkic
+    r"etkinlik|etkinlikler|"
+    # Greek
+    r"εκδηλώσεις|συναυλίες|"
+    # Hebrew
+    r"ארועים|אירועים|הופעות|"
+    # Arabic
+    r"فعاليات|حفلات|أحداث|"
+    # Indonesian / Malay
+    r"acara|konser|"
+    # Thai
+    r"งาน|อีเวนต์|คอนเสิร์ต|"
+    # CJK
+    r"イベント|アクティビティ|公演|"
+    r"活動|活动|演唱會|演唱会|表演|展演|"
+    r"이벤트|공연|"
+    # Nordic
+    r"evenemang|konserter|arrangementer|koncerter"
+    r")(/|$|\?)",
     re.IGNORECASE,
 )
+
+# When walking a sitemap-of-sitemaps, prefer child sitemaps whose URL
+# suggests they contain event listings — falls back to first-N if no match.
+EVENT_SITEMAP_HINT = re.compile(
+    r"event|show|concert|gig|veranstaltung|evento|eventi|akce|"
+    r"agenda|programme|programm|tapahtum|rendezv|etkinlik|"
+    r"performance|spectacle|whats[-_]?on|tickets?",
+    re.IGNORECASE,
+)
+
+# Discard hallucinated Gemini placeholder URLs (e.g. `/list-1`, `/list-2`).
+# These slipped through in the 17-city sweep and polluted rank metadata.
+HALLUCINATED_PATH_RE = re.compile(r"/list-\d+/?$")
 
 CACHE_PATH = Path(__file__).parent / ".aggregator_scan_cache.json"
 CACHE_TTL_DAYS = 7
@@ -221,6 +270,7 @@ def ingest_csv(path: Path) -> dict[str, Candidate]:
     skipped_allow = 0
     skipped_block = 0
     skipped_invalid = 0
+    skipped_hallucinated = 0
 
     # `utf-8-sig` strips a leading BOM if present — Gemini-exported CSVs
     # commonly carry one, which would otherwise turn the first column header
@@ -233,6 +283,12 @@ def ingest_csv(path: Path) -> dict[str, Candidate]:
             domain = registrable_domain(url)
             if not domain:
                 skipped_invalid += 1
+                continue
+            # Drop Gemini's placeholder `/list-N` URLs so they don't pollute
+            # rank/title aggregates. The bare domain still gets surfaced from
+            # other (real) rows for the same site if any exist.
+            if HALLUCINATED_PATH_RE.search(url):
+                skipped_hallucinated += 1
                 continue
             if domain in ALLOWLIST or brand_label(url) in BRAND_ALLOWLIST:
                 skipped_allow += 1
@@ -257,7 +313,7 @@ def ingest_csv(path: Path) -> dict[str, Candidate]:
     logger.info(
         f"ingested rows → {len(candidates)} unique candidate domains  "
         f"(skipped: allowlist={skipped_allow}, blocklist={skipped_block}, "
-        f"invalid_url={skipped_invalid})"
+        f"invalid_url={skipped_invalid}, hallucinated={skipped_hallucinated})"
     )
     return candidates
 
@@ -302,31 +358,108 @@ async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[Optional[str], in
         return None, 0
 
 
-_SITEMAP_URL_RE = re.compile(r"<loc>([^<]+)</loc>")
+_SITEMAP_URL_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
+_ROBOTS_SITEMAP_RE = re.compile(r"^\s*sitemap:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
+
+# Hardcoded fallbacks — used only when robots.txt has no Sitemap: lines.
+SITEMAP_FALLBACK_PATHS = (
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/sitemap-events.xml",
+    "/sitemap-event.xml",
+    "/event-sitemap.xml",
+    "/sitemaps.xml",
+    "/wp-sitemap.xml",
+)
+
+# Hard cap on total sitemap URLs we'll scan per domain — prevents pathological
+# cases (a giant retailer with 1M product URLs) from blowing up the run.
+SITEMAP_URL_CAP = 50_000
+SITEMAP_INDEX_CHILDREN_CAP = 8
+
+
+async def _discover_sitemap_urls(client: httpx.AsyncClient, domain: str) -> list[str]:
+    """Return a prioritised list of sitemap URLs to probe for `domain`.
+
+    Order: robots.txt-declared sitemaps first (most authoritative), then the
+    hardcoded fallbacks. Deduped while preserving order.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    text, _ = await _fetch(client, f"https://{domain}/robots.txt")
+    if text:
+        for m in _ROBOTS_SITEMAP_RE.findall(text):
+            url = m.strip()
+            if url and url not in seen:
+                seen.add(url)
+                out.append(url)
+
+    for path in SITEMAP_FALLBACK_PATHS:
+        url = f"https://{domain}{path}"
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
 
 
 async def _count_sitemap_events(client: httpx.AsyncClient, domain: str) -> int:
-    """Try common sitemap locations; return the number of URLs whose path
-    matches our event-URL heuristic. Returns -1 if no sitemap reachable."""
-    for path in ("/sitemap.xml", "/sitemap_index.xml", "/sitemap-events.xml"):
-        text, status = await _fetch(client, f"https://{domain}{path}")
+    """Walk sitemaps and count URLs matching the event-URL heuristic.
+
+    Strategy:
+      1. Discover sitemap URLs via robots.txt + hardcoded fallbacks.
+      2. For each reachable sitemap, parse <loc> entries.
+      3. If entries are themselves sitemaps (sitemap-of-sitemaps), prioritise
+         children whose name suggests events; sample up to 8 children deep.
+      4. Sum URLs across all parsed sitemaps that match EVENT_URL_PATTERNS.
+
+    Returns -1 if no sitemap is reachable, otherwise the count (≥ 0).
+    """
+    sitemap_urls = await _discover_sitemap_urls(client, domain)
+    any_reachable = False
+    event_urls = 0
+    total_urls = 0
+
+    for sm_url in sitemap_urls:
+        text, _ = await _fetch(client, sm_url)
         if not text:
             continue
+        any_reachable = True
         urls = _SITEMAP_URL_RE.findall(text)
         if not urls:
             continue
-        # If this is an index, sample the first child sitemap to check inside.
-        if any(u.endswith(".xml") for u in urls[:3]):
-            inner = []
-            for u in urls[:3]:
-                if not u.endswith(".xml"):
+
+        # Split into child-sitemaps vs regular URLs. Some sites mix both in
+        # one file — handle that.
+        child_sitemaps = [u for u in urls if u.endswith(".xml") or u.endswith(".xml.gz")]
+        page_urls = [u for u in urls if u not in child_sitemaps]
+
+        # Prefer event-named child sitemaps; fall back to first N otherwise.
+        if child_sitemaps:
+            event_named = [u for u in child_sitemaps if EVENT_SITEMAP_HINT.search(u)]
+            ordered = event_named + [u for u in child_sitemaps if u not in event_named]
+            for child in ordered[:SITEMAP_INDEX_CHILDREN_CAP]:
+                if total_urls >= SITEMAP_URL_CAP:
+                    break
+                t2, _ = await _fetch(client, child)
+                if not t2:
                     continue
-                t2, _ = await _fetch(client, u)
-                if t2:
-                    inner.extend(_SITEMAP_URL_RE.findall(t2))
-            urls = urls + inner
-        return sum(1 for u in urls if EVENT_URL_PATTERNS.search(u))
-    return -1
+                child_urls = _SITEMAP_URL_RE.findall(t2)
+                page_urls.extend(child_urls)
+
+        # Score this sitemap's pages and short-circuit if we've found plenty.
+        for u in page_urls:
+            total_urls += 1
+            if EVENT_URL_PATTERNS.search(u):
+                event_urls += 1
+            if total_urls >= SITEMAP_URL_CAP:
+                break
+
+        # Stop walking further sitemap entrypoints once we have a clear signal.
+        if event_urls >= 50 or total_urls >= SITEMAP_URL_CAP:
+            break
+
+    return event_urls if any_reachable else -1
 
 
 async def probe_one(
@@ -349,7 +482,7 @@ async def probe_one(
         return
 
     async with sem:
-        # Homepage probe
+        # Homepage probe — JSON-LD detection + sitemap walk both rooted here.
         text, status = await _fetch(client, f"https://{domain}/")
         if text is None:
             cand.fetch_status = f"http_{status}"
@@ -359,6 +492,22 @@ async def probe_one(
             cand.fetch_status = "ok"
             cand.has_jsonld_event = _detect_jsonld_events(text)
             cand.sitemap_event_count = await _count_sitemap_events(client, domain)
+
+            # Many regional aggregators put JSON-LD only on listing pages, not
+            # the homepage. If the homepage is dry, also probe the first
+            # Gemini-surfaced URL — that's the page Google indexed for the
+            # local-language event query, so it's the most likely listing.
+            if not cand.has_jsonld_event and cand.sample_urls:
+                listing_url = cand.sample_urls[0]
+                # Only probe if it points at the same registrable domain
+                # (no off-site redirects), and is non-trivial.
+                if (
+                    registrable_domain(listing_url) == domain
+                    and listing_url.rstrip("/") != f"https://{domain}"
+                ):
+                    text2, _ = await _fetch(client, listing_url)
+                    if text2 and _detect_jsonld_events(text2):
+                        cand.has_jsonld_event = True
 
         await asyncio.sleep(DELAY)
 
@@ -370,8 +519,8 @@ async def probe_one(
     }
 
 
-async def probe_all(candidates: dict[str, Candidate]) -> None:
-    cache = _load_cache()
+async def probe_all(candidates: dict[str, Candidate], use_cache: bool = True) -> None:
+    cache = _load_cache() if use_cache else {}
     sem = asyncio.Semaphore(CONCURRENCY)
     async with httpx.AsyncClient(headers=HEADERS, timeout=TIMEOUT) as client:
         tasks = [probe_one(client, sem, c, cache) for c in candidates.values()]
@@ -400,18 +549,28 @@ def _save_cache(cache: dict) -> None:
 # Score + verdict
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Sitemap-event count threshold for promoting a candidate to "review". Lowered
+# from 10 → 5 after the 17-city sweep showed real regional aggregators (port.hu,
+# wantedinrome.com, athinorama.gr) only surface ~5–10 event-pattern URLs in
+# their top-level sitemap because most events live in deeper sub-sitemaps the
+# walk doesn't always reach.
+REVIEW_SITEMAP_THRESHOLD = 5
+STRONG_SITEMAP_THRESHOLD = 20
+
+
 def score_candidates(candidates: dict[str, Candidate]) -> None:
     """Assign `score` and `verdict` to each candidate.
 
     Score components (higher = more interesting):
       + 10 per city it appears in (multi-city = global aggregator)
-      +  5 if has JSON-LD Event
+      +  5 if has JSON-LD Event (homepage or first sample URL)
       +  3 per 10 event-URLs in sitemap (capped at 9)
       -  0.5 per rank (lower rank = better; rank 1 → -0.5, rank 10 → -5)
 
     Verdicts:
-      "strong"     — JSON-LD Event AND sitemap_events ≥ 10
-      "review"     — JSON-LD Event OR  sitemap_events ≥ 10 OR cities ≥ 2
+      "strong"     — JSON-LD Event AND sitemap_events ≥ STRONG_SITEMAP_THRESHOLD
+      "review"     — JSON-LD Event OR  sitemap_events ≥ REVIEW_SITEMAP_THRESHOLD
+                                    OR cities ≥ 2
                      (multi-city = aggregator, not a single-city tourism portal)
       "auto-skip"  — no signal at all
     """
@@ -426,10 +585,14 @@ def score_candidates(candidates: dict[str, Candidate]) -> None:
         c.score = round(s, 1)
 
         has_jsonld = bool(c.has_jsonld_event)
-        sitemap_ok = (c.sitemap_event_count or 0) >= 10
-        if has_jsonld and sitemap_ok:
+        sitemap_count = c.sitemap_event_count or 0
+        if has_jsonld and sitemap_count >= STRONG_SITEMAP_THRESHOLD:
             c.verdict = "strong"
-        elif has_jsonld or sitemap_ok or len(c.cities) >= 2:
+        elif (
+            has_jsonld
+            or sitemap_count >= REVIEW_SITEMAP_THRESHOLD
+            or len(c.cities) >= 2
+        ):
             c.verdict = "review"
         else:
             c.verdict = "auto-skip"
@@ -507,6 +670,10 @@ def main():
         "--no-probe", action="store_true",
         help="Skip the homepage/sitemap probe (faster, less signal).",
     )
+    ap.add_argument(
+        "--no-cache", action="store_true",
+        help="Ignore the on-disk probe cache and refetch every domain.",
+    )
     args = ap.parse_args()
 
     in_path = Path(args.input_csv)
@@ -515,7 +682,7 @@ def main():
 
     candidates = ingest_csv(in_path)
     if not args.no_probe and candidates:
-        asyncio.run(probe_all(candidates))
+        asyncio.run(probe_all(candidates, use_cache=not args.no_cache))
     score_candidates(candidates)
     write_outputs(candidates, Path(args.out_dir))
 
