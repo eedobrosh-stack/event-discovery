@@ -10,3 +10,10 @@ build/
 venv/
 .DS_Store
 *.sqlite3
+
+# scan_aggregators.py local artifacts (data, not code)
+scripts/.aggregator_scan_cache.json
+scripts/candidates.md
+scripts/candidates.csv
+scripts/_test_input.csv
+scripts/scan_input.csv
