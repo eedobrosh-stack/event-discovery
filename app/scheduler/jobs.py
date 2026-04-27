@@ -45,6 +45,7 @@ from app.services.collectors.api.bandsintown import BandsintownClient
 from app.services.collectors.scrapers.songkick import SongkickCollector
 from app.services.collectors.scrapers.skiddle import SkiddleCollector
 from app.services.collectors.scrapers.xceed import XceedCollector
+from app.services.collectors.scrapers.concreteplayground import ConcretePlaygroundCollector
 from app.services.collectors.scrapers.allevents import AlleventsCollector
 from app.services.collectors.scrapers.city_guides import CityGuideCollector
 from app.services.collectors.scrapers.sports.espn import EspnSportsCollector
@@ -84,6 +85,7 @@ registry.register(VenuePilotCollector())
 registry.register(SongkickCollector())
 registry.register(SkiddleCollector())
 registry.register(XceedCollector())
+registry.register(ConcretePlaygroundCollector())
 registry.register(AlleventsCollector())
 registry.register(CityGuideCollector())
 # Sports — ESPN hidden API (no key) + MLB official StatsAPI (no key) + OpenF1 (no key)
