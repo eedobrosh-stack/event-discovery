@@ -1283,7 +1283,11 @@ async def collect_mevalim_job():
         db.add(log)
         db.commit()
         db.refresh(log)
-        found = saved = updated = skipped_no_city = 0
+        found = saved = updated = admitted_no_city = 0
+        # Track venue names that the scraper couldn't resolve to a known city
+        # so we can extend _HEBREW_CITIES on the next sweep instead of guessing.
+        from collections import Counter
+        unresolved_venues: Counter[str] = Counter()
 
         try:
             events = await scrape_mevalim()
@@ -1300,10 +1304,16 @@ async def collect_mevalim_job():
             for raw in events:
                 try:
                     if not raw.venue_city:
-                        skipped_no_city += 1
-                        continue
-
-                    city = _resolve_mevalim_city(raw.venue_city, db)
+                        # No city match → admit under a sentinel "Israel - Other"
+                        # city instead of dropping. The event still surfaces in
+                        # autocomplete + name searches; only city-filtered
+                        # browses miss it. Beats the silent skip that hid
+                        # ~50–130 real events per run.
+                        unresolved_venues[raw.venue_name or "(unknown)"] += 1
+                        city = _resolve_mevalim_city("Israel - Other", db)
+                        admitted_no_city += 1
+                    else:
+                        city = _resolve_mevalim_city(raw.venue_city, db)
 
                     # Real venue (per event, city-pinned). If we've seen this
                     # venue name in this city before, reuse it.
@@ -1380,13 +1390,24 @@ async def collect_mevalim_job():
             log.status = "success"
             log.events_found = found
             log.events_saved = saved
+            # Top-5 unresolved venue names — names that recur here are
+            # high-value candidates to add to mevalim._HEBREW_CITIES so the
+            # event lands in its true city next run.
+            top_unresolved = ", ".join(
+                f"{name!r}:{cnt}"
+                for name, cnt in unresolved_venues.most_common(5)
+            )
+            unresolved_suffix = (
+                f" top_unresolved=[{top_unresolved}]" if top_unresolved else ""
+            )
             log.notes = (
                 f"found={found} saved={saved} updated={updated} "
-                f"skipped_no_city={skipped_no_city}"
+                f"admitted_no_city={admitted_no_city}{unresolved_suffix}"
             )
             logger.info(
                 f"collect_mevalim_job done: found={found} saved={saved} "
-                f"updated={updated} skipped_no_city={skipped_no_city}"
+                f"updated={updated} admitted_no_city={admitted_no_city}"
+                f"{unresolved_suffix}"
             )
         except Exception as e:
             log.status = "failed"
