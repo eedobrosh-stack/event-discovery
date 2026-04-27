@@ -513,8 +513,15 @@ function bindEvents() {
 }
 
 function getFilters() {
-    // All chip values (category, event_type, performer, freetext) become type_search terms
-    const chipTerms = selectedTypeFilters.map(f => f.value);
+    // Partition chips: "performer" chips get strict exact-match on artist_name
+    // (so picking "Sting" never returns "Stingrays"); everything else stays
+    // in the looser word-aware type_search bucket.
+    const artistExact = selectedTypeFilters
+        .filter(f => f.kind === "performer")
+        .map(f => f.value);
+    const chipTerms = selectedTypeFilters
+        .filter(f => f.kind !== "performer")
+        .map(f => f.value);
     // Also pick up any uncommitted text still in the input (≥3 chars)
     const rawText = document.getElementById("type-search-input").value.trim();
     if (rawText.length >= 3 && !chipTerms.includes(rawText)) chipTerms.push(rawText);
@@ -523,16 +530,17 @@ function getFilters() {
     const startDate = document.getElementById("start-date").value;
     const endDate   = document.getElementById("end-date").value;
     const search    = document.getElementById("search").value;
-    return { typeSearch: chipTerms, cityId, startDate, endDate, search };
+    return { typeSearch: chipTerms, artistExact, cityId, startDate, endDate, search };
 }
 
 let totalEvents = null; // total matching count from /api/events/count
 
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
-    const { typeSearch, cityId, startDate, endDate, search } = getFilters();
+    const { typeSearch, artistExact, cityId, startDate, endDate, search } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
+    if (artistExact.length) params.set("artist_exact", artistExact.join(","));
     if (cityId) params.set("city_ids", cityId);
     const country = getSelectedCountry();
     if (country) params.set("country", country);
@@ -639,9 +647,10 @@ function updateStats(shown) {
 }
 
 async function exportICS() {
-    const { typeSearch, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, artistExact, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
+    if (artistExact.length) body.artist_exact = artistExact.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     const country = getSelectedCountry();
     if (country) body.country = country;
@@ -668,9 +677,10 @@ async function exportCSV() {
     btn.disabled = true;
     btn.textContent = "Downloading...";
     try {
-        const { typeSearch, cityId, startDate, endDate } = getFilters();
+        const { typeSearch, artistExact, cityId, startDate, endDate } = getFilters();
         const body = {};
         if (typeSearch.length) body.type_search = typeSearch.join(",");
+        if (artistExact.length) body.artist_exact = artistExact.join(",");
         if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
         const country = getSelectedCountry();
         if (country) body.country = country;
@@ -698,9 +708,10 @@ async function exportCSV() {
 }
 
 async function exportSheets() {
-    const { typeSearch, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, artistExact, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
+    if (artistExact.length) body.artist_exact = artistExact.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     const country = getSelectedCountry();
     if (country) body.country = country;
@@ -794,9 +805,10 @@ function esc(str) {
 }
 
 function buildSubscribeUrl() {
-    const { typeSearch, cityId } = getFilters();
+    const { typeSearch, artistExact, cityId } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
+    if (artistExact.length) params.set("artist_exact", artistExact.join(","));
     if (cityId) params.set("city_ids", cityId);
     // Date range is intentionally excluded — subscriptions always show upcoming
     // events dynamically; baking in an end_date causes the feed to go empty.
