@@ -226,12 +226,36 @@ async def _fetch_sitemap_urls(client: httpx.AsyncClient) -> list[str]:
 
     # Keep only URLs under one of the known category prefixes. Everything else
     # (homepage, static pages) either has no events or is covered elsewhere.
-    filtered = [
-        u for u in urls
-        if any(prefix in u for prefix in _CATEGORY_PREFIXES)
-    ]
+    filtered: list[str] = []
+    dropped: list[str] = []
+    for u in urls:
+        if any(prefix in u for prefix in _CATEGORY_PREFIXES):
+            filtered.append(u)
+        else:
+            dropped.append(u)
+
+    # Diagnose silent drops: when Mevalim restructures (e.g. /concerts/ → /shows/
+    # in 2025), the dropped bucket suddenly fills up with a brand-new prefix
+    # we never added to _CATEGORY_PREFIXES. Logging the top dropped prefixes
+    # makes that visible immediately instead of waiting for "an artist isn't
+    # showing up" to surface weeks later.
+    top_dropped = ""
+    if dropped:
+        from collections import Counter
+        prefix_counts: Counter[str] = Counter()
+        for u in dropped:
+            # First non-empty path segment, e.g. "/lectures/some-slug/" → "lectures"
+            try:
+                parts = urlparse(u).path.strip("/").split("/", 1)
+                prefix_counts[parts[0] if parts and parts[0] else "(root)"] += 1
+            except Exception:
+                continue
+        top = prefix_counts.most_common(5)
+        top_dropped = " dropped_top=" + ",".join(f"{p}:{n}" for p, n in top)
+
     logger.info(
-        f"mevalim: sitemap URLs total={len(urls)} crawl_candidates={len(filtered)}"
+        f"mevalim: sitemap URLs total={len(urls)} crawl_candidates={len(filtered)} "
+        f"dropped={len(dropped)}{top_dropped}"
     )
     return filtered
 
