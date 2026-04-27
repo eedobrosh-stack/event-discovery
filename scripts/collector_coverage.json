@@ -1,0 +1,37 @@
+{
+  "_doc": [
+    "Per-source canonical-coverage probes consumed by check_collector_coverage.py.",
+    "Two probe types:",
+    "  url_contains_name  — fetch URL, parse via collector, assert at least one",
+    "                       parsed event whose name contains the expected string.",
+    "  city_min_events    — call the collector for a city, assert the parsed event",
+    "                       count is at least min_events. Catches site-wide breakage",
+    "                       even when no specific anchor name is known.",
+    "Add new probes as bugs are fixed so the regression doesn't recur."
+  ],
+
+  "mevalim": [
+    {
+      "type": "url_contains_name",
+      "url":  "https://www.mevalim.co.il/shows/%d7%98%d7%95%d7%a0%d7%94/",
+      "expect_name_contains": "טונה",
+      "note": "Fix for the /shows/ vs /concerts/ restructure (PR mevalim-shows-musicals)."
+    },
+    {
+      "type": "url_contains_name",
+      "url":  "https://www.mevalim.co.il/kids-shows/%d7%9e%d7%99%d7%a7%d7%99/",
+      "expect_name_contains": "מיקי מוכתר",
+      "note": "Kids-shows H1-override path: JSON-LD name='מיקי' (slug-truncated) but H1 stem is 'מיקי מוכתר'. Probe asserts the override actually fires."
+    }
+  ],
+
+  "concreteplayground": [
+    { "type": "city_min_events", "city": "Sydney",    "min_events": 5 },
+    { "type": "city_min_events", "city": "Melbourne", "min_events": 3 }
+  ],
+
+  "xceed": [
+    { "type": "city_min_events", "city": "Madrid", "min_events": 10 },
+    { "type": "city_min_events", "city": "Roma",   "min_events": 10 }
+  ]
+}
