@@ -75,7 +75,20 @@ _EVENT_TYPES = {
 
 # Only category prefixes we want to crawl. Everything else in the sitemap
 # (e.g. /about, /contact) has no JSON-LD Events so we'd just waste requests.
-_CATEGORY_PREFIXES = ("/stand-up/", "/concerts/", "/kids-shows/", "/theater/")
+#
+# /shows/ is the canonical post-2025 location for music acts (Mevalim moved
+# the bulk of its catalogue out of /concerts/, which now holds <20 URLs). It
+# also serves as a 301 target for legacy /concerts/<slug>/ paths. Skipping
+# /shows/ silently drops ~400 sitemap URLs covering most Israeli touring
+# musicians (טונה, חיים משה, יהודה פוליקר, …). /musicals/ is small but its
+# pages do carry Event JSON-LD, so we include it for parity.
+#
+# /lectures/, /festivals/, /exhibitions/, /dance/ pages were sampled and do
+# NOT carry Event JSON-LD (only WebPage/Org metadata), so they stay excluded.
+_CATEGORY_PREFIXES = (
+    "/stand-up/", "/concerts/", "/kids-shows/", "/theater/",
+    "/shows/", "/musicals/",
+)
 
 # Category slug → event-type hint used for the `raw_categories` field so the
 # registry's Priority-3 classifier can slot these into the right bucket.
@@ -84,6 +97,11 @@ _CATEGORY_HINTS = {
     "/stand-up/":   ["Comedy", "Stand-up"],
     "/kids-shows/": ["Family", "Children"],
     "/theater/":    ["Theater"],
+    # /shows/ is the catch-all music slug; tag generically so the classifier
+    # still routes these to the Music bucket (the JSON-LD @type=MusicEvent
+    # remains the authoritative signal downstream).
+    "/shows/":      ["Music", "Concert"],
+    "/musicals/":   ["Theater", "Musical"],
 }
 
 # Hebrew → English canonical city names. Ordered longest-first for substring
