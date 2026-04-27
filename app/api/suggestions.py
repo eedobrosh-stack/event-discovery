@@ -5,7 +5,7 @@ from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import City, Event, EventType, Venue
+from app.models import Event, EventType, Venue
 
 # Sports event names follow the pattern "League - Home vs Away".
 # When a query exactly matches a league prefix (e.g. "NBA", "EuroLeague"),
@@ -182,26 +182,7 @@ def get_suggestions(
         for name, city in venue_rows
     ]
 
-    # 6. Cities — direct match on City.name, returns the cityId so the
-    # frontend can populate the city filter (NOT a type-search chip — those
-    # would just look for the literal city string in event/venue/type names
-    # and miss Hebrew-named venues entirely).
-    city_rows = (
-        db.query(City.id, City.name, City.country)
-        .filter(City.name.ilike(q_like))
-        .order_by(City.name)
-        .limit(PER_TYPE)
-        .all()
-    )
-    city_results = [
-        {"kind": "city",
-         "value": str(cid),
-         "label": f"{name}, {country}" if country else name,
-         "badge": "City"}
-        for cid, name, country in city_rows
-    ]
-
-    # 7. Event names — covers performers / conferences whose name lives only
+    # 6. Event names — covers performers / conferences whose name lives only
     # in Event.name. Mevalim stores the comedian's name there (with
     # artist_name=NULL); techconf stores the conference name. Without this
     # branch, autocomplete is blind to anything those collectors produce —
@@ -242,13 +223,13 @@ def get_suggestions(
         and " - " not in name
     ][:PER_TYPE]
 
-    # Order: cities first (a city click is the strongest navigational
-    # signal — "Karmiel" almost always means "show me Karmiel's calendar"
-    # rather than "find an event with Karmiel in its name"), then sports
-    # teams, then event-name matches (high-confidence: a literal title hit),
-    # then everything else.
+    # Order: sports teams, then event-name matches (high-confidence: a literal
+    # title hit), then everything else. Cities are deliberately NOT surfaced
+    # here — the dedicated Location box on both home and results pages owns
+    # city navigation; mixing cities into the type/performer suggestions just
+    # leaks irrelevant rows like "Blowing Rock" when a user types "rock".
     results = (
-        city_results + sport_teams + event_results
+        sport_teams + event_results
         + categories + event_types + artists + venue_results
     )[:limit]
     _cache_set(q, results)
