@@ -761,12 +761,17 @@ function showCompactMode() {
     const compactTxt = document.getElementById("compact-text");
     const cityBadge  = document.getElementById("compact-city-badge");
 
-    // Build summary text from current active filters
-    const { typeSearch } = getFilters();
+    // Build summary text from current active filters. Combine artistExact
+    // (strict-match Artist chips) with the looser typeSearch terms so the
+    // pill always reflects what the user actually picked — without this,
+    // selecting "Sting" from the Artist autocomplete would route the chip
+    // into artistExact and leave the pill stuck on "All events".
+    const { typeSearch, artistExact } = getFilters();
     const cityLabel = document.getElementById("city-input").value.trim();
 
-    if (typeSearch.length > 0) {
-        compactTxt.textContent = typeSearch.join(" · ");
+    const summaryParts = [...artistExact, ...typeSearch];
+    if (summaryParts.length > 0) {
+        compactTxt.textContent = summaryParts.join(" · ");
         compactTxt.classList.remove("compact-placeholder");
     } else {
         compactTxt.textContent = "All events";
