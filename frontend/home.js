@@ -310,4 +310,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupCityAutocomplete();
 
     document.getElementById("home-search-btn").addEventListener("click", navigateToResults);
+
+    // Land with the search box focused — saves the user a click.
+    // (The `autofocus` HTML attribute also covers this, but Safari sometimes
+    // ignores it after navigations; calling .focus() explicitly is robust.)
+    const typeInput = document.getElementById("home-type-input");
+    if (typeInput) typeInput.focus();
 });

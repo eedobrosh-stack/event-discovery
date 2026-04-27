@@ -6,6 +6,10 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.database import get_db
 from app.models import Event, EventType, Venue, Performer, event_event_types
 from app.schemas.event import EventOut
+from app.api._search_filters import (
+    word_boundary_ilike,
+    name_match_ilike,
+)
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
@@ -28,25 +32,8 @@ def _get_sport_league_labels() -> frozenset[str]:
 _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 
 
-def _word_boundary_ilike(col, term: str):
-    """OR-clause matching `term` only at word boundaries in `col`, expressed
-    as ILIKE patterns so SQLite handles it without a regex extension.
-
-    Used to decide whether a search term *is* a sports term — e.g. "NBA"
-    matches "NBA - Spurs vs Lakers" (boundary), but "JAX" does NOT match
-    "Eredivisie - Ajax Amsterdam" (Ajax embeds JAX without a boundary).
-    Without this, short tokens that happen to be substrings of sport team
-    names (JAX→Ajax, FOX→Foxes, PSG→PSG…) silently lock the result set
-    into sports-only mode and hide non-sport hits like the JAX tech
-    conference.
-    """
-    from sqlalchemy import or_
-    return or_(
-        col.ilike(f"{term} %"),     # at start: "NBA - Spurs..."
-        col.ilike(f"% {term} %"),   # in middle
-        col.ilike(f"% {term}"),     # at end
-        col.ilike(term),            # exact match (whole name)
-    )
+# Search-filter helpers (word_boundary_ilike, name_match_ilike) live in
+# app/api/_search_filters.py and are reused by suggestions.py too.
 
 
 def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None):
@@ -71,17 +58,24 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     if type_search:
         terms = [t.strip() for t in type_search.split(",") if t.strip()]
         for term in terms:
-            like = f"%{term}%"
+            # Word-aware matching: ≥4 chars → word-start ("sting" matches
+            # "Stinging" but not "testing"); <4 chars → strict whole-word
+            # ("JAX" matches "JAX Conf" but not "Ajax Amsterdam"). Replaces
+            # the previous %term% substring match that surfaced "testing"
+            # when the user searched for "sting".
             type_matched_event_ids = (
                 select(event_event_types.c.event_id)
                 .join(EventType, EventType.id == event_event_types.c.event_type_id)
-                .where(or_(EventType.name.ilike(like), EventType.category.ilike(like)))
+                .where(or_(
+                    name_match_ilike(EventType.name, term),
+                    name_match_ilike(EventType.category, term),
+                ))
                 .scalar_subquery()
             )
             venue_matched_event_ids = (
                 select(Event.id)
                 .join(Venue, Event.venue_id == Venue.id)
-                .where(Venue.name.ilike(like))
+                .where(name_match_ilike(Venue.name, term))
                 .scalar_subquery()
             )
             # Exact league label → strict prefix, same as `search` param
@@ -95,18 +89,21 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                     db.query(Event.id)
                     .filter(
                         Event.sport.isnot(None),
-                        _word_boundary_ilike(Event.name, term),
+                        word_boundary_ilike(Event.name, term),
                     )
                     .limit(1)
                     .scalar()
                 )
                 if is_sports_term:
-                    query = query.filter(Event.sport.isnot(None), Event.name.ilike(like))
+                    query = query.filter(
+                        Event.sport.isnot(None),
+                        name_match_ilike(Event.name, term),
+                    )
                 else:
                     query = query.filter(or_(
                         Event.id.in_(type_matched_event_ids),
-                        Event.artist_name.ilike(like),
-                        Event.name.ilike(like),
+                        name_match_ilike(Event.artist_name, term),
+                        name_match_ilike(Event.name, term),
                         Event.id.in_(venue_matched_event_ids),
                     ))
 
@@ -138,7 +135,7 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             prefix_like = f"{search.strip()} -%"
             query = query.filter(Event.name.ilike(prefix_like))
         else:
-            name_like = f"%{search}%"
+            term = search.strip()
             # If the search term matches any *sports* event name as a whole
             # word, restrict the result set to sports events. Whole-word
             # matching prevents short tokens like "JAX" (substring of Ajax),
@@ -148,15 +145,18 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 db.query(Event.id)
                 .filter(
                     Event.sport.isnot(None),
-                    _word_boundary_ilike(Event.name, search.strip()),
+                    word_boundary_ilike(Event.name, term),
                 )
                 .limit(1)
                 .scalar()
             )
             if is_sports_term:
-                query = query.filter(Event.sport.isnot(None), Event.name.ilike(name_like))
+                query = query.filter(
+                    Event.sport.isnot(None),
+                    name_match_ilike(Event.name, term),
+                )
             else:
-                query = query.filter(Event.name.ilike(name_like))
+                query = query.filter(name_match_ilike(Event.name, term))
 
     return query
 

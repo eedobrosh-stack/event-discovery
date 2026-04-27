@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Event, EventType, Venue
+from app.api._search_filters import name_match_ilike
 
 # Sports event names follow the pattern "League - Home vs Away".
 # When a query exactly matches a league prefix (e.g. "NBA", "EuroLeague"),
@@ -55,7 +56,11 @@ def get_suggestions(
         return cached[:limit]
 
     q_stripped = q.strip()
-    q_like = f"%{q_stripped}%"
+    # Tightened matching: name_match_ilike tightens to word-start hits for
+    # long terms ("sting" → "Stinging" yes, "testing" no) and whole-word for
+    # short terms ("JAX" → "JAX Conf" yes, "Ajax" no). Used by every text
+    # branch below except sports detection (which has its own prefix/whole
+    # word logic) and the relevance CASE expression (uses raw prefix/exact).
     PER_TYPE = 3
 
     # ── Sports league early-exit ────────────────────────────────────────────────
@@ -101,7 +106,7 @@ def get_suggestions(
     # 1. Categories
     cats = (
         db.query(EventType.category)
-        .filter(EventType.category.ilike(q_like))
+        .filter(name_match_ilike(EventType.category, q_stripped))
         .distinct()
         .limit(PER_TYPE)
         .all()
@@ -112,7 +117,7 @@ def get_suggestions(
     # 2. Event types
     types = (
         db.query(EventType.name, EventType.category)
-        .filter(EventType.name.ilike(q_like))
+        .filter(name_match_ilike(EventType.name, q_stripped))
         .distinct()
         .limit(PER_TYPE)
         .all()
@@ -126,17 +131,16 @@ def get_suggestions(
     # prefix on Event.name, and artist_name is NULL on sport rows.
     sport_teams: list = []
     if len(q_stripped) >= _MIN_SPORT_QUERY_LEN:
-        team_like = f"%{q_stripped}%"
         home_rows = (
             db.query(Event.home_team)
-            .filter(Event.sport.isnot(None), Event.home_team.ilike(team_like))
+            .filter(Event.sport.isnot(None), name_match_ilike(Event.home_team, q_stripped))
             .distinct()
             .limit(20)
             .all()
         )
         away_rows = (
             db.query(Event.away_team)
-            .filter(Event.sport.isnot(None), Event.away_team.ilike(team_like))
+            .filter(Event.sport.isnot(None), name_match_ilike(Event.away_team, q_stripped))
             .distinct()
             .limit(20)
             .all()
@@ -151,12 +155,12 @@ def get_suggestions(
             for t in sorted(seen.values())
         ][:PER_TYPE]
 
-    # 4. Artists — simple ilike on artist_name, no date filtering for speed
+    # 4. Artists — word-aware match on artist_name, no date filtering for speed
     artist_rows = (
         db.query(Event.artist_name)
         .filter(
             Event.artist_name.isnot(None),
-            Event.artist_name.ilike(q_like),
+            name_match_ilike(Event.artist_name, q_stripped),
         )
         .distinct()
         .limit(PER_TYPE + 2)
@@ -171,7 +175,10 @@ def get_suggestions(
     # qualify and Hebrew-named IL venues are unreachable from English queries.
     venue_rows = (
         db.query(Venue.name, Venue.physical_city)
-        .filter(or_(Venue.name.ilike(q_like), Venue.physical_city.ilike(q_like)))
+        .filter(or_(
+            name_match_ilike(Venue.name, q_stripped),
+            name_match_ilike(Venue.physical_city, q_stripped),
+        ))
         .distinct()
         .limit(PER_TYPE)
         .all()
@@ -205,7 +212,7 @@ def get_suggestions(
     event_name_rows = (
         db.query(Event.name)
         .filter(
-            Event.name.ilike(q_like),
+            name_match_ilike(Event.name, q_stripped),
             Event.start_date >= today,
         )
         .distinct()
