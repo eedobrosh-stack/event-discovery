@@ -21,6 +21,7 @@ function setupTypeAutocomplete() {
     const list  = document.getElementById("home-type-suggestions");
     let activeIdx = -1;
     let debounceTimer = null;
+    let suggestController = null;  // AbortController for the in-flight /api/suggestions fetch
 
     function showSuggestions(items) {
         if (!items.length) { list.hidden = true; return; }
@@ -66,13 +67,30 @@ function setupTypeAutocomplete() {
         const q = input.value.trim();
         selectedType = null;
         clearTimeout(debounceTimer);
+        // Cancel any in-flight /api/suggestions request from a previous keystroke;
+        // otherwise a slow earlier query can resolve after a faster later one
+        // and overwrite suggestions, plus it wastes a worker slot.
+        if (suggestController) {
+            suggestController.abort();
+            suggestController = null;
+        }
         if (q.length < 2) { list.hidden = true; return; }
         debounceTimer = setTimeout(async () => {
+            suggestController = new AbortController();
+            const signal = suggestController.signal;
             try {
-                const resp = await fetch(`/api/suggestions?q=${encodeURIComponent(q)}`);
+                const resp = await fetch(
+                    `/api/suggestions?q=${encodeURIComponent(q)}`,
+                    { signal },
+                );
                 showSuggestions(await resp.json());
-            } catch {}
-        }, 80);
+            } catch (err) {
+                // AbortError = a newer keystroke superseded this one; ignore.
+                if (err && err.name !== "AbortError") {
+                    console.warn("suggestions fetch failed", err);
+                }
+            }
+        }, 200);
     });
 
     list.addEventListener("mousedown", e => e.preventDefault());

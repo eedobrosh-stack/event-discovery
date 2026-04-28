@@ -105,6 +105,7 @@ function setupTypeAutocomplete() {
     const chipsEl = document.getElementById("type-chips");
     let activeIdx = -1;
     let debounceTimer = null;
+    let suggestController = null;  // AbortController for the in-flight /api/suggestions fetch
 
     renderTypeChips = function() { renderChips(); };
 
@@ -179,12 +180,31 @@ function setupTypeAutocomplete() {
     input.addEventListener("input", () => {
         const q = input.value.trim();
         clearTimeout(debounceTimer);
+        // Cancel any in-flight /api/suggestions request from a previous keystroke;
+        // otherwise a slow earlier query can resolve after a faster later one
+        // and overwrite suggestions, plus it wastes a worker slot.
+        if (suggestController) {
+            suggestController.abort();
+            suggestController = null;
+        }
         if (q.length < 2) { list.hidden = true; return; }
         debounceTimer = setTimeout(async () => {
-            const resp = await fetch(`/api/suggestions?q=${encodeURIComponent(q)}`);
-            const items = await resp.json();
-            showSuggestions(items);
-        }, 80);
+            suggestController = new AbortController();
+            const signal = suggestController.signal;
+            try {
+                const resp = await fetch(
+                    `/api/suggestions?q=${encodeURIComponent(q)}`,
+                    { signal },
+                );
+                const items = await resp.json();
+                showSuggestions(items);
+            } catch (err) {
+                // AbortError = a newer keystroke superseded this one; ignore.
+                if (err && err.name !== "AbortError") {
+                    console.warn("suggestions fetch failed", err);
+                }
+            }
+        }, 200);
     });
 
     // mousedown prevents input blur before click fires
