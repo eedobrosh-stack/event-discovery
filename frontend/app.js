@@ -759,14 +759,14 @@ function showCompactMode() {
     const filters    = document.querySelector(".filters");
     const compactBar = document.getElementById("compact-search");
     const compactTxt = document.getElementById("compact-text");
-    const cityBadge  = document.getElementById("compact-city-badge");
+    const contextEl  = document.getElementById("compact-context");
 
     // Build summary text from current active filters. Combine artistExact
     // (strict-match Artist chips) with the looser typeSearch terms so the
     // pill always reflects what the user actually picked — without this,
     // selecting "Sting" from the Artist autocomplete would route the chip
     // into artistExact and leave the pill stuck on "All events".
-    const { typeSearch, artistExact } = getFilters();
+    const { typeSearch, artistExact, startDate, endDate } = getFilters();
     const cityLabel = document.getElementById("city-input").value.trim();
 
     const summaryParts = [...artistExact, ...typeSearch];
@@ -777,7 +777,21 @@ function showCompactMode() {
         compactTxt.textContent = "All events";
         compactTxt.classList.add("compact-placeholder");
     }
-    cityBadge.textContent = cityLabel || "";
+
+    // Right-side annotation — quick "what am I searching across?" hint.
+    // Format dates as "M/D/YY" to match the rest of the marketing UI; fall
+    // back to "All dates" / "Global" if either is unset.
+    const fmtMD = iso => {
+        if (!iso) return null;
+        const [y, m, d] = iso.split("-");
+        return `${parseInt(m, 10)}/${parseInt(d, 10)}/${y.slice(2)}`;
+    };
+    const dateRange = (startDate && endDate)
+        ? `${fmtMD(startDate)} to ${fmtMD(endDate)}`
+        : (startDate ? `from ${fmtMD(startDate)}`
+          : (endDate ? `until ${fmtMD(endDate)}` : "All dates"));
+    const place = cityLabel || "Global";
+    contextEl.textContent = `${dateRange}, ${place}`;
 
     // Swap visibility
     filters.classList.add("search-hidden");
