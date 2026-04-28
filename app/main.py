@@ -268,6 +268,45 @@ def _run_migrations():
             ))
             conn.commit()
 
+    # Search-path indexes for /api/suggestions and /api/events text matching.
+    # Background: PRs #32-34 introduced 8 separate ILIKE-based queries per
+    # /api/suggestions call (categories, types, sport-teams, artists, venues,
+    # event-names, plus league-prefix detection) plus DISTINCT + ORDER BY
+    # CASE relevance ranking on top. With 139K events and zero indexes on
+    # the matched columns, autocomplete latency climbed from ~150ms to
+    # 2-17 seconds (observed in 2026-04-28 13:15-13:17 prod logs) — slow
+    # enough to bloat memory until the single uvicorn worker silently hung,
+    # twice in one day.
+    #
+    # SQLAlchemy translates `column.ilike(...)` on SQLite to
+    # `lower(column) LIKE lower(pattern)`, so expression indexes on
+    # `LOWER(column)` are usable for the prefix-anchored half of every
+    # `name_match_ilike` OR (`'term%'` branch). The `'% term%'` half still
+    # full-scans, but SQLite's OR-optimization uses the index for the first
+    # branch and unions, cutting the dominant short-prefix query from full
+    # scan to index-seek. For the autocomplete-typing case (the main pain
+    # point — every keystroke fires a request) that's the difference between
+    # ~50ms and ~3000ms per call.
+    #
+    # IF NOT EXISTS makes this idempotent — first boot builds them (a few
+    # seconds at the current size); subsequent boots no-op. ANALYZE refreshes
+    # the optimizer's statistics so the planner actually picks the new
+    # indexes; without it the first few hours after deploy keep using
+    # full-scan plans from cached stats.
+    search_indexes = [
+        "CREATE INDEX IF NOT EXISTS ix_events_artist_name_lower    ON events(LOWER(artist_name))",
+        "CREATE INDEX IF NOT EXISTS ix_events_name_lower           ON events(LOWER(name))",
+        "CREATE INDEX IF NOT EXISTS ix_events_home_team_lower      ON events(LOWER(home_team))",
+        "CREATE INDEX IF NOT EXISTS ix_events_away_team_lower      ON events(LOWER(away_team))",
+        "CREATE INDEX IF NOT EXISTS ix_venues_name_lower           ON venues(LOWER(name))",
+        "CREATE INDEX IF NOT EXISTS ix_venues_physical_city_lower  ON venues(LOWER(physical_city))",
+    ]
+    with engine.connect() as conn:
+        for stmt in search_indexes:
+            conn.execute(text(stmt))
+        conn.execute(text("ANALYZE"))
+        conn.commit()
+
 
 def _fix_sports_categories():
     """
