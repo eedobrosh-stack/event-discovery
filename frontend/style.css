@@ -93,18 +93,21 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     font-weight: 400;
 }
 
-.compact-city-badge {
-    background: #f0edff;
-    color: #5b3fd4;
-    border-radius: 20px;
-    padding: 0.2rem 0.75rem;
-    font-size: 0.78rem;
-    font-weight: 600;
+/* Right-aligned annotation showing the active date range + location.
+   Plain muted text (no chip background) — gives the user a quick "what
+   am I searching across?" hint without competing with the type label. */
+.compact-context {
+    color: #888;
+    font-size: 0.85rem;
+    font-weight: 400;
     white-space: nowrap;
     flex-shrink: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 50%;
 }
 
-.compact-city-badge:empty {
+.compact-context:empty {
     display: none;
 }
 
