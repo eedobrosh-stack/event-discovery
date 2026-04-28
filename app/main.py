@@ -1,11 +1,13 @@
+import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
@@ -672,6 +674,59 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Supercaly", lifespan=lifespan)
+
+
+# Request-level timeout middleware.
+#
+# Why: we run a single uvicorn worker (WEB_CONCURRENCY=1) and most DB queries
+# are sync — a slow request (e.g. unindexed full-table-scan on a 139K-row
+# events table) blocks the asyncio loop and starves the health check, which
+# can ultimately get the worker SIGKILL'd by Render. Capping every request
+# at 15 s means a single bad query can degrade itself into a 503 instead
+# of taking the whole worker down.
+#
+# Health checks (/ping) are exempt — they must always respond instantly.
+_REQUEST_TIMEOUT_SECONDS = 15
+_SLOW_REQUEST_LOG_THRESHOLD = 5  # log any request slower than this
+_log_timeout = logging.getLogger("supercaly.timeout")
+
+
+@app.middleware("http")
+async def request_timeout_middleware(request: Request, call_next):
+    # Skip the health check path so Render's probe never gets a 503.
+    if request.url.path == "/ping":
+        return await call_next(request)
+
+    started = time.monotonic()
+    try:
+        response = await asyncio.wait_for(
+            call_next(request), timeout=_REQUEST_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - started
+        _log_timeout.warning(
+            "request_timeout path=%s method=%s elapsed=%.2fs query=%s",
+            request.url.path,
+            request.method,
+            elapsed,
+            str(request.url.query)[:200],
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Request timed out. Please try again."},
+        )
+
+    elapsed = time.monotonic() - started
+    if elapsed >= _SLOW_REQUEST_LOG_THRESHOLD:
+        _log_timeout.warning(
+            "slow_request path=%s method=%s elapsed=%.2fs status=%d query=%s",
+            request.url.path,
+            request.method,
+            elapsed,
+            response.status_code,
+            str(request.url.query)[:200],
+        )
+    return response
 
 
 # Health-check endpoint — must respond instantly, no DB / blocking work
