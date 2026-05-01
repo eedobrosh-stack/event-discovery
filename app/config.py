@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     CLEANUP_DAYS_AGO: int = 7
     RATE_LIMIT_PER_SECOND: int = 2
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore" — keeps unrelated keys in .env (e.g. GEMINI_API_KEY used by
+    # offline scripts) from breaking app startup.
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()
