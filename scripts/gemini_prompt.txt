@@ -1,0 +1,84 @@
+You are a music/event taxonomy expert. I'll send you ~15,000 distinct artist
+and event names from a global event-discovery app, in batches of 500.
+
+YOUR TASK has two parts:
+
+==============================================================================
+PART 1 — Taxonomy (do this ONCE, on the FIRST batch only; skip on follow-ups)
+==============================================================================
+
+Design a 2-level genre taxonomy:
+  • 10–14 PARENT genres (broad buckets, e.g. Rock, Hip-Hop, Jazz, Classical,
+    Electronic, Country, Latin, World, Theatre, Comedy, Family, Spoken Word).
+  • Under each parent, 3–8 SUB-GENRES (specific styles, e.g. Hard Rock,
+    Heavy Metal, Bebop, Smooth Jazz, Trap, Boom Bap, Symphony, Opera).
+
+Hard rules for the taxonomy:
+  1. Every sub-genre MUST be unique across the entire taxonomy. A sub-genre
+     can never appear under two parents. If a style fits two parents (e.g.
+     Opera could be Classical or Theatre), pick ONE and stick with it.
+  2. Do NOT include a "Sports & Fitness" parent or any sub-genres for it.
+     The app handles sports separately.
+  3. Sub-genre labels are what artists will be classified as — prefer
+     specific styles ("Hard Rock") over the parent name ("Rock"). Don't
+     reuse a parent name as a sub-genre.
+
+==============================================================================
+PART 2 — Classifications (do this for EVERY batch, including the first)
+==============================================================================
+
+For each artist in the input, return:
+  • "artist":       the input string verbatim (preserve casing, punctuation)
+  • "primary":      the SINGLE most representative sub-genre label, copied
+                    verbatim from your taxonomy (same casing, same spelling)
+  • "secondary_1":  another sub-genre label from the taxonomy (or null)
+  • "secondary_2":  another sub-genre label from the taxonomy (or null)
+  • "confidence":   "high" | "medium" | "low"
+
+If you don't recognise the artist (uncommon names, local acts, ambiguous
+event titles, classes/workshops, foreign-language names you can't research):
+  • "primary":      "UNKNOWN"
+  • "secondary_1":  null
+  • "secondary_2":  null
+  • "confidence":   "low"      ← MANDATORY whenever primary is UNKNOWN
+
+Hard rules for classifications:
+  1. Never use a label that isn't in your taxonomy. No "Art Rock", "Indie",
+     "Electronic" unless those exact strings appear in your taxonomy.
+  2. Never use a parent name as a primary or secondary. Always use a sub-genre.
+  3. Never use "UNKNOWN" in secondary_1 or secondary_2. UNKNOWN is for
+     primary only, and only when confidence is "low".
+  4. When uncertain, prefer UNKNOWN over a wild guess.
+
+==============================================================================
+OUTPUT FORMAT — strict JSON, nothing else (no markdown fences, no commentary)
+==============================================================================
+
+First batch (full output):
+  {
+    "taxonomy": {
+      "Rock": ["Hard Rock", "Heavy Metal", "Punk Rock", "Alternative Rock"],
+      "Hip-Hop": ["Trap", "Boom Bap", "Conscious Hip-Hop"],
+      "Jazz": ["Bebop", "Smooth Jazz", "Big Band"],
+      ...
+    },
+    "classifications": [
+      {"artist": "AC/DC", "primary": "Hard Rock", "secondary_1": "Heavy Metal", "secondary_2": null, "confidence": "high"},
+      {"artist": "Miles Davis", "primary": "Bebop", "secondary_1": "Smooth Jazz", "secondary_2": null, "confidence": "high"},
+      {"artist": "Some Local Bar Quiz Night", "primary": "UNKNOWN", "secondary_1": null, "secondary_2": null, "confidence": "low"}
+    ]
+  }
+
+Follow-up batches (taxonomy already established — omit it):
+  {
+    "classifications": [
+      {"artist": "...", "primary": "...", "secondary_1": "...", "secondary_2": null, "confidence": "..."},
+      ...
+    ]
+  }
+
+==============================================================================
+ARTISTS TO CLASSIFY (one per line, this is batch 01 of 31)
+==============================================================================
+
+[paste contents of scripts/artist_batches/batch_01.txt below this line]

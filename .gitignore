@@ -10,3 +10,9 @@ build/
 venv/
 .DS_Store
 *.sqlite3
+
+# Gemini classification pipeline — intermediate run artifacts.
+# The scripts that produce these are committed; the data is reproducible.
+scripts/distinct_artists.txt
+scripts/artist_batches/
+scripts/gemini_responses/

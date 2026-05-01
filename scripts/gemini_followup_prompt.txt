@@ -1,0 +1,77 @@
+You are a music/event taxonomy expert. I'll send you batches of ~500 artist
+and event names from a global event-discovery app. The taxonomy is ALREADY
+LOCKED from batch 01 — do NOT modify it, do NOT regenerate it. Only classify.
+
+==============================================================================
+LOCKED TAXONOMY — use these labels EXACTLY (case-sensitive, spelled as shown)
+==============================================================================
+
+  Rock        : Alternative Rock, Anatolian Rock, Blues Rock, Emo, Hard Rock,
+                Hardcore Punk, Heavy Metal, Indie Rock, Industrial, New Wave,
+                Nu-Metal, Pop Punk, Pop Rock, Post-Punk, Power Pop,
+                Progressive Rock, Psychedelic Rock, Punk Rock, Ska, Soft Rock
+  Pop         : Contemporary Pop, Indie Pop, K-Pop, Synth-Pop, Teen Pop, Tribute Show
+  Electronic  : Ambient, Drum and Bass, Dubstep, Experimental Electronic,
+                House Music, Techno, Trance
+  Hip-Hop     : Boom Bap, Conscious Hip-Hop, Funk, Gangsta Rap, Grime, R&B, Trap
+  Jazz        : Bebop, Big Band, Fusion, Smooth Jazz, Soul Jazz, Swing
+  Country     : Americana, Bluegrass, Blues, Contemporary Country, Country Rock,
+                Folk, Outlaw Country
+  Latin       : Bossa Nova, Cumbia, Latin Pop, Mariachi, Reggaeton, Salsa, Samba, Tropicalia
+  World       : Afrobeats, Celtic, Flamenco, Highlife, Klezmer, Qawwali, Reggae
+  Classical   : Baroque, Chamber Music, Choral, Modern Classical, Opera, Symphony
+  Theatre     : Ballet, Cirque, Contemporary Dance, Magic Show, Musical Theatre, Puppetry
+  Comedy      : Improv, Satire, Sketch Comedy, Stand-Up
+  Family      : Animation, Children's Music, Educational, Storytelling
+  Spoken Word : Lecture, Motivational Speaking, Podcast Live, Poetry
+
+==============================================================================
+HARD RULES — your batch_01 output violated these often. DO NOT REPEAT.
+==============================================================================
+
+RULE 1 — FORBIDDEN VALUES.
+The following are PARENT NAMES, not sub-genres. Never use them as `primary`,
+`secondary_1`, or `secondary_2`. They are NOT valid labels:
+
+    Rock, Pop, Electronic, Hip-Hop, Jazz, Country, Latin, World,
+    Classical, Theatre, Comedy, Family, Spoken Word
+
+If you're tempted to write `"primary": "World"` — DON'T. Pick a sub-genre
+under World (Reggae, Afrobeats, Celtic, Flamenco, Klezmer, Qawwali, Highlife)
+or use UNKNOWN with confidence=low.
+
+If you're tempted to write `"secondary_1": "Comedy"` because primary is
+already `Stand-Up` — just use null. Don't restate the parent.
+
+RULE 2 — TAXONOMY IS FROZEN.
+Do NOT invent new sub-genres. If an artist doesn't fit any label above,
+use `"primary": "UNKNOWN"` with `"confidence": "low"`. Never guess with
+a label that isn't in the locked list.
+
+RULE 3 — PRESERVE THE ARTIST STRING VERBATIM.
+Copy the input string exactly into the `artist` field — same casing, same
+punctuation, same special characters.
+
+RULE 4 — UNKNOWN HANDLING.
+  - `primary`: "UNKNOWN" is allowed (and required when you don't recognize
+    the artist or it's a foreign-language name you can't research).
+  - `secondary_1`/`secondary_2`: UNKNOWN is NEVER allowed. Use null.
+  - When `primary` is "UNKNOWN", `confidence` MUST be "low", and both
+    secondaries MUST be null.
+
+==============================================================================
+OUTPUT FORMAT — strict JSON only, no markdown fences, no commentary
+==============================================================================
+
+{
+  "classifications": [
+    {"artist": "AC/DC", "primary": "Hard Rock", "secondary_1": "Heavy Metal", "secondary_2": null, "confidence": "high"},
+    {"artist": "Some Local Bar Quiz Night", "primary": "UNKNOWN", "secondary_1": null, "secondary_2": null, "confidence": "low"}
+  ]
+}
+
+==============================================================================
+ARTISTS TO CLASSIFY (one per line)
+==============================================================================
+
+[paste contents of scripts/artist_batches/batch_NN.txt below this line]
