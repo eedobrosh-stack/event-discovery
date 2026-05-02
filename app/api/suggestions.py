@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Event, EventType, Venue
+from app.models.genre import GenreTaxonomy
 from app.api._search_filters import name_match_ilike
 
 # Sports event names follow the pattern "League - Home vs Away".
@@ -155,6 +156,43 @@ def get_suggestions(
             for t in sorted(seen.values())
         ][:PER_TYPE]
 
+    # 3b. Genres — match the query against parent OR sub-genre names, but
+    # always present the *parent* as the suggestion. Users never see the
+    # 92-row sub-genre list directly: typing "techno" surfaces "Electronic",
+    # typing "indie" surfaces "Rock"/"Pop", typing "rock" surfaces "Rock".
+    #
+    # Two-pass ranking so a direct parent hit isn't drowned out by accidental
+    # sub-genre word matches. If the query matches any parent name directly,
+    # use those parents only — otherwise "rock" would pull in Country (because
+    # of the Country Rock sub-genre), polluting the obvious case. Only when
+    # there is no parent hit do we fan out across sub-genre matches.
+    parent_hit_rows = (
+        db.query(GenreTaxonomy.parent_genre)
+        .filter(name_match_ilike(GenreTaxonomy.parent_genre, q_stripped))
+        .distinct()
+        .all()
+    )
+    if parent_hit_rows:
+        genre_parents = [r[0] for r in parent_hit_rows if r[0]]
+    else:
+        sub_hit_rows = (
+            db.query(GenreTaxonomy.parent_genre)
+            .filter(name_match_ilike(GenreTaxonomy.sub_genre, q_stripped))
+            .distinct()
+            .all()
+        )
+        genre_parents = [r[0] for r in sub_hit_rows if r[0]]
+
+    seen_parents: set[str] = set()
+    genres_results: list = []
+    for parent in genre_parents:
+        if parent not in seen_parents:
+            seen_parents.add(parent)
+            genres_results.append({
+                "kind": "genre", "value": parent, "label": parent, "badge": "Genre",
+            })
+    genres_results = genres_results[:PER_TYPE]
+
     # 4. Artists — word-aware match on artist_name, no date filtering for speed.
     # Rank by exact > prefix > word-start so "Sting" beats "Stingrays" in the
     # Artist slot; alphabetical otherwise would let plurals/extensions sort
@@ -248,8 +286,11 @@ def get_suggestions(
     # pages owns city navigation; mixing cities into the type/performer
     # suggestions just leaks irrelevant rows like "Blowing Rock" when a user
     # types "rock".
+    # Order: artists first (the dominant intent for music-driven searches),
+    # then genres (tolerant fallback when the user typed a sub-genre or a
+    # vague genre word), then sports teams, then everything else.
     results = (
-        artists + sport_teams + event_results
+        artists + genres_results + sport_teams + event_results
         + categories + event_types + venue_results
     )[:limit]
     _cache_set(q, results)

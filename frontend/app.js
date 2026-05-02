@@ -533,14 +533,22 @@ function bindEvents() {
 }
 
 function getFilters() {
-    // Partition chips: "performer" chips get strict exact-match on artist_name
-    // (so picking "Sting" never returns "Stingrays"); everything else stays
-    // in the looser word-aware type_search bucket.
+    // Partition chips by kind:
+    //   "performer" → strict exact-match on artist_name (artist_exact)
+    //   "genre"     → parent-genre filter (genres) — backend expands to all
+    //                 sub-genres' artists. NEVER folded into type_search; the
+    //                 fuzzy text path would match "Rock" against any event
+    //                 with the word "rock" in its name, which defeats the
+    //                 whole point of the curated taxonomy.
+    //   everything else → looser word-aware type_search bucket.
     const artistExact = selectedTypeFilters
         .filter(f => f.kind === "performer")
         .map(f => f.value);
+    const genres = selectedTypeFilters
+        .filter(f => f.kind === "genre")
+        .map(f => f.value);
     const chipTerms = selectedTypeFilters
-        .filter(f => f.kind !== "performer")
+        .filter(f => f.kind !== "performer" && f.kind !== "genre")
         .map(f => f.value);
     // Also pick up any uncommitted text still in the input (≥3 chars)
     const rawText = document.getElementById("type-search-input").value.trim();
@@ -550,17 +558,18 @@ function getFilters() {
     const startDate = document.getElementById("start-date").value;
     const endDate   = document.getElementById("end-date").value;
     const search    = document.getElementById("search").value;
-    return { typeSearch: chipTerms, artistExact, cityId, startDate, endDate, search };
+    return { typeSearch: chipTerms, artistExact, genres, cityId, startDate, endDate, search };
 }
 
 let totalEvents = null; // total matching count from /api/events/count
 
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
-    const { typeSearch, artistExact, cityId, startDate, endDate, search } = getFilters();
+    const { typeSearch, artistExact, genres, cityId, startDate, endDate, search } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (artistExact.length) params.set("artist_exact", artistExact.join(","));
+    if (genres.length) params.set("genres", genres.join(","));
     if (cityId) params.set("city_ids", cityId);
     const country = getSelectedCountry();
     if (country) params.set("country", country);
@@ -667,10 +676,11 @@ function updateStats(shown) {
 }
 
 async function exportICS() {
-    const { typeSearch, artistExact, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, artistExact, genres, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (artistExact.length) body.artist_exact = artistExact.join(",");
+    if (genres.length) body.genres = genres.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     const country = getSelectedCountry();
     if (country) body.country = country;
@@ -697,10 +707,11 @@ async function exportCSV() {
     btn.disabled = true;
     btn.textContent = "Downloading...";
     try {
-        const { typeSearch, artistExact, cityId, startDate, endDate } = getFilters();
+        const { typeSearch, artistExact, genres, cityId, startDate, endDate } = getFilters();
         const body = {};
         if (typeSearch.length) body.type_search = typeSearch.join(",");
         if (artistExact.length) body.artist_exact = artistExact.join(",");
+        if (genres.length) body.genres = genres.join(",");
         if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
         const country = getSelectedCountry();
         if (country) body.country = country;
@@ -728,10 +739,11 @@ async function exportCSV() {
 }
 
 async function exportSheets() {
-    const { typeSearch, artistExact, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, artistExact, genres, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (artistExact.length) body.artist_exact = artistExact.join(",");
+    if (genres.length) body.genres = genres.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     const country = getSelectedCountry();
     if (country) body.country = country;
@@ -844,10 +856,11 @@ function esc(str) {
 }
 
 function buildSubscribeUrl() {
-    const { typeSearch, artistExact, cityId } = getFilters();
+    const { typeSearch, artistExact, genres, cityId } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (artistExact.length) params.set("artist_exact", artistExact.join(","));
+    if (genres.length) params.set("genres", genres.join(","));
     if (cityId) params.set("city_ids", cityId);
     // Date range is intentionally excluded — subscriptions always show upcoming
     // events dynamically; baking in an end_date causes the feed to go empty.

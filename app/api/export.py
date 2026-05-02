@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.database import get_db
 from app.models import Event, EventType, Venue, Performer, City, event_event_types
 from app.schemas.event import ExportRequest
+from app.api._search_filters import resolve_genre_artist_names
 from app.services.export.ics_generator import generate_ics, generate_subscription_ics
 from app.services.export.google_sheets import export_to_sheets
 from app.api.auth import get_credentials, SESSION_COOKIE
@@ -33,6 +34,17 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
                 Event.artist_name.isnot(None),
                 func.lower(Event.artist_name).in_(lowered),
             )
+
+    # Genre filter — same parent → sub-genres → artists expansion as /api/events.
+    artist_norms = resolve_genre_artist_names(db, req.genres)
+    if artist_norms is not None:
+        if artist_norms:
+            query = query.filter(
+                Event.artist_name.isnot(None),
+                func.lower(Event.artist_name).in_(artist_norms),
+            )
+        else:
+            query = query.filter(False)
 
     if req.type_search:
         terms = [t.strip() for t in req.type_search.split(",") if t.strip()]
@@ -98,6 +110,7 @@ def _get_filtered_events_from_params(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     artist_exact: Optional[str] = None,
+    genres: Optional[str] = None,
 ) -> List[Event]:
     """Shared filter logic for GET-based subscription endpoint."""
     query = db.query(Event).options(
@@ -113,6 +126,16 @@ def _get_filtered_events_from_params(
                 Event.artist_name.isnot(None),
                 func.lower(Event.artist_name).in_(lowered),
             )
+
+    artist_norms = resolve_genre_artist_names(db, genres)
+    if artist_norms is not None:
+        if artist_norms:
+            query = query.filter(
+                Event.artist_name.isnot(None),
+                func.lower(Event.artist_name).in_(artist_norms),
+            )
+        else:
+            query = query.filter(False)
 
     if type_search:
         terms = [t.strip() for t in type_search.split(",") if t.strip()]
@@ -156,7 +179,7 @@ def _get_filtered_events_from_params(
     return query.order_by(Event.start_date, Event.start_time).all()
 
 
-def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db: Session, artist_exact: Optional[str] = None) -> str:
+def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db: Session, artist_exact: Optional[str] = None, genres: Optional[str] = None) -> str:
     """Build a human-readable calendar name from filter params."""
     parts = []
     if artist_exact:
@@ -164,6 +187,11 @@ def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db:
         names = [n.strip() for n in artist_exact.split(",") if n.strip()]
         if names:
             parts.append(", ".join(names))
+    if genres:
+        # Parent genres are canonical-cased in the taxonomy already.
+        gs = [g.strip() for g in genres.split(",") if g.strip()]
+        if gs:
+            parts.append(", ".join(gs))
     if type_search:
         terms = [t.strip().title() for t in type_search.split(",") if t.strip()]
         parts.append(", ".join(terms))
@@ -185,13 +213,15 @@ def subscribe_calendar(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     artist_exact: Optional[str] = Query(None),
+    genres: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Live calendar feed for subscriptions. Returns ICS with auto-refresh headers."""
     events = _get_filtered_events_from_params(
-        db, type_search, city_ids, start_date, end_date, artist_exact=artist_exact
+        db, type_search, city_ids, start_date, end_date,
+        artist_exact=artist_exact, genres=genres,
     )
-    name = _subscription_label(type_search, city_ids, db, artist_exact=artist_exact)
+    name = _subscription_label(type_search, city_ids, db, artist_exact=artist_exact, genres=genres)
     ics_bytes = generate_subscription_ics(events, name=name)
     return Response(
         content=ics_bytes,

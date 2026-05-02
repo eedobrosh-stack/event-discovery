@@ -9,6 +9,7 @@ from app.schemas.event import EventOut
 from app.api._search_filters import (
     word_boundary_ilike,
     name_match_ilike,
+    resolve_genre_artist_names,
 )
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -36,7 +37,7 @@ _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 # app/api/_search_filters.py and are reused by suggestions.py too.
 
 
-def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None):
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None):
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, func, select
     from app.models import City
@@ -53,6 +54,24 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 Event.artist_name.isnot(None),
                 func.lower(Event.artist_name).in_(lowered),
             )
+
+    # Genre filter — chip values are *parent* genres (e.g. "Rock", "Electronic").
+    # Expansion (via resolve_genre_artist_names): parent → sub-genres → artists.
+    # Tolerant by design: a sub-genre query like "techno" routes through
+    # autocomplete to the parent "Electronic", and *all* electronic sub-genre
+    # artists surface here, without users having to know the taxonomy.
+    artist_norms = resolve_genre_artist_names(db, genres)
+    if artist_norms is not None:
+        if artist_norms:
+            query = query.filter(
+                Event.artist_name.isnot(None),
+                func.lower(Event.artist_name).in_(artist_norms),
+            )
+        else:
+            # Empty list = valid parents but no tagged artists, OR unknown
+            # parent (defensive — autocomplete only emits real parents).
+            # Either way, no events match.
+            query = query.filter(False)
 
     # Legacy: exact category filter
     if categories:
@@ -184,13 +203,14 @@ def count_events(
     end_date: Optional[date] = None,
     search: Optional[str] = None,
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
+    genres: Optional[str] = Query(None, description="Comma-separated parent genre names (Rock, Electronic, …); expanded to all sub-genres' artists."),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import func
     query = _build_filter_query(
         db, db.query(func.count(Event.id.distinct())),
         categories, type_search, city_ids, start_date, end_date, search, country,
-        artist_exact=artist_exact,
+        artist_exact=artist_exact, genres=genres,
     )
     return {"total": query.scalar() or 0}
 
@@ -205,6 +225,7 @@ def list_events(
     end_date: Optional[date] = None,
     search: Optional[str] = None,
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
+    genres: Optional[str] = Query(None, description="Comma-separated parent genre names; expanded to all sub-genres' artists."),
     limit: int = Query(50, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -215,7 +236,7 @@ def list_events(
     )
     query = _build_filter_query(
         db, base_query, categories, type_search, city_ids, start_date, end_date, search, country,
-        artist_exact=artist_exact,
+        artist_exact=artist_exact, genres=genres,
     )
 
     events = (

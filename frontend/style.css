@@ -437,6 +437,7 @@ a:hover { text-decoration: underline; }
 .type-chip--performer  { background: #e8fdf5; color: #065f46; }
 .type-chip--freetext   { background: #fff7e6; color: #92400e; }
 .type-chip--venue      { background: #fde8f0; color: #9d174d; }
+.type-chip--genre      { background: #e0e7ff; color: #4338ca; }
 
 .type-chip__badge {
     font-size: 0.65rem;
@@ -505,6 +506,7 @@ a:hover { text-decoration: underline; }
 .sugg-badge--sport_team { background: #fdecea; color: #b91c1c; }
 .sugg-badge--city      { background: #e6f7ff; color: #075985; }
 .sugg-badge--event     { background: #fff7ed; color: #9a3412; }
+.sugg-badge--genre     { background: #e0e7ff; color: #4338ca; }
 
 .artist-link {
     color: #1a73e8;

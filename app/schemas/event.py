@@ -55,3 +55,4 @@ class ExportRequest(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     artist_exact: Optional[str] = None  # comma-separated exact artist names
+    genres: Optional[str] = None  # comma-separated parent-genre names; expanded server-side
