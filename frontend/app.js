@@ -29,21 +29,33 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("start-date").value = fmt(today);
     document.getElementById("end-date").value = fmt(future);
 
-    // Read search state passed from the homepage via sessionStorage
-    const homeSearch = JSON.parse(sessionStorage.getItem("supercaly_search") || "null");
+    // Filter source priority:
+    //   1. URL query string  — pasted/shared link, always wins
+    //   2. sessionStorage    — homepage-→-results handoff (legacy path,
+    //                          preserved for back-compat with the existing
+    //                          home.js navigation flow)
+    //   3. defaults          — global view, no chips
+    //
+    // Either source suppresses geo-detection (the user made an explicit
+    // choice — including "Global"/blank).
+    const urlParams = new URLSearchParams(window.location.search);
+    const fromURL = Array.from(urlParams.keys()).length > 0;
+
+    const homeSearch = !fromURL
+        ? JSON.parse(sessionStorage.getItem("supercaly_search") || "null")
+        : null;
     if (homeSearch) sessionStorage.removeItem("supercaly_search");
 
-    // Set flag BEFORE loadCities so detectUserCity() skips geo-detection.
-    // Suppress if user came from homepage at all — they made an explicit city
-    // choice (including Global / blank), so geo-detection should not override.
-    if (homeSearch?._fromHome) window._citySetFromParams = true;
+    if (fromURL || homeSearch?._fromHome) window._citySetFromParams = true;
 
     setupTypeAutocomplete();
     await loadCities();
     bindEvents();
 
-    // Apply filters from homepage
-    if (homeSearch?.typeValue) {
+    // Apply filters
+    if (fromURL) {
+        applyFiltersFromURL(urlParams);
+    } else if (homeSearch?.typeValue) {
         selectedTypeFilters.push({
             kind:  homeSearch.typeKind  || "freetext",
             value: homeSearch.typeValue,
@@ -51,7 +63,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
         if (renderTypeChips) renderTypeChips();
     }
-    if (homeSearch?.cityId && homeSearch?.cityLabel) {
+    if (!fromURL && homeSearch?.cityId && homeSearch?.cityLabel) {
         document.getElementById("city-input").value = homeSearch.cityLabel;
         document.getElementById("city-id").value    = homeSearch.cityId;
         updateCityClearBtn();
@@ -532,6 +544,82 @@ function bindEvents() {
     });
 }
 
+// ── URL ↔ filter-state plumbing ───────────────────────────────────────────
+// The /results.html URL is shareable: each filter knob is reflected as a
+// query param matching the /api/events contract (genres, artist_exact,
+// type_search, city_ids|country, start_date, end_date, search). The
+// shareable params are written back via history.replaceState in
+// searchEvents() on every first-page load. Read here on init.
+
+function resolveCityLabel(cityId) {
+    // Turn a stored cityId back into the human-readable string the city
+    // input shows. Mirrors the three encodings home.js produces:
+    //   "COUNTRY:Israel"   → country
+    //   "42,43,44"         → metro area (matches metroArea.city_ids)
+    //   "42"               → single city
+    if (!cityId) return "";
+    if (cityId.startsWith("COUNTRY:")) {
+        const cn = cityId.slice("COUNTRY:".length);
+        const c = allCountries.find(x => x.name === cn);
+        return c?.label || cn;
+    }
+    if (cityId.includes(",")) {
+        const m = allMetroAreas.find(x => x.city_ids === cityId);
+        return m?.label || cityId;
+    }
+    const id = parseInt(cityId, 10);
+    if (!Number.isFinite(id)) return cityId;
+    const city = allCities.find(c => c.id === id);
+    return city ? `${city.name}, ${city.country}` : cityId;
+}
+
+function applyFiltersFromURL(params) {
+    // Reconstruct chips from URL params. Lossy on `type_search` round-trip:
+    // the original chip kind (was it event_type? category? venue?) isn't
+    // preserved in the URL — only the value. We restore as `freetext` chips,
+    // which produces identical filter behavior (the type_search backend path
+    // matches across event_type / category / artist / event / venue) and a
+    // sensible "Search" badge.
+    const pushChips = (paramName, kind, badge) => {
+        const v = params.get(paramName);
+        if (!v) return;
+        for (const term of v.split(",").map(s => s.trim()).filter(Boolean)) {
+            selectedTypeFilters.push({ kind, value: term, badge });
+        }
+    };
+    pushChips("genres",       "genre",     "Genre");
+    pushChips("artist_exact", "performer", "Artist");
+    pushChips("type_search",  "freetext",  "Search");
+
+    // City — country exclusive with city_ids; only one is set at a time.
+    const country = params.get("country");
+    if (country) {
+        const cid = `COUNTRY:${country}`;
+        document.getElementById("city-id").value = cid;
+        document.getElementById("city-input").value = resolveCityLabel(cid);
+    } else {
+        const cityIds = params.get("city_ids");
+        if (cityIds) {
+            document.getElementById("city-id").value = cityIds;
+            document.getElementById("city-input").value = resolveCityLabel(cityIds);
+        }
+    }
+    if (typeof updateCityClearBtn === "function") updateCityClearBtn();
+
+    // Dates — these inputs already have today/+30d defaults from before
+    // applyFiltersFromURL runs, so we only overwrite when the URL specifies.
+    const sd = params.get("start_date");
+    if (sd) document.getElementById("start-date").value = sd;
+    const ed = params.get("end_date");
+    if (ed) document.getElementById("end-date").value = ed;
+
+    // The dedicated `search` text box (separate from chip-based search).
+    const s = params.get("search");
+    if (s) document.getElementById("search").value = s;
+
+    if (renderTypeChips) renderTypeChips();
+}
+
 function getFilters() {
     // Partition chips by kind:
     //   "performer" → strict exact-match on artist_name (artist_exact)
@@ -566,16 +654,27 @@ let totalEvents = null; // total matching count from /api/events/count
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
     const { typeSearch, artistExact, genres, cityId, startDate, endDate, search } = getFilters();
+    const country = getSelectedCountry();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (artistExact.length) params.set("artist_exact", artistExact.join(","));
     if (genres.length) params.set("genres", genres.join(","));
     if (cityId) params.set("city_ids", cityId);
-    const country = getSelectedCountry();
     if (country) params.set("country", country);
     if (startDate) params.set("start_date", startDate);
     if (endDate) params.set("end_date", endDate);
     if (search) params.set("search", search);
+
+    // Sync the current filter set into the URL bar so the view is shareable.
+    // Only on first-page loads (pagination doesn't change filters and would
+    // be a no-op). replaceState (not push) keeps the back button going home,
+    // not stepping through every chip change.
+    // IMPORTANT: write before adding limit/offset, which don't belong in the
+    // shareable URL.
+    if (isFirstPage) {
+        const qs = params.toString();
+        history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+    }
 
     // Fetch total count on the first page
     if (isFirstPage) {
