@@ -794,18 +794,34 @@ function showCompactMode() {
     const compactTxt = document.getElementById("compact-text");
     const contextEl  = document.getElementById("compact-context");
 
-    // Build summary text from current active filters. Combine artistExact
-    // (strict-match Artist chips), genres (parent-genre filters), and the
-    // looser typeSearch terms so the pill always reflects what the user
-    // actually picked — without this, selecting "Sting" from the Artist
-    // autocomplete or "Rock" from the Genre autocomplete would leave the
-    // pill stuck on "All events".
-    const { typeSearch, artistExact, genres, startDate, endDate } = getFilters();
+    // Render selected filters as colored chips inside the compact bar so
+    // the user sees *what kind of filter* is active, not just a flat string.
+    // Reuses the same .type-chip palette as the full filter panel — Genre
+    // chips show up as indigo "GENRE Rock", Artist chips as green
+    // "ARTIST Sting", etc. Falls back to "All events" placeholder when
+    // nothing's selected.
+    const { startDate, endDate } = getFilters();
     const cityLabel = document.getElementById("city-input").value.trim();
 
-    const summaryParts = [...artistExact, ...genres, ...typeSearch];
-    if (summaryParts.length > 0) {
-        compactTxt.textContent = summaryParts.join(" · ");
+    const chipHtml = selectedTypeFilters.map(f =>
+        `<span class="type-chip type-chip--${esc(f.kind)}">`
+        + `<span class="type-chip__badge">${esc(f.badge)}</span> `
+        + `${esc(f.value)}`
+        + `</span>`
+    );
+    // Surface uncommitted raw text (≥3 chars) as a freetext chip so the
+    // compact view matches what the search will actually filter on.
+    const rawText = document.getElementById("type-search-input").value.trim();
+    if (rawText.length >= 3 && !selectedTypeFilters.find(f => f.value === rawText)) {
+        chipHtml.push(
+            `<span class="type-chip type-chip--freetext">`
+            + `<span class="type-chip__badge">Search</span> `
+            + `${esc(rawText)}`
+            + `</span>`
+        );
+    }
+    if (chipHtml.length > 0) {
+        compactTxt.innerHTML = chipHtml.join(" ");
         compactTxt.classList.remove("compact-placeholder");
     } else {
         compactTxt.textContent = "All events";
