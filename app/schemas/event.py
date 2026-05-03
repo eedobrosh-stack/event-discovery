@@ -35,6 +35,10 @@ class EventOut(BaseModel):
     sport: Optional[str] = None
     categories: List[str] = []
     event_types: List[str] = []
+    # Primary sub-genre from artist_genre.primary_genre (e.g. "Indie Rock"),
+    # joined on lower(artist_name) = normalized_name. Null when artist_name
+    # is null (sports events) or no classification exists.
+    artist_genre: Optional[str] = None
 
     model_config = {"from_attributes": True, "arbitrary_types_allowed": True}
 

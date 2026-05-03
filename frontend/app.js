@@ -642,6 +642,7 @@ async function searchEvents() {
             <td>${formatPrice(ev.price, ev.price_currency)}</td>
             <td>${(ev.categories || []).join(", ") || "-"}</td>
             <td>${(ev.event_types || []).join(", ") || "-"}</td>
+            <td>${ev.artist_genre ? esc(ev.artist_genre) : "-"}</td>
             <td>${tvHtml}</td>
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">Buy</a>` : "-"}</td>
         `;

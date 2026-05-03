@@ -245,12 +245,25 @@ def export_ics(req: ExportRequest, db: Session = Depends(get_db)):
 def export_csv(req: ExportRequest, db: Session = Depends(get_db)):
     events = _get_filtered_events(req, db)
 
+    # Bulk-fetch artist genres for all events being exported. One IN-query;
+    # mirrors the per-page approach used in /api/events.
+    from app.models.genre import ArtistGenre
+    artist_lowered = {e.artist_name.lower() for e in events if e.artist_name}
+    artist_genre_map: dict[str, str] = {}
+    if artist_lowered:
+        rows = (
+            db.query(ArtistGenre.normalized_name, ArtistGenre.primary_genre)
+            .filter(ArtistGenre.normalized_name.in_(artist_lowered))
+            .all()
+        )
+        artist_genre_map = {n: g for (n, g) in rows if g and g != "UNKNOWN"}
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
         "Event", "Artist", "Date", "Start Time", "End Time",
         "Venue", "City", "Country", "Price", "Currency",
-        "Category", "Type", "Link", "YouTube",
+        "Category", "Type", "Genre", "Link", "YouTube",
     ])
     for e in events:
         venue = e.venue
@@ -267,6 +280,7 @@ def export_csv(req: ExportRequest, db: Session = Depends(get_db)):
             e.price_currency or "",
             ", ".join(t.category for t in e.event_types) if e.event_types else "",
             ", ".join(t.name for t in e.event_types) if e.event_types else "",
+            (artist_genre_map.get(e.artist_name.lower()) if e.artist_name else "") or "",
             e.purchase_link or "",
             e.artist_youtube_channel or "",
         ])

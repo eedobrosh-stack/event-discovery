@@ -246,12 +246,35 @@ def list_events(
         .all()
     )
 
+    # Bulk-fetch artist genres for this page in one shot. Avoids per-row
+    # lookups; ~50 artists per page × O(1) hash lookup is trivially fast.
+    artist_genre_map: dict[str, str] = {}
+    artist_lowered = {
+        e.artist_name.lower()
+        for e in events
+        if e.artist_name
+    }
+    if artist_lowered:
+        from app.models.genre import ArtistGenre
+        rows = (
+            db.query(ArtistGenre.normalized_name, ArtistGenre.primary_genre)
+            .filter(ArtistGenre.normalized_name.in_(artist_lowered))
+            .all()
+        )
+        # Skip "UNKNOWN" — surfacing it as a label is noise; null is cleaner.
+        artist_genre_map = {
+            n: g for (n, g) in rows
+            if g and g != "UNKNOWN"
+        }
+
     results = []
     for e in events:
         out = EventOut.model_validate(e)
         types = e.event_types or []
         out.categories = list(dict.fromkeys(et.category for et in types if et.category))
         out.event_types = [et.name for et in types if et.name]
+        if e.artist_name:
+            out.artist_genre = artist_genre_map.get(e.artist_name.lower())
         if e.venue and e.venue.timezone:
             out.venue_timezone = e.venue.timezone
         if e.venue and e.venue.website_url:
