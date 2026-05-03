@@ -48,7 +48,9 @@ def get_suggestions(
     """
     Returns autocomplete suggestions mixing:
       - Event categories  (badge: "Category")
-      - Event types       (badge: "Type")
+      - Event types       (badge: "Format")  — user-facing label; backend
+                                                model field is still
+                                                event_type.
       - Artist names      (badge: "Artist")  — from future events only
       - Venues            (badge: "Venue")   — from future events only
     """
@@ -123,7 +125,10 @@ def get_suggestions(
         .limit(PER_TYPE)
         .all()
     )
-    event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Type"}
+    # Note: kind stays "event_type" so the existing CSS chip class and the
+    # backend type_search routing keep working. Only the user-visible badge
+    # is renamed to "Format" — Type was confusing once Genre joined the UI.
+    event_types = [{"kind": "event_type", "value": name, "label": name, "badge": "Format"}
                    for name, _ in types]
 
     # 3. Sports teams — `home_team` / `away_team` are dedicated columns on sport

@@ -263,7 +263,7 @@ def export_csv(req: ExportRequest, db: Session = Depends(get_db)):
     writer.writerow([
         "Event", "Artist", "Date", "Start Time", "End Time",
         "Venue", "City", "Country", "Price", "Currency",
-        "Category", "Type", "Genre", "Link", "YouTube",
+        "Category", "Format", "Genre", "Link", "YouTube",
     ])
     for e in events:
         venue = e.venue
