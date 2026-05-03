@@ -10,6 +10,8 @@ from app.api._search_filters import (
     word_boundary_ilike,
     name_match_ilike,
     resolve_genre_artist_names,
+    build_genre_format_event_type_subquery,
+    build_classified_artists_subquery,
 )
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -56,21 +58,54 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             )
 
     # Genre filter — chip values are *parent* genres (e.g. "Rock", "Electronic").
-    # Expansion (via resolve_genre_artist_names): parent → sub-genres → artists.
-    # Tolerant by design: a sub-genre query like "techno" routes through
-    # autocomplete to the parent "Electronic", and *all* electronic sub-genre
-    # artists surface here, without users having to know the taxonomy.
+    # Two complementary match paths combined as OR:
+    #
+    #   1. Artist-genre match (the canonical one).
+    #      Parent → sub-genres in genre_taxonomy → artists tagged with any
+    #      sub-genre via artist_genre.primary/secondary. Surfaces events by
+    #      classified artists.
+    #
+    #   2. Format-fallback match (the safety net).
+    #      For events whose artist isn't classified (null artist_name OR not
+    #      in artist_genre OR primary='UNKNOWN'), match by event_type name
+    #      via build_genre_format_event_type_subquery. This rescues "Jazz
+    #      Night at Shablul Jazz Club" with artist=null when user searches
+    #      Genre=Jazz — without it, we'd only return the ~2 jazz artists
+    #      whose name happens to be classified.
+    #
+    # Together they give the same recall as a free-text "jazz" search but
+    # with the precision of the taxonomy (no Rock Climbing under Rock).
     artist_norms = resolve_genre_artist_names(db, genres)
     if artist_norms is not None:
+        from sqlalchemy import and_
+        format_subq = build_genre_format_event_type_subquery(db, genres)
+        conditions = []
         if artist_norms:
-            query = query.filter(
-                Event.artist_name.isnot(None),
-                func.lower(Event.artist_name).in_(artist_norms),
+            conditions.append(
+                func.lower(Event.artist_name).in_(artist_norms)
             )
+        if format_subq is not None:
+            classified_subq = build_classified_artists_subquery(db)
+            conditions.append(and_(
+                or_(
+                    Event.artist_name.is_(None),
+                    func.lower(Event.artist_name).notin_(classified_subq),
+                ),
+                Event.id.in_(format_subq),
+                # Guardrail: never surface sports rows under a music genre.
+                # The existing event_type classifier sometimes mis-tags
+                # basketball games as "Rock Concert" — that's a data-quality
+                # bug upstream, but it would be very visible here without
+                # this filter. Cheap to enforce; nothing legitimate is lost
+                # since music genres don't apply to sports anyway.
+                Event.sport.is_(None),
+            ))
+        if conditions:
+            query = query.filter(or_(*conditions))
         else:
-            # Empty list = valid parents but no tagged artists, OR unknown
-            # parent (defensive — autocomplete only emits real parents).
-            # Either way, no events match.
+            # Defensive — should not happen since autocomplete only emits
+            # real parents and every parent has either tagged artists or a
+            # format mapping. Treat as no-match.
             query = query.filter(False)
 
     # Legacy: exact category filter

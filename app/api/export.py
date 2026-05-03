@@ -10,7 +10,39 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.database import get_db
 from app.models import Event, EventType, Venue, Performer, City, event_event_types
 from app.schemas.event import ExportRequest
-from app.api._search_filters import resolve_genre_artist_names
+from app.api._search_filters import (
+    resolve_genre_artist_names,
+    build_genre_format_event_type_subquery,
+    build_classified_artists_subquery,
+)
+
+
+def _apply_genre_filter(query, db: Session, genres):
+    """Shared genre-filter logic for export endpoints — keeps the format
+    fallback identical to /api/events. See app/api/events.py for design
+    rationale (artist-tagged match OR format-name match for unclassified
+    artists, with sports guardrail)."""
+    from sqlalchemy import and_
+    artist_norms = resolve_genre_artist_names(db, genres)
+    if artist_norms is None:
+        return query
+    format_subq = build_genre_format_event_type_subquery(db, genres)
+    conditions = []
+    if artist_norms:
+        conditions.append(func.lower(Event.artist_name).in_(artist_norms))
+    if format_subq is not None:
+        classified_subq = build_classified_artists_subquery(db)
+        conditions.append(and_(
+            or_(
+                Event.artist_name.is_(None),
+                func.lower(Event.artist_name).notin_(classified_subq),
+            ),
+            Event.id.in_(format_subq),
+            Event.sport.is_(None),
+        ))
+    if conditions:
+        return query.filter(or_(*conditions))
+    return query.filter(False)
 from app.services.export.ics_generator import generate_ics, generate_subscription_ics
 from app.services.export.google_sheets import export_to_sheets
 from app.api.auth import get_credentials, SESSION_COOKIE
@@ -35,16 +67,8 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
                 func.lower(Event.artist_name).in_(lowered),
             )
 
-    # Genre filter — same parent → sub-genres → artists expansion as /api/events.
-    artist_norms = resolve_genre_artist_names(db, req.genres)
-    if artist_norms is not None:
-        if artist_norms:
-            query = query.filter(
-                Event.artist_name.isnot(None),
-                func.lower(Event.artist_name).in_(artist_norms),
-            )
-        else:
-            query = query.filter(False)
+    # Genre filter — artist-tagged + format-fallback (matches /api/events).
+    query = _apply_genre_filter(query, db, req.genres)
 
     if req.type_search:
         terms = [t.strip() for t in req.type_search.split(",") if t.strip()]
@@ -127,15 +151,8 @@ def _get_filtered_events_from_params(
                 func.lower(Event.artist_name).in_(lowered),
             )
 
-    artist_norms = resolve_genre_artist_names(db, genres)
-    if artist_norms is not None:
-        if artist_norms:
-            query = query.filter(
-                Event.artist_name.isnot(None),
-                func.lower(Event.artist_name).in_(artist_norms),
-            )
-        else:
-            query = query.filter(False)
+    # Genre filter — same artist + format-fallback as POST /export/csv path.
+    query = _apply_genre_filter(query, db, genres)
 
     if type_search:
         terms = [t.strip() for t in type_search.split(",") if t.strip()]

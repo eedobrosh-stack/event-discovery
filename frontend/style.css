@@ -118,13 +118,19 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     border-radius: 8px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     margin-bottom: 1.5rem;
+    /* overflow toggles between visible (open, so the autocomplete dropdown
+       can extend below the panel) and hidden (closed, so content is clipped
+       during the max-height collapse animation). The 0.35s transition-delay
+       on overflow keeps it hidden during the OPEN animation too — without
+       that, content briefly pokes out as max-height grows from 0 → 500. */
     transition: max-height 0.35s ease,
                 opacity 0.3s ease,
                 padding 0.3s ease,
-                margin-bottom 0.3s ease;
+                margin-bottom 0.3s ease,
+                overflow 0s linear 0.35s;
     max-height: 500px;
     opacity: 1;
-    overflow: hidden;
+    overflow: visible;
 }
 
 /* Filter panel hidden — only shown when user focuses the compact bar */
@@ -135,6 +141,14 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     padding-bottom: 0;
     margin-bottom: 0;
     pointer-events: none;
+    /* Apply overflow:hidden IMMEDIATELY (no delay) when closing so content
+       is clipped during the max-height shrink. */
+    overflow: hidden;
+    transition: max-height 0.35s ease,
+                opacity 0.3s ease,
+                padding 0.3s ease,
+                margin-bottom 0.3s ease,
+                overflow 0s linear 0s;
 }
 
 .filter-row {
@@ -676,6 +690,8 @@ a:hover { text-decoration: underline; }
     .compact-action-btn .btn-icon { font-size: 1.05rem; }
     /* Let the pill take all available width */
     #compact-pill { padding: 0.55rem 0.85rem; }
+    /* Buttons opted into mobile hiding (currently CSV — power-user export) */
+    .hide-on-mobile { display: none !important; }
 
     /* Table: hide YouTube (col 3), Time (col 5), Category (col 8) */
     /* thead nth-child matches <th> elements; tbody nth-child matches <td> elements */

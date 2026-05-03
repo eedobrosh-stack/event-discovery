@@ -34,13 +34,17 @@
                  On mobile, labels collapse (kept for screen readers via .btn-label) so
                  the search pill keeps most of the width. -->
             <div class="compact-actions">
+                <button id="compact-share-btn" type="button" class="action-btn compact-action-btn" aria-label="Copy shareable link">
+                    <span class="btn-icon" aria-hidden="true">🔗</span><span class="btn-label"> Share</span>
+                </button>
                 <button id="compact-ics-btn" type="button" class="action-btn compact-action-btn" aria-label="Export to Apple or Outlook">
                     <span class="btn-icon" aria-hidden="true">🍎</span><span class="btn-label"> Apple / Outlook</span>
                 </button>
                 <button id="compact-subscribe-btn" type="button" class="action-btn compact-action-btn btn-subscribe" aria-label="Subscribe in Google Calendar">
                     <span class="btn-icon" aria-hidden="true">📅</span><span class="btn-label"> Google Calendar</span>
                 </button>
-                <button id="compact-csv-btn" type="button" class="action-btn compact-action-btn" aria-label="Download CSV">
+                <!-- CSV is power-user, full-screen-only; mobile hides via .hide-on-mobile. -->
+                <button id="compact-csv-btn" type="button" class="action-btn compact-action-btn hide-on-mobile" aria-label="Download CSV">
                     <span class="btn-icon" aria-hidden="true">⬇</span><span class="btn-label"> CSV</span>
                 </button>
             </div>

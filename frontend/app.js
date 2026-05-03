@@ -88,6 +88,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("compact-ics-btn").addEventListener("click", e => { e.stopPropagation(); exportICS(); });
     document.getElementById("compact-csv-btn").addEventListener("click", e => { e.stopPropagation(); exportCSV(); });
     document.getElementById("compact-subscribe-btn").addEventListener("click", e => { e.stopPropagation(); openSubscribeModal(); });
+    document.getElementById("compact-share-btn").addEventListener("click", e => { e.stopPropagation(); copyShareableLink(e.currentTarget); });
 
     // Escape while filter panel is open → back to compact mode (if results exist)
     document.addEventListener("keydown", e => {
@@ -618,6 +619,39 @@ function applyFiltersFromURL(params) {
     if (s) document.getElementById("search").value = s;
 
     if (renderTypeChips) renderTypeChips();
+}
+
+// ── Share button ───────────────────────────────────────────────────────
+// Copies the current URL (which already mirrors all active filters) to
+// the clipboard. Works on prod over HTTPS; falls back to a manual
+// document.execCommand("copy") on plain HTTP / older browsers.
+async function copyShareableLink(btn) {
+    const url = window.location.href;
+    let ok = false;
+    try {
+        await navigator.clipboard.writeText(url);
+        ok = true;
+    } catch (e) {
+        // Fallback: hidden textarea + execCommand. Crusty but reliable on
+        // contexts where the async clipboard API isn't available.
+        try {
+            const ta = document.createElement("textarea");
+            ta.value = url;
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.focus(); ta.select();
+            ok = document.execCommand("copy");
+            document.body.removeChild(ta);
+        } catch (_) {}
+    }
+    if (!btn) return;
+    const originalLabel = btn.querySelector(".btn-label");
+    const originalLabelText = originalLabel?.textContent || "";
+    if (originalLabel) originalLabel.textContent = ok ? " Copied!" : " Copy failed";
+    setTimeout(() => {
+        if (originalLabel) originalLabel.textContent = originalLabelText;
+    }, 1600);
 }
 
 // ── Empty-state + lookahead helpers ────────────────────────────────────

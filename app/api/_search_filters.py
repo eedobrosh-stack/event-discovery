@@ -123,3 +123,93 @@ def resolve_genre_artist_names(db: Session, genres: Optional[str]) -> Optional[l
         )
     ]
     return artist_norms
+
+
+# Format-string fallback for the Genre filter.
+#
+# Problem: Genre=Jazz in Tel Aviv returns 2 events (only artists tagged with
+# Jazz sub-genres), even though the catalog has many "Jazz Concert" events
+# whose artist isn't classified (or is null). We complement the artist-genre
+# match with an event_type-name match for events whose artist is unclassified.
+#
+# Each parent genre maps to a (category, name_keywords) pair:
+#   - category restricts the event_type to a sane bucket (Music for music
+#     genres, Comedy for Comedy) so we don't pick up "Rock Climbing
+#     Competitions" (Outdoor) under genre=Rock.
+#   - name_keywords match against EventType.name as a substring (lowercased).
+#     None means category match alone is sufficient (e.g. Comedy).
+#
+# Maintained by hand because the parent-genre taxonomy is hand-curated;
+# auto-deriving from name overlap gave false positives like Classical Ballet
+# (Dance) sneaking in under genre=Classical.
+_GENRE_FORMAT_MATCH = {
+    "Rock":        ("Music", ["rock"]),
+    "Pop":         ("Music", ["pop"]),
+    "Jazz":        ("Music", ["jazz"]),
+    "Hip-Hop":     ("Music", ["hip-hop", "hip hop", "rap"]),
+    "Latin":       ("Music", ["latin"]),
+    "Country":     ("Music", ["country"]),
+    "Classical":   ("Music", ["classical", "symphony", "opera", "concerto",
+                              "recital", "baroque", "renaissance", "string quartet",
+                              "piano trio", "woodwind"]),
+    "Electronic":  ("Music", ["electronic", "dj set"]),
+    "World":       ("Music", ["world", "reggae", "gospel"]),
+    "Comedy":      ("Comedy", None),
+    # Theatre / Family / Spoken Word: skip for now — no clean event_type
+    # category mapping yet, and the user's pain is music-genre coverage.
+}
+
+
+def build_genre_format_event_type_subquery(db: Session, genres: Optional[str]):
+    """Subquery returning event IDs whose event_type matches any of the
+    requested parent genres by category + name. Used as the fallback path
+    when the artist-genre filter doesn't catch events whose artist isn't
+    classified.
+
+    Returns None if `genres` is empty or no genres have a format mapping.
+    """
+    if not genres:
+        return None
+    from sqlalchemy import select, and_, func
+    from app.models import Event, EventType, event_event_types
+
+    genre_list = [g.strip() for g in genres.split(",") if g.strip()]
+    conditions = []
+    for g in genre_list:
+        spec = _GENRE_FORMAT_MATCH.get(g)
+        if spec is None:
+            continue
+        cat, keywords = spec
+        cond = EventType.category == cat
+        if keywords:
+            name_match = or_(*[
+                func.lower(EventType.name).like(f"%{kw.lower()}%")
+                for kw in keywords
+            ])
+            cond = and_(cond, name_match)
+        conditions.append(cond)
+    if not conditions:
+        return None
+    return (
+        select(event_event_types.c.event_id)
+        .join(EventType, EventType.id == event_event_types.c.event_type_id)
+        .where(or_(*conditions))
+        .scalar_subquery()
+    )
+
+
+def build_classified_artists_subquery(db: Session):
+    """Subquery returning normalized_name of artists with a non-UNKNOWN
+    classification — i.e. artists whose Genre column would NOT be null
+    in the results table. Used to identify events that should fall back
+    to the format match (artist null/unclassified)."""
+    from sqlalchemy import select
+    from app.models.genre import ArtistGenre
+    return (
+        select(ArtistGenre.normalized_name)
+        .where(
+            ArtistGenre.primary_genre.isnot(None),
+            ArtistGenre.primary_genre != "UNKNOWN",
+        )
+        .scalar_subquery()
+    )
