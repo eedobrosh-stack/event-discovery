@@ -794,14 +794,15 @@ function showCompactMode() {
     const contextEl  = document.getElementById("compact-context");
 
     // Build summary text from current active filters. Combine artistExact
-    // (strict-match Artist chips) with the looser typeSearch terms so the
-    // pill always reflects what the user actually picked — without this,
-    // selecting "Sting" from the Artist autocomplete would route the chip
-    // into artistExact and leave the pill stuck on "All events".
-    const { typeSearch, artistExact, startDate, endDate } = getFilters();
+    // (strict-match Artist chips), genres (parent-genre filters), and the
+    // looser typeSearch terms so the pill always reflects what the user
+    // actually picked — without this, selecting "Sting" from the Artist
+    // autocomplete or "Rock" from the Genre autocomplete would leave the
+    // pill stuck on "All events".
+    const { typeSearch, artistExact, genres, startDate, endDate } = getFilters();
     const cityLabel = document.getElementById("city-input").value.trim();
 
-    const summaryParts = [...artistExact, ...typeSearch];
+    const summaryParts = [...artistExact, ...genres, ...typeSearch];
     if (summaryParts.length > 0) {
         compactTxt.textContent = summaryParts.join(" · ");
         compactTxt.classList.remove("compact-placeholder");

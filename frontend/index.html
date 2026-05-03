@@ -180,6 +180,11 @@
         .sugg-badge--event_type { background: #3b1f5e; color: #c084fc; }
         .sugg-badge--performer  { background: #1a3a2a; color: #4ade80; }
         .sugg-badge--venue      { background: #3f1a2e; color: #f472b6; }
+        .sugg-badge--genre      { background: #1e1f5e; color: #a5b4fc; }
+        /* Below kinds are also returned by /api/suggestions; fall back to a
+           muted grey on dark so they're at least legible if surfaced. */
+        .sugg-badge--event      { background: #3a2a1a; color: #fbbf24; }
+        .sugg-badge--sport_team { background: #3a1a1a; color: #fb7185; }
 
         /* ── Search button ── */
         .search-btn {
