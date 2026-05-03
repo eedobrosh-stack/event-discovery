@@ -55,6 +55,56 @@ def _fetch(url: str) -> Optional[str]:
 
 # ── JSON-LD event counting ────────────────────────────────────────────────────
 
+# Schema.org Event subtype hierarchy — accept any of these as a real event.
+# Source: https://schema.org/Event#hierarchy
+# Excludes BroadcastEvent / DeliveryEvent / OnDemandEvent / PublicationEvent /
+# SaleEvent which aren't event-listings in the live-calendar sense.
+_EVENT_TYPES: frozenset = frozenset({
+    "Event",
+    "BusinessEvent", "ChildrensEvent", "ComedyEvent", "DanceEvent",
+    "EducationEvent", "EventSeries", "ExhibitionEvent", "Festival",
+    "FoodEvent", "Hackathon", "LiteraryEvent", "MusicEvent",
+    "ScreeningEvent", "SocialEvent", "SportsEvent", "TheaterEvent",
+    "VisualArtsEvent",
+})
+
+
+def _flatten_ld_items(data):
+    """Yield individual JSON-LD entities from one block, transparently
+    descending into the wrapper patterns sites use to batch multiple
+    entities together:
+
+      - bare list                              [{...}, {...}]
+      - {"@graph": [...]}                       (canonical multi-entity)
+      - {"itemListElement": [{"item": {...}}]}  (ItemList wrapper)
+
+    Without this descent the original implementation only saw the
+    *outermost* node — so a page with 113 events nested under @graph
+    looked like 0 events. tickchak.co.il was the canary; many Wix
+    /Next.js sites use the same structure.
+    """
+    if isinstance(data, list):
+        for item in data:
+            yield from _flatten_ld_items(item)
+        return
+    if not isinstance(data, dict):
+        return
+    if isinstance(data.get("@graph"), list):
+        for item in data["@graph"]:
+            yield from _flatten_ld_items(item)
+        return
+    if isinstance(data.get("itemListElement"), list):
+        for item in data["itemListElement"]:
+            # Each element can be a plain entity or {"@type": "ListItem",
+            # "item": <Event>} — descend through both shapes.
+            if isinstance(item, dict) and "item" in item:
+                yield from _flatten_ld_items(item["item"])
+            else:
+                yield from _flatten_ld_items(item)
+        return
+    yield data
+
+
 def _count_events(html: str, future_only: bool = True) -> tuple[int, list[str]]:
     """Return (event_count, [sample_names]) from a page's JSON-LD blocks."""
     today = str(date.today())
@@ -66,19 +116,18 @@ def _count_events(html: str, future_only: bool = True) -> tuple[int, list[str]]:
     for block in ld_blocks:
         try:
             data = json.loads(block)
-            items = data if isinstance(data, list) else [data]
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("@type") not in ("Event", "MusicEvent", "EventSeries"):
-                    continue
-                if future_only:
-                    sd = (item.get("startDate") or "")[:10]
-                    if sd and sd < today:
-                        continue
-                events.append(item.get("name", "Untitled"))
         except (json.JSONDecodeError, TypeError):
             continue
+        for item in _flatten_ld_items(data):
+            if not isinstance(item, dict):
+                continue
+            if item.get("@type") not in _EVENT_TYPES:
+                continue
+            if future_only:
+                sd = (item.get("startDate") or "")[:10]
+                if sd and sd < today:
+                    continue
+            events.append(item.get("name", "Untitled"))
     return len(events), events[:3]
 
 
