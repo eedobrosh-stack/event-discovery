@@ -439,6 +439,22 @@ a:hover { text-decoration: underline; }
 .type-chip--venue      { background: #fde8f0; color: #9d174d; }
 .type-chip--genre      { background: #e0e7ff; color: #4338ca; }
 
+/* Search-empty / extended-window banner. Sits above the results table
+   and reuses the same understated style as #stats. Two flavors:
+   - .notice--info     : auto-extend success ("Extended through Jul 15…")
+   - .notice--empty    : true zero-result ("No events for X…")
+*/
+#search-notice {
+    margin: 0.5rem 0 0.75rem 0;
+    padding: 0.6rem 0.85rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+#search-notice.notice--info  { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+#search-notice.notice--empty { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
+#search-notice .notice__strong { font-weight: 600; }
+
 .type-chip__badge {
     font-size: 0.65rem;
     opacity: 0.7;

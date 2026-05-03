@@ -60,3 +60,17 @@ class ExportRequest(BaseModel):
     end_date: Optional[date] = None
     artist_exact: Optional[str] = None  # comma-separated exact artist names
     genres: Optional[str] = None  # comma-separated parent-genre names; expanded server-side
+
+
+class ZeroResultSearchRequest(BaseModel):
+    """Payload the frontend POSTs when a search comes up empty even after
+    we tried to extend the end_date into the future. See
+    app/models/zero_result_search.py for storage rationale."""
+    genres: Optional[str] = None
+    artists: Optional[str] = None       # artist_exact value(s)
+    type_search: Optional[str] = None
+    free_search: Optional[str] = None
+    city_ids: Optional[str] = None
+    country: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None

@@ -1,11 +1,11 @@
 from typing import Optional, List
 from datetime import date, datetime
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.database import get_db
-from app.models import Event, EventType, Venue, Performer, event_event_types
-from app.schemas.event import EventOut
+from app.models import Event, EventType, Venue, Performer, event_event_types, ZeroResultSearch
+from app.schemas.event import EventOut, ZeroResultSearchRequest
 from app.api._search_filters import (
     word_boundary_ilike,
     name_match_ilike,
@@ -295,3 +295,38 @@ def list_events(
 
         results.append(out)
     return results
+
+
+@router.post("/zero-result")
+def log_zero_result_search(
+    payload: ZeroResultSearchRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Persist a search that came up empty even after lookahead.
+
+    The frontend calls this after a search returns 0 events AND the
+    end-date-extended retry also returns 0. The row goes into
+    `zero_result_searches` for offline scanning ("what's the catalog
+    missing that users want?"). Cheap append-only — no dedupe at
+    write-time; aggregation happens at read-time via SQL.
+
+    Returns {"ok": true} regardless of payload contents (best-effort).
+    """
+    try:
+        db.add(ZeroResultSearch(
+            genres=payload.genres,
+            artists=payload.artists,
+            type_search=payload.type_search,
+            free_search=payload.free_search,
+            city_ids=payload.city_ids,
+            country=payload.country,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            user_agent=(request.headers.get("user-agent") or "")[:500] or None,
+        ))
+        db.commit()
+    except Exception:
+        # Best-effort logging — never break the user's empty-state UX.
+        db.rollback()
+    return {"ok": True}

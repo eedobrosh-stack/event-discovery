@@ -620,6 +620,101 @@ function applyFiltersFromURL(params) {
     if (renderTypeChips) renderTypeChips();
 }
 
+// ── Empty-state + lookahead helpers ────────────────────────────────────
+// When a search returns 0 results in the user's chosen window, we don't
+// just give up: we re-run the same query with end_date pushed out 2 years
+// and, if there are matches in that extended range, adopt them and stretch
+// the end_date input to cover. If nothing exists in the extended window
+// either, we surface a friendly "no events" message and POST the search
+// criteria to /api/events/zero-result so we can spot real catalog gaps.
+
+const _LOOKAHEAD_YEARS = 2;
+
+async function _runLookahead({ typeSearch, artistExact, genres, cityId, country, startDate, search }) {
+    const lp = new URLSearchParams();
+    if (typeSearch.length)  lp.set("type_search", typeSearch.join(","));
+    if (artistExact.length) lp.set("artist_exact", artistExact.join(","));
+    if (genres.length)      lp.set("genres", genres.join(","));
+    if (cityId)             lp.set("city_ids", cityId);
+    if (country)            lp.set("country", country);
+    if (startDate)          lp.set("start_date", startDate);
+    if (search)             lp.set("search", search);
+    // Cap at +N years so we don't pull every event ever scraped.
+    const cap = new Date();
+    cap.setFullYear(cap.getFullYear() + _LOOKAHEAD_YEARS);
+    lp.set("end_date", cap.toISOString().split("T")[0]);
+    lp.set("limit", LIMIT);
+    lp.set("offset", 0);
+    try {
+        const r = await fetch(`/api/events?${lp}`);
+        if (!r.ok) return null;
+        const events = await r.json();
+        return { events, params: lp };
+    } catch (e) {
+        return null;
+    }
+}
+
+function _logZeroResultSearch(payload) {
+    // Best-effort. Don't await — a slow logger shouldn't block the UX.
+    fetch("/api/events/zero-result", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    }).catch(() => {});
+}
+
+function _fmtFriendlyDate(iso) {
+    if (!iso) return "";
+    const [y, m, d] = iso.split("-");
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${months[parseInt(m,10)-1]} ${parseInt(d,10)}, ${y}`;
+}
+
+function clearSearchNotice() {
+    const el = document.getElementById("search-notice");
+    if (!el) return;
+    el.hidden = true;
+    el.className = "";
+    el.innerHTML = "";
+}
+
+function renderSearchNotice(flavor, html) {
+    // flavor: "info" (extended success) or "empty" (no results at all)
+    const el = document.getElementById("search-notice");
+    if (!el) return;
+    el.className = `notice--${flavor}`;
+    el.innerHTML = html;
+    el.hidden = false;
+}
+
+function renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate }) {
+    // Describe the search in terms the user used. Pluralize the noun based
+    // on the dominant chip kind so the message reads naturally:
+    //   1 artist chip → "artist events"
+    //   1 genre chip  → "genre events"
+    //   anything else → "events"
+    const allChips = [...artistExact, ...genres, ...typeSearch];
+    const free = (search || "").trim();
+    const terms = allChips.length ? allChips : (free ? [free] : []);
+
+    let kindWord = "events";
+    if (artistExact.length === 1 && !genres.length && !typeSearch.length) kindWord = "artist events";
+    else if (genres.length === 1 && !artistExact.length && !typeSearch.length) kindWord = `${genres[0]} events`;
+
+    const termsHtml = terms.length
+        ? `for <span class="notice__strong">${terms.map(esc).join(", ")}</span> `
+        : "";
+    const dateRange = (startDate && endDate)
+        ? `between <span class="notice__strong">${_fmtFriendlyDate(startDate)}</span> ` +
+          `and <span class="notice__strong">${_fmtFriendlyDate(endDate)}</span>`
+        : "in this date range";
+
+    renderSearchNotice("empty",
+        `No ${kindWord} ${termsHtml}${dateRange}.`);
+}
+
 function getFilters() {
     // Partition chips by kind:
     //   "performer" → strict exact-match on artist_name (artist_exact)
@@ -676,6 +771,9 @@ async function searchEvents() {
         history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
     }
 
+    // Clear any prior empty/extended notice — fresh search starts neutral.
+    if (isFirstPage) clearSearchNotice();
+
     // Fetch total count on the first page
     if (isFirstPage) {
         totalEvents = null;
@@ -692,7 +790,70 @@ async function searchEvents() {
     params.set("offset", offset);
 
     const resp = await fetch(`/api/events?${params}`);
-    const events = await resp.json();
+    let events = await resp.json();
+
+    // Empty-state handling — only on first page (paginated empties are
+    // just "end of results", not a missing-data signal). Two branches:
+    //   1. Lookahead succeeds → extend end_date, adopt those events.
+    //   2. Lookahead empty → log + render "no events for X" message.
+    let extendedTo = null;
+    if (isFirstPage && events.length === 0) {
+        const filterCriteria = {
+            typeSearch, artistExact, genres,
+            cityId, country, startDate, search,
+        };
+        const lookahead = await _runLookahead(filterCriteria);
+        if (lookahead && lookahead.events.length > 0) {
+            // Found in extended window. Adopt the events and update inputs.
+            events = lookahead.events;
+            extendedTo = lookahead.events[lookahead.events.length - 1].start_date;
+            document.getElementById("end-date").value = extendedTo;
+            // Rebuild params using the *actual* extended end_date (not the
+            // +2yr lookahead cap we used internally) so the URL bar and the
+            // count fetch reflect what the user actually sees.
+            const adoptedParams = new URLSearchParams();
+            if (typeSearch.length)  adoptedParams.set("type_search", typeSearch.join(","));
+            if (artistExact.length) adoptedParams.set("artist_exact", artistExact.join(","));
+            if (genres.length)      adoptedParams.set("genres", genres.join(","));
+            if (cityId)             adoptedParams.set("city_ids", cityId);
+            if (country)            adoptedParams.set("country", country);
+            if (startDate)          adoptedParams.set("start_date", startDate);
+            adoptedParams.set("end_date", extendedTo);
+            if (search)             adoptedParams.set("search", search);
+            fetch(`/api/events/count?${adoptedParams}`)
+                .then(r => r.json())
+                .then(({ total }) => {
+                    totalEvents = total;
+                    updateStats(document.getElementById("events-body").children.length);
+                })
+                .catch(() => {});
+            history.replaceState(null, "", `?${adoptedParams.toString()}`);
+            renderSearchNotice("info",
+                `No matches in the original window — extended through ` +
+                `<span class="notice__strong">${esc(_fmtFriendlyDate(extendedTo))}</span> ` +
+                `to find events.`);
+        } else {
+            // Truly nothing — log + show empty message + bail out of render.
+            _logZeroResultSearch({
+                genres: genres.join(",") || null,
+                artists: artistExact.join(",") || null,
+                type_search: typeSearch.join(",") || null,
+                free_search: search || null,
+                city_ids: cityId || null,
+                country: country || null,
+                start_date: startDate || null,
+                end_date: endDate || null,
+            });
+            renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate });
+            // Reset paging UI so it doesn't dangle a "Load More" button.
+            const tbody = document.getElementById("events-body");
+            tbody.innerHTML = "";
+            updateStats(0);
+            document.getElementById("load-more-btn").style.display = "none";
+            if (isFirstPage) showCompactMode();
+            return;
+        }
+    }
 
     const tbody = document.getElementById("events-body");
     events.forEach(ev => {

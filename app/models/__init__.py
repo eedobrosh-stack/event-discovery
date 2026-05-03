@@ -8,5 +8,6 @@ from app.models.scan_log import ScanLog
 from app.models.platform_venue import PlatformVenue
 from app.models.job_state import JobState
 from app.models.genre import GenreTaxonomy, ArtistGenre
+from app.models.zero_result_search import ZeroResultSearch
 
-__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre"]
+__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ZeroResultSearch"]
