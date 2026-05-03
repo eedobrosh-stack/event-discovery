@@ -723,6 +723,20 @@ function renderSearchNotice(flavor, html) {
     el.hidden = false;
 }
 
+function _cleanPlaceLabel() {
+    // The city-input shows things like "🌐 France (407 cities)" /
+    // "🗺 Greater London (5 cities)" / "Tel Aviv, Israel". For prose use,
+    // strip the leading emoji and the trailing "(N cities)" suffix so the
+    // message reads "in France" rather than "in 🌐 France (407 cities)".
+    // Returns null for global (no city selected).
+    const raw = (document.getElementById("city-input")?.value || "").trim();
+    if (!raw) return null;
+    return raw
+        .replace(/^[🌐🗺]\s*/, "")
+        .replace(/\s*\(\d+\s+cit(?:y|ies)\)$/, "")
+        .trim() || null;
+}
+
 function renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate }) {
     // Describe the search in terms the user used. Pluralize the noun based
     // on the dominant chip kind so the message reads naturally:
@@ -745,8 +759,15 @@ function renderEmptyStateMessage({ artistExact, genres, typeSearch, search, star
           `and <span class="notice__strong">${_fmtFriendlyDate(endDate)}</span>`
         : "in this date range";
 
+    // "in <Place>" tail only when scoped to a specific city/metro/country —
+    // omitted for Global searches (the date range is the only scope).
+    const place = _cleanPlaceLabel();
+    const placeHtml = place
+        ? ` in <span class="notice__strong">${esc(place)}</span>`
+        : "";
+
     renderSearchNotice("empty",
-        `No ${kindWord} ${termsHtml}${dateRange}.`);
+        `No ${kindWord} ${termsHtml}${dateRange}${placeHtml}.`);
 }
 
 function getFilters() {
