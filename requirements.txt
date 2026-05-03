@@ -11,6 +11,11 @@ apscheduler>=3.10
 icalendar
 google-api-python-client
 google-auth-oauthlib
+# google-genai is the SDK for Gemini — used by app/extractors/llm_extractor.py.
+# It only runs when GEMINI_API_KEY is configured AND a caller invokes the
+# extractor. The runtime web app doesn't load it on the request path; nothing
+# breaks if the key is absent.
+google-genai
 python-multipart
 python-dateutil
 curl_cffi>=0.7
