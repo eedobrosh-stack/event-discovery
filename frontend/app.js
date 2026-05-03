@@ -20,6 +20,31 @@ let renderTypeChips = null; // set by setupTypeAutocomplete, used by artist clic
 let offset = 0;
 const LIMIT = 50;
 
+// ── Analytics ──────────────────────────────────────────────────────────
+// Sends a custom event to GA4. Uses gtag.js when available (the direct
+// GA4 path loaded in the head); falls back to a dataLayer push so the
+// helper still works if the page is ever switched back to GTM. No-op
+// gracefully if neither is loaded (e.g. blocked by an ad blocker).
+function pushAnalytics(eventName, props = {}) {
+    // Drop null / undefined / "" so GA reports don't fill with empties.
+    const clean = Object.fromEntries(
+        Object.entries(props).filter(([_, v]) => v !== null && v !== undefined && v !== "")
+    );
+    if (typeof window.gtag === "function") {
+        window.gtag("event", eventName, clean);
+    } else if (window.dataLayer) {
+        window.dataLayer.push({ event: eventName, ...clean });
+    }
+}
+
+// Sortable signature of which chip kinds are present in the current filter
+// set. Lets GA bucket searches as "artist", "artist+genre", "genre+format"
+// etc. without exploding cardinality on individual chip values.
+function _chipKindsSignature() {
+    const kinds = new Set(selectedTypeFilters.map(f => f.kind));
+    return [...kinds].sort().join("+") || "none";
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
     // Set default date range: today → today + 30 days
     const today = new Date();
@@ -534,6 +559,24 @@ function bindEvents() {
     });
 
     document.getElementById("events-body").addEventListener("click", e => {
+        // Buy / event-title click (track BEFORE navigation — the link's
+        // target=_blank means we don't actually leave the page, but firing
+        // first is good practice in case browser nav races the analytics
+        // request).
+        const buyLink = e.target.closest("a.track-buy");
+        if (buyLink) {
+            pushAnalytics("buy_click", {
+                event_name: buyLink.dataset.eventName || null,
+                artist:     buyLink.dataset.artist || null,
+                venue:      buyLink.dataset.venue || null,
+                genre:      buyLink.dataset.genre || null,
+                city:       buyLink.dataset.city || null,
+                country:    buyLink.dataset.country || null,
+            });
+            // Don't return — the artist-cell delegation below is mutually
+            // exclusive (Buy/title links don't have data-artist).
+        }
+
         const cell = e.target.closest("[data-artist]");
         if (!cell) return;
         const artist = cell.dataset.artist;
@@ -899,6 +942,18 @@ async function searchEvents() {
                 start_date: startDate || null,
                 end_date: endDate || null,
             });
+            // Mirror the same signal to GA4 so it shows up alongside other
+            // funnel events. Backend log is the source of truth; this is
+            // for live dashboards / segments / audiences.
+            pushAnalytics("zero_result_search", {
+                search_chip_kinds: _chipKindsSignature(),
+                search_genres: genres.join(",") || null,
+                search_artists: artistExact.join(",") || null,
+                search_type: typeSearch.join(",") || null,
+                search_free: search || null,
+                search_city_id: cityId || null,
+                search_country: country || null,
+            });
             renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate });
             // Reset paging UI so it doesn't dangle a "Load More" button.
             const tbody = document.getElementById("events-body");
@@ -933,8 +988,20 @@ async function searchEvents() {
             ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">${ev.sport ? "Highlights" : "Watch"}</a>`
             : "-";
 
+        // data-* attrs on Buy/title links so the delegated click handler
+        // (in bindEvents) can fire a buy_click GA event without re-querying
+        // anything. Both Event-name and Buy column lead to the same
+        // purchase URL — both get class="track-buy" so either click counts.
+        const buyAttrs = ev.purchase_link
+            ? `class="track-buy" data-event-name="${esc(ev.name)}" `
+              + `data-artist="${esc(ev.artist_name || "")}" `
+              + `data-venue="${esc(ev.venue_name || "")}" `
+              + `data-genre="${esc(ev.artist_genre || "")}" `
+              + `data-city="${esc(ev.venue_city || "")}" `
+              + `data-country="${esc(ev.venue_country || "")}"`
+            : "";
         tr.innerHTML = `
-            <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">${esc(ev.name)}</a>` : esc(ev.name)}</td>
+            <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>${esc(ev.name)}</a>` : esc(ev.name)}</td>
             <td>${artistHtml}</td>
             <td>${ytHtml}</td>
             <td>${ev.start_date || "-"}</td>
@@ -959,13 +1026,33 @@ async function searchEvents() {
             <td>${(ev.event_types || []).join(", ") || "-"}</td>
             <td>${ev.artist_genre ? esc(ev.artist_genre) : "-"}</td>
             <td>${tvHtml}</td>
-            <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank">Buy</a>` : "-"}</td>
+            <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>` : "-"}</td>
         `;
         tbody.appendChild(tr);
     });
 
     offset += events.length;
     updateStats(tbody.children.length);
+
+    // ── search_submitted analytics event ─────────────────────────────
+    // Fired only on the first page so pagination doesn't double-count.
+    // result_count uses events.length here (page count); the precise total
+    // comes back asynchronously via the count endpoint and could be added
+    // as a follow-up event later if needed.
+    if (isFirstPage) {
+        pushAnalytics("search_submitted", {
+            search_chip_kinds: _chipKindsSignature(),
+            search_genres: genres.join(",") || null,
+            search_artists: artistExact.join(",") || null,
+            search_type: typeSearch.join(",") || null,
+            search_free: search || null,
+            search_city_id: cityId || null,
+            search_country: country || null,
+            search_has_date_filter: !!(startDate || endDate),
+            result_count: events.length,
+            result_was_extended: !!extendedTo,
+        });
+    }
 
     // Switch to compact mode after a fresh search (not "Load More")
     if (isFirstPage) showCompactMode();

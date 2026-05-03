@@ -3,13 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Google Tag Manager -->
-    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-    })(window,document,'script','dataLayer','GTM-PDVGWLR6');</script>
-    <!-- End Google Tag Manager -->
+    <!-- Google tag (gtag.js) — direct GA4 integration. Replaces the prior
+         GTM-PDVGWLR6 setup since GA4 is the only analytics destination. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-S3CN89KXQQ"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-S3CN89KXQQ');
+    </script>
     <link rel="icon" type="image/png" href="/favicon.png">
     <title>Supercaly — Find Events Worldwide</title>
     <style>
@@ -238,10 +240,6 @@
     </style>
 </head>
 <body>
-<!-- Google Tag Manager (noscript) -->
-<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-PDVGWLR6"
-height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-<!-- End Google Tag Manager (noscript) -->
 <div class="home-center">
 
     <!-- Logo -->
