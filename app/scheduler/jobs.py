@@ -47,6 +47,7 @@ from app.services.collectors.scrapers.skiddle import SkiddleCollector
 from app.services.collectors.scrapers.xceed import XceedCollector
 from app.services.collectors.scrapers.concreteplayground import ConcretePlaygroundCollector
 from app.services.collectors.scrapers.allevents import AlleventsCollector
+from app.services.collectors.scrapers.tickchak import TickchakCollector
 from app.services.collectors.scrapers.city_guides import CityGuideCollector
 from app.services.collectors.scrapers.sports.espn import EspnSportsCollector
 from app.services.collectors.scrapers.sports.mlb import MlbStatsApiCollector
@@ -87,6 +88,7 @@ registry.register(SkiddleCollector())
 registry.register(XceedCollector())
 registry.register(ConcretePlaygroundCollector())
 registry.register(AlleventsCollector())
+registry.register(TickchakCollector())
 registry.register(CityGuideCollector())
 # Sports — ESPN hidden API (no key) + MLB official StatsAPI (no key) + OpenF1 (no key)
 registry.register(EspnSportsCollector())
