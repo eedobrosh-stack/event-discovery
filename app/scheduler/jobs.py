@@ -1478,10 +1478,11 @@ async def llm_extract_recurring_job(
 
         try:
             # Late import — avoids loading google-genai at scheduler-init time.
-            # If GEMINI_API_KEY is missing the extractor raises
-            # ExtractorUnconfigured at the first .extract() call; we catch
-            # below and mark the run failed without crashing the scheduler.
-            from app.extractors.llm_extractor import extract, ExtractorUnconfigured
+            # extract_auto tries JSON-LD parsing first (free, no API call) and
+            # falls through to the LLM extractor only when JSON-LD doesn't yield
+            # events. ExtractorUnconfigured is only raised if the LLM path is
+            # actually needed — pure JSON-LD sources work without the API key.
+            from app.extractors.llm_extractor import extract_auto, ExtractorUnconfigured
             from app.services.collectors.registry import CollectorRegistry
 
             cutoff = datetime.utcnow() - timedelta(hours=min_hours_since_last)
@@ -1522,10 +1523,10 @@ async def llm_extract_recurring_job(
 
                 src_url = src.url
                 try:
-                    # Run extract on a thread — extractor is sync (urllib + bs4
-                    # + Gemini SDK) and we're inside an async function.
+                    # Run extract_auto on a thread — sync (urllib + bs4 + maybe
+                    # Gemini SDK). JSON-LD path runs without the LLM key.
                     result = await asyncio.to_thread(
-                        extract, src_url,
+                        extract_auto, src_url,
                         source_name="llm_extractor",
                     )
                 except ExtractorUnconfigured as e:
@@ -1639,6 +1640,174 @@ async def llm_extract_recurring_job(
             log.finished_at = datetime.utcnow()
             db.commit()
             db.close()
+
+
+async def llm_discover_sources_job(
+    candidates_per_city: int = 15,
+    min_event_count_to_register: int = 5,
+    max_cities_per_run: int = 6,
+):
+    """Cadence B of Route 1 — find new candidate event sources per city.
+
+    For each priority city we haven't recently scanned: ask Gemini's
+    grounded search for candidate event-listing URLs, probe each via the
+    JSON-LD path (free), and register winners as new LLMSource rows in
+    state='trial' so the recurring extraction job picks them up on its
+    next cycle.
+
+    LLM-eligible candidates (probe = no JSON-LD events but page is
+    substantial) are NOT auto-registered — they need human review first
+    to avoid hallucination noise. Operators add those via
+    scripts/llm_run_source.py instead.
+
+    Cost: 1 Gemini grounded call per city scanned (~$0.005 each on flash).
+    With max_cities_per_run=6 and a weekly cron, we cycle through ~24
+    cities/month at ~$0.12/month — negligible vs. the daily extraction
+    budget.
+
+    The probe step is the natural hallucination guard: Gemini sometimes
+    invents URLs (live.today/הופעות-היום… 404'd in early spike runs).
+    Bad URLs return no events from _fetch_html → not registered.
+    """
+    import gc
+    from sqlalchemy import or_
+    from app.models import LLMSource
+
+    if _heavy_job_lock.locked():
+        logger.info("llm_discover_sources: another heavy job running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="llm_discover_sources", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        try:
+            from app.extractors.discovery import discover_via_gemini, DiscoveryError
+            from app.extractors.llm_extractor import _fetch_html
+            from app.services.collectors._jsonld import iter_events, detect_pagination
+
+            # Pick cities longest-untouched first (or never-touched).
+            # We track that via a synthetic "discovery cursor" stored as
+            # the most-recent created_at on any LLMSource row scoped to
+            # that (city_name, country) tuple. New cities (no rows yet)
+            # come first — they need the most help.
+            city_pool = list(PRIORITY_CITIES)
+            city_pool.sort(key=lambda cc: _city_last_discovered_at(db, *cc) or "")
+            cities_to_scan = city_pool[:max_cities_per_run]
+
+            stats = {"scanned": 0, "registered": 0, "skipped_existing": 0,
+                     "no_events": 0, "fetch_errors": 0}
+
+            for city_name, country in cities_to_scan:
+                try:
+                    candidates = await asyncio.to_thread(
+                        discover_via_gemini, city_name, candidates_per_city,
+                    )
+                except DiscoveryError as e:
+                    log.notes = f"discovery unavailable: {e}"
+                    log.status = "failed"
+                    logger.warning(f"llm_discover_sources: {e}")
+                    return
+                except Exception as e:
+                    logger.warning(f"discover_via_gemini({city_name!r}) error: {e}")
+                    candidates = []
+                stats["scanned"] += 1
+
+                for cand in candidates:
+                    url = (cand.get("url") or "").strip()
+                    if not url:
+                        continue
+
+                    # Skip URLs already in the registry — re-discovery
+                    # shouldn't reset state or counters.
+                    existing = db.query(LLMSource).filter(LLMSource.url == url).first()
+                    if existing:
+                        stats["skipped_existing"] += 1
+                        continue
+
+                    # Probe via JSON-LD: cheap, no LLM call. Only register
+                    # sources that pass this bar.
+                    raw_html = await asyncio.to_thread(_fetch_html, url)
+                    if not raw_html:
+                        stats["fetch_errors"] += 1
+                        continue
+                    ld_events = list(iter_events(raw_html, future_only=True))
+                    if len(ld_events) < min_event_count_to_register:
+                        stats["no_events"] += 1
+                        continue
+
+                    pag = detect_pagination(raw_html, base_url=url)
+                    note = (
+                        f"[discovered {datetime.utcnow().date()}] "
+                        f"{cand.get('source_type', '?')} / "
+                        f"{cand.get('language', '?')} — "
+                        f"{cand.get('why_relevant', '')[:200]}"
+                    )
+                    new_src = LLMSource(
+                        url=url,
+                        city_name=city_name,
+                        country=country,
+                        state="trial",
+                        runs_total=0,
+                        events_seen_total=0,
+                        events_saved_total=0,
+                        has_pagination=bool(pag["has_pagination"]),
+                        pagination_signal=pag["signal"],
+                        next_page_url=(pag["next_page_url"] or "")[:1000] or None,
+                        notes=note,
+                    )
+                    db.add(new_src)
+                    db.commit()
+                    stats["registered"] += 1
+                    logger.info(
+                        f"discovered: {url} ({len(ld_events)} JSON-LD events) "
+                        f"→ LLMSource state=trial for {city_name}"
+                    )
+
+                # Free per-city memory before the next city's batch.
+                db.expire_all()
+                gc.collect()
+
+            log.status = "success" if log.status != "failed" else log.status
+            log.events_found = stats["registered"]
+            log.events_saved = stats["registered"]
+            log.notes = (
+                f"cities={stats['scanned']} registered={stats['registered']} "
+                f"skipped_existing={stats['skipped_existing']} "
+                f"no_events={stats['no_events']} fetch_errors={stats['fetch_errors']}"
+            )
+            logger.info(f"llm_discover_sources: {log.notes}")
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"llm_discover_sources error: {e}")
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
+def _city_last_discovered_at(db, city_name: str, country: str):
+    """Most-recent LLMSource.created_at for (city, country), or None.
+
+    Used to schedule discovery LRU-style: cities that have never been
+    scanned (or were scanned longest ago) come first. None sorts before
+    any string under the heuristic ordering used in the discovery job.
+    """
+    from app.models import LLMSource
+    row = (
+        db.query(LLMSource.created_at)
+        .filter(LLMSource.city_name == city_name, LLMSource.country == country)
+        .order_by(LLMSource.created_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return row[0].isoformat() if row[0] else None
 
 
 def cleanup_past_events():

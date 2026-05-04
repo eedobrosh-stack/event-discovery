@@ -150,6 +150,132 @@ _LOAD_MORE_RE = re.compile(
 )
 
 
+def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str):
+    """Convert a single schema.org Event-shaped JSON-LD dict to a RawEvent.
+
+    Generic — works for any source that emits well-formed JSON-LD without
+    site-specific quirks. Tickchak's parser stays separate because it has
+    additional logic (Hebrew city translation, missing-URL synthesis).
+
+    Drops events that:
+      • lack a parseable startDate
+      • are dated in the past
+      • are explicitly cancelled / online-only
+
+    Returns ``None`` for those — caller filters with `if ev` to skip.
+    """
+    from datetime import datetime, date
+    from app.services.collectors.base import RawEvent
+
+    if ev.get("eventStatus") == "https://schema.org/EventCancelled":
+        return None
+    if ev.get("eventAttendanceMode") == "https://schema.org/OnlineEventAttendanceMode":
+        return None
+
+    start_str = ev.get("startDate") or ""
+    if not start_str:
+        return None
+    try:
+        if "T" in start_str:
+            start_dt = datetime.fromisoformat(start_str)
+        else:
+            start_dt = datetime.combine(date.fromisoformat(start_str[:10]),
+                                        datetime.min.time())
+    except (ValueError, TypeError):
+        return None
+    if start_dt.date() < date.today():
+        return None
+
+    end_dt = None
+    end_str = ev.get("endDate") or ""
+    if end_str:
+        try:
+            end_dt = (datetime.fromisoformat(end_str) if "T" in end_str
+                      else datetime.combine(date.fromisoformat(end_str[:10]),
+                                             datetime.min.time()))
+        except (ValueError, TypeError):
+            pass
+
+    location = ev.get("location") or {}
+    if isinstance(location, list):
+        location = location[0] if location else {}
+    address = location.get("address") if isinstance(location, dict) else {}
+    if isinstance(address, list):
+        address = address[0] if address else {}
+    if not isinstance(address, dict):
+        address = {}
+
+    venue_name = location.get("name") if isinstance(location, dict) else None
+    venue_city = address.get("addressLocality")
+    venue_country = address.get("addressCountry")
+    if isinstance(venue_country, dict):
+        venue_country = venue_country.get("name")
+    venue_address = address.get("streetAddress")
+
+    offers = ev.get("offers") or {}
+    if isinstance(offers, list):
+        offers = offers[0] if offers else {}
+    price = None
+    currency = "USD"
+    if isinstance(offers, dict):
+        low = offers.get("lowPrice") or offers.get("price")
+        if low is not None:
+            try:
+                price = float(str(low).replace(",", "").replace("$", "").strip())
+            except (TypeError, ValueError):
+                pass
+        currency = offers.get("priceCurrency") or currency
+
+    performer = ev.get("performer")
+    artist_name = None
+    if isinstance(performer, list) and performer:
+        performer = performer[0]
+    if isinstance(performer, dict):
+        artist_name = (performer.get("name") or "").strip() or None
+    elif isinstance(performer, str):
+        artist_name = performer.strip() or None
+
+    image = ev.get("image")
+    if isinstance(image, list):
+        image = image[0] if image else None
+    if isinstance(image, dict):
+        image = image.get("url")
+    if not isinstance(image, str):
+        image = None
+
+    name = (ev.get("name") or "Untitled").strip()
+    purchase_link = ev.get("url") or source_url
+
+    # Stable source_id mirrors the architecture-doc pattern for cross-
+    # collector dedup: hash(scrape_source | source_url | name | start_date).
+    import hashlib
+    seed = f"{source_name}|{source_url}|{name.lower().strip()}|{start_str[:10]}"
+    sid = source_name + "_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+    has_time = "T" in start_str
+
+    return RawEvent(
+        name=name,
+        start_date=start_dt.date(),
+        start_time=start_dt.strftime("%H:%M") if has_time else None,
+        end_date=end_dt.date() if end_dt else None,
+        end_time=end_dt.strftime("%H:%M") if (end_dt and "T" in end_str) else None,
+        artist_name=artist_name,
+        description=ev.get("description"),
+        price=price,
+        price_currency=currency or "USD",
+        purchase_link=purchase_link,
+        image_url=image,
+        venue_name=venue_name,
+        venue_address=venue_address,
+        venue_city=venue_city,
+        venue_country=venue_country,
+        source=source_name,
+        source_id=sid,
+        raw_categories=[],
+    )
+
+
 def detect_pagination(html: str, base_url: str = "") -> dict:
     """Detect pagination affordances. Does not follow them.
 

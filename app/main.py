@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job
 
 scheduler = AsyncIOScheduler()
 
@@ -661,6 +661,17 @@ async def lifespan(app: FastAPI):
         llm_extract_recurring_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=210)),
         id="llm_extract_recurring",
+        replace_existing=True,
+    )
+    # llm_discover_sources — Cadence B. Weekly grounded-search per-city
+    # discovery scan, capped at 6 cities per fire (so 50 priority cities
+    # cycle through in ~8 weeks at ~$0.005/city = pennies). Slot it well
+    # after extraction (+240min, 30min after llm_extract_recurring kicks
+    # off) and the _heavy_job_lock keeps them serialized regardless.
+    scheduler.add_job(
+        llm_discover_sources_job,
+        IntervalTrigger(days=7, start_date=_t + _td(minutes=240)),
+        id="llm_discover_sources",
         replace_existing=True,
     )
     scheduler.add_job(

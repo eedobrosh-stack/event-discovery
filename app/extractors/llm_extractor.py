@@ -448,7 +448,8 @@ def extract(url: str, *,
             source_name: str = "llm_extractor",
             model: str = "gemini-2.5-flash",
             max_events: int = 50,
-            spa_threshold_bytes: int = _SPA_THRESHOLD_BYTES) -> ExtractionResult:
+            spa_threshold_bytes: int = _SPA_THRESHOLD_BYTES,
+            raw_html: Optional[str] = None) -> ExtractionResult:
     """Pull upcoming events from ``url`` via Gemini.
 
     The extractor decides between the HTML path (cleaned <body> in the
@@ -458,8 +459,13 @@ def extract(url: str, *,
     Returns an ExtractionResult — never raises for ordinary failures
     (network, parse, no events). Only ``ExtractorUnconfigured`` raises,
     and only on the first call when key/SDK are missing.
+
+    ``raw_html`` may be provided to skip the HTTP fetch when the caller
+    has already fetched (e.g. extract_auto's JSON-LD pre-check). Pass an
+    empty string to force the SPA / url_context path explicitly.
     """
-    raw_html = _fetch_html(url) or ""
+    if raw_html is None:
+        raw_html = _fetch_html(url) or ""
     cleaned = _clean_html(raw_html, base_url=url) if raw_html else ""
     raw_bytes = len(raw_html)
     cleaned_bytes = len(cleaned)
@@ -525,4 +531,68 @@ def extract(url: str, *,
         has_pagination=pag["has_pagination"],
         pagination_signal=pag["signal"],
         next_page_url=pag["next_page_url"],
+    )
+
+
+def extract_auto(url: str, *,
+                 source_name: str = "llm_extractor",
+                 model: str = "gemini-2.5-flash",
+                 max_events: int = 50,
+                 spa_threshold_bytes: int = _SPA_THRESHOLD_BYTES) -> ExtractionResult:
+    """Smart-dispatch extractor: try JSON-LD first (free), fall through to LLM.
+
+    The architecture rule: never pay for what we can parse. Many discovery-
+    surfaced sources publish schema.org/Event JSON-LD; for those, parsing
+    is structurally correct and costs nothing. We only spend Gemini tokens
+    on sources that require natural-language extraction.
+
+    Output shape matches ``extract`` so callers (the recurring scheduler,
+    the CLI) can treat both paths uniformly. ``method`` distinguishes:
+
+      "jsonld"      events came from the JSON-LD pre-pass (no LLM call)
+      "html"        LLM HTML path
+      "url_context" LLM url_context path
+      "error"       everything failed
+    """
+    from app.services.collectors._jsonld import (
+        iter_events, jsonld_to_raw_event, detect_pagination,
+    )
+
+    raw_html = _fetch_html(url) or ""
+    raw_bytes = len(raw_html)
+    pag = detect_pagination(raw_html, base_url=url)
+
+    # JSON-LD pre-pass — free path. iter_events handles @graph wrapping
+    # and the full Event subtype hierarchy.
+    ld_events = list(iter_events(raw_html, future_only=True)) if raw_html else []
+    if ld_events:
+        events = []
+        for d in ld_events:
+            re_obj = jsonld_to_raw_event(d, source_name=source_name, source_url=url)
+            if re_obj:
+                events.append(re_obj)
+        logger.info(
+            f"extract_auto({url}): JSON-LD path → "
+            f"{len(events)}/{len(ld_events)} events (no LLM call)"
+        )
+        return ExtractionResult(
+            events=events,
+            method="jsonld",
+            raw_html_bytes=raw_bytes,
+            cleaned_html_bytes=0,
+            api_call_ok=True,
+            has_pagination=pag["has_pagination"],
+            pagination_signal=pag["signal"],
+            next_page_url=pag["next_page_url"],
+        )
+
+    # No JSON-LD events found → fall through to LLM extractor with the
+    # already-fetched HTML (avoid a redundant network call).
+    return extract(
+        url,
+        source_name=source_name,
+        model=model,
+        max_events=max_events,
+        spa_threshold_bytes=spa_threshold_bytes,
+        raw_html=raw_html,
     )

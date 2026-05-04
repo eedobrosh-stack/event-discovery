@@ -7,6 +7,11 @@ run the LLM-driven scans on an explicit schedule.
 """
 from app.extractors.llm_extractor import (  # noqa: F401
     extract,
+    extract_auto,
     ExtractionResult,
     ExtractorUnconfigured,
+)
+from app.extractors.discovery import (  # noqa: F401
+    discover_via_gemini,
+    DiscoveryError,
 )
