@@ -220,9 +220,13 @@ class ProbeResult:
     samples: list[str] = field(default_factory=list)
     size_kb: int = 0
     has_pagination: bool = False
+    pagination_signal: Optional[str] = None    # NEW: which heuristic fired
+    next_page_url: Optional[str] = None        # NEW: when extractable
 
 
 def _probe(url: str) -> ProbeResult:
+    from app.services.collectors._jsonld import detect_pagination
+
     html = _fetch(url)
     if html is None:
         return ProbeResult(url=url, status="error")
@@ -230,16 +234,24 @@ def _probe(url: str) -> ProbeResult:
     size_kb = len(html) // 1024
     count, samples = _count_events(html)
 
-    has_pagination = bool(
-        re.search(r'href="[^"]*(?:page/\d+|[?&]page=\d+)[^"]*"', html)
-        or re.search(r'rel=["\']next["\']', html)
-    )
+    # Pagination is logged but NOT followed — we want evidence of how often
+    # this matters before designing a follower (see docs/llm_extraction_…).
+    pag = detect_pagination(html, base_url=url)
 
     if count > 0:
-        return ProbeResult(url=url, status="ok", event_count=count,
-                           samples=samples, size_kb=size_kb,
-                           has_pagination=has_pagination)
-    return ProbeResult(url=url, status="no_events", size_kb=size_kb)
+        return ProbeResult(
+            url=url, status="ok", event_count=count,
+            samples=samples, size_kb=size_kb,
+            has_pagination=pag["has_pagination"],
+            pagination_signal=pag["signal"],
+            next_page_url=pag["next_page_url"],
+        )
+    return ProbeResult(
+        url=url, status="no_events", size_kb=size_kb,
+        has_pagination=pag["has_pagination"],
+        pagination_signal=pag["signal"],
+        next_page_url=pag["next_page_url"],
+    )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

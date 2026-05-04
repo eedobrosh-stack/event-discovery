@@ -83,6 +83,12 @@ def main() -> int:
         f"events={len(result.events)}  "
         f"hallucination_dropped={result.dropped_for_hallucination}"
     )
+    if result.has_pagination:
+        log.info(
+            f"  pagination: signal={result.pagination_signal} "
+            f"next={result.next_page_url or '(not extractable)'} "
+            f"(detected only — not followed)"
+        )
     if result.error:
         log.warning(f"  error: {result.error}")
 

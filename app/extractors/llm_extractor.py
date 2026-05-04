@@ -63,6 +63,13 @@ class ExtractionResult:
     api_call_ok: bool = False
     error: Optional[str] = None
     dropped_for_hallucination: int = 0
+    # Pagination is detected but not followed — we log it so we can decide
+    # later whether building a follower is justified for this catalogue of
+    # sources. has_pagination=True with next_page_url=None means we found a
+    # signal (e.g. "Load More" button) we can't directly turn into a URL.
+    has_pagination: bool = False
+    pagination_signal: Optional[str] = None
+    next_page_url: Optional[str] = None
 
 
 # Schema mirrors RawEvent fields the LLM is responsible for. Matches the
@@ -457,6 +464,16 @@ def extract(url: str, *,
     raw_bytes = len(raw_html)
     cleaned_bytes = len(cleaned)
 
+    # Detect pagination affordances on the raw HTML (Move 1: log only).
+    # Useful signal regardless of which extraction path runs below.
+    from app.services.collectors._jsonld import detect_pagination
+    pag = detect_pagination(raw_html, base_url=url)
+    if pag["has_pagination"]:
+        logger.info(
+            f"pagination signal on {url}: {pag['signal']} "
+            f"next={pag['next_page_url'] or '(no extractable URL)'}"
+        )
+
     use_url_context = cleaned_bytes < spa_threshold_bytes
 
     client = _gemini_client()
@@ -480,6 +497,9 @@ def extract(url: str, *,
             events=[], method="error",
             raw_html_bytes=raw_bytes, cleaned_html_bytes=cleaned_bytes,
             api_call_ok=False, error=error,
+            has_pagination=pag["has_pagination"],
+            pagination_signal=pag["signal"],
+            next_page_url=pag["next_page_url"],
         )
 
     events: list[RawEvent] = []
@@ -502,4 +522,7 @@ def extract(url: str, *,
         cleaned_html_bytes=cleaned_bytes,
         api_call_ok=True,
         dropped_for_hallucination=dropped,
+        has_pagination=pag["has_pagination"],
+        pagination_signal=pag["signal"],
+        next_page_url=pag["next_page_url"],
     )

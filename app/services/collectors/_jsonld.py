@@ -19,7 +19,8 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import Iterator
+from typing import Iterator, Optional
+from urllib.parse import urljoin
 
 
 # Schema.org Event subtype hierarchy — accept any of these as a real event.
@@ -104,3 +105,77 @@ def count_events(html: str, future_only: bool = True) -> tuple[int, list[str]]:
     scripts/find_city_guides.py."""
     names = [ev.get("name", "Untitled") for ev in iter_events(html, future_only=future_only)]
     return len(names), names[:3]
+
+
+# ── Pagination detection (Move 1 of the pagination plan: log, don't follow) ──
+#
+# We look for the most-common pagination affordances and report whether any
+# fired, which kind, and the inferred next-page URL when extractable. We do
+# NOT follow the link — the goal of this iteration is to gather evidence of
+# how often (and on which sources) pagination would actually unlock more
+# events. Once we have that data, we'll design a follower that handles the
+# patterns we actually see, instead of speculating.
+#
+# Patterns are tried in order of semantic clarity:
+#   rel="next" link/anchor   ← HTML5 spec, gold-standard signal
+#   aria-label="Next [page]" ← modern accessible UI
+#   ?page=N / /page/N/ href  ← classic pagination links
+#   Load More / Show More    ← XHR-based; we can't infer a next URL
+_PAGINATION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'<link[^>]+rel=["\']next["\'][^>]+href=["\']([^"\']+)["\']', re.I),
+     "rel_next_link"),
+    (re.compile(r'<a[^>]+rel=["\']next["\'][^>]+href=["\']([^"\']+)["\']', re.I),
+     "rel_next_anchor"),
+    (re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*rel=["\']next["\']', re.I),
+     "rel_next_anchor"),
+    (re.compile(r'<a[^>]+aria-label=["\']\s*Next(?:\s+page)?\s*["\'][^>]+href=["\']([^"\']+)["\']', re.I),
+     "aria_next"),
+    (re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*aria-label=["\']\s*Next(?:\s+page)?\s*["\']', re.I),
+     "aria_next"),
+    (re.compile(r'href=["\']([^"\']*(?:/page/\d+|[?&]page=\d+)[^"\']*)["\']', re.I),
+     "page_param"),
+]
+
+# "Load More" family of XHR-driven pagination triggers. Catches the common
+# button labels but stays generic on the surrounding tag — many sites use
+# <a class="load-more"> rather than <button>. Some noise is acceptable;
+# Move 1 is detection-for-evidence-gathering, not action.
+_LOAD_MORE_RE = re.compile(
+    r'(?:'
+    r'<(?:button|a)[^<]*?>[^<]*(?:Load\s*More|View\s*More|Show\s*More|See\s*More)[^<]*</(?:button|a)>'
+    r'|'
+    r'class=["\'][^"\']*\bload[\-_]?more\b[^"\']*["\']'
+    r')',
+    re.I,
+)
+
+
+def detect_pagination(html: str, base_url: str = "") -> dict:
+    """Detect pagination affordances. Does not follow them.
+
+    Returns:
+        {
+          "has_pagination": bool,
+          "signal":         str | None,   identifier of which heuristic fired
+          "next_page_url":  str | None,   absolute URL when extractable (XHR
+                                          patterns like Load More yield None
+                                          even though has_pagination=True)
+        }
+
+    Empty/null html returns the no-signal shape rather than crashing.
+    """
+    if not html:
+        return {"has_pagination": False, "signal": None, "next_page_url": None}
+
+    for pattern, signal in _PAGINATION_PATTERNS:
+        m = pattern.search(html)
+        if not m:
+            continue
+        href = m.group(1)
+        full = urljoin(base_url, href) if base_url else href
+        return {"has_pagination": True, "signal": signal, "next_page_url": full}
+
+    if _LOAD_MORE_RE.search(html):
+        return {"has_pagination": True, "signal": "load_more_button", "next_page_url": None}
+
+    return {"has_pagination": False, "signal": None, "next_page_url": None}
