@@ -1428,6 +1428,219 @@ async def collect_mevalim_job():
             db.close()
 
 
+async def llm_extract_recurring_job(
+    max_sources_per_run: int = 20,
+    min_hours_since_last: int = 18,
+    auto_block_threshold: int = 3,
+):
+    """Run the LLM extractor against active LLMSource rows.
+
+    This is Cadence A of Route 1: keep already-onboarded sources fresh.
+    Cadence B (discovery of new sources) is a separate job, not this one.
+
+    Picks up to ``max_sources_per_run`` sources whose state is in
+    {trial, recurring} and whose ``last_run_at`` is older than
+    ``min_hours_since_last``. Sources with state=blocked or graduated
+    are skipped — blocked is permanent until manually un-blocked,
+    graduated means we wrote a custom collector and the LLM is
+    redundant.
+
+    Cost gate: hard cap on sources per fire. With max=20 and a 24h
+    schedule, a registry of ≤20 sources gets daily coverage; larger
+    registries require multiple fires per day to fully cycle (set the
+    cron interval shorter accordingly, or raise the cap once we've
+    observed real costs).
+
+    Memory gate: sequential, with explicit gc between sources. Uses
+    the same _heavy_job_lock the other long-lived jobs use, so it
+    can't overlap with enrich_youtube etc — direct cause of the
+    2026-04 / 2026-05 OOMs we tightened against.
+
+    Auto-demote: ``consecutive_empty_runs >= auto_block_threshold``
+    flips state to 'blocked' with a date-stamped note. This catches
+    sources that have gone offline, redesigned past our extractor, or
+    rate-limited us out.
+    """
+    import gc
+    from sqlalchemy import or_
+    from app.models import LLMSource, City
+
+    if _heavy_job_lock.locked():
+        logger.info("llm_extract_recurring: another heavy job is running — skipping this run")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="llm_extract_recurring", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        try:
+            # Late import — avoids loading google-genai at scheduler-init time.
+            # If GEMINI_API_KEY is missing the extractor raises
+            # ExtractorUnconfigured at the first .extract() call; we catch
+            # below and mark the run failed without crashing the scheduler.
+            from app.extractors.llm_extractor import extract, ExtractorUnconfigured
+            from app.services.collectors.registry import CollectorRegistry
+
+            cutoff = datetime.utcnow() - timedelta(hours=min_hours_since_last)
+            sources = (
+                db.query(LLMSource)
+                .filter(
+                    LLMSource.state.in_(["trial", "recurring"]),
+                    or_(
+                        LLMSource.last_run_at.is_(None),
+                        LLMSource.last_run_at < cutoff,
+                    ),
+                )
+                # Run never-run-before sources first; among those that have
+                # run, prioritize the longest-untouched. Stable ordering
+                # also helps reproducibility when debugging a slow cycle.
+                .order_by(LLMSource.last_run_at.asc().nullsfirst(), LLMSource.id.asc())
+                .limit(max_sources_per_run)
+                .all()
+            )
+
+            if not sources:
+                log.status = "success"
+                log.notes = "no due sources"
+                logger.info("llm_extract_recurring: no sources due for re-extraction")
+                return
+
+            registry = CollectorRegistry()
+            total_events = 0
+            total_saved = 0
+            auto_blocked = 0
+            extractor_unavailable = False
+
+            for src in sources:
+                # If the extractor was unconfigured on a previous source,
+                # skip the rest — they'd all fail the same way.
+                if extractor_unavailable:
+                    break
+
+                src_url = src.url
+                try:
+                    # Run extract on a thread — extractor is sync (urllib + bs4
+                    # + Gemini SDK) and we're inside an async function.
+                    result = await asyncio.to_thread(
+                        extract, src_url,
+                        source_name="llm_extractor",
+                    )
+                except ExtractorUnconfigured as e:
+                    extractor_unavailable = True
+                    logger.warning(
+                        f"llm_extract_recurring: extractor unconfigured "
+                        f"({e}); skipping the rest of this run"
+                    )
+                    log.notes = f"GEMINI_API_KEY not set ({e})"
+                    log.status = "failed"
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"llm_extract_recurring: {src_url} hard error: {e}"
+                    )
+                    src.last_error = f"{type(e).__name__}: {e}"[:500]
+                    src.last_run_at = datetime.utcnow()
+                    src.runs_total = (src.runs_total or 0) + 1
+                    db.commit()
+                    continue
+
+                # Persist events via the same ingest pipeline collectors use.
+                saved = 0
+                if result.events:
+                    city = None
+                    if src.city_name:
+                        q = db.query(City).filter(City.name == src.city_name)
+                        if src.country:
+                            q = q.filter(City.country == src.country)
+                        city = q.first()
+                    if city is None and src.country:
+                        # Nationwide source fallback — pick any city in the
+                        # country; venue_city per-event drives final assignment.
+                        city = db.query(City).filter(
+                            City.country == src.country
+                        ).first()
+
+                    if city is None:
+                        logger.warning(
+                            f"llm_extract_recurring: {src_url} no City "
+                            f"resolvable (city={src.city_name!r}, "
+                            f"country={src.country!r}) — events not persisted"
+                        )
+                    else:
+                        try:
+                            saved = registry._save_events(result.events, city, db)
+                        except Exception as e:
+                            logger.warning(
+                                f"llm_extract_recurring: persist error for "
+                                f"{src_url}: {e}"
+                            )
+                            db.rollback()
+                            saved = 0
+
+                # Update LLMSource row
+                src.last_run_at = datetime.utcnow()
+                src.runs_total = (src.runs_total or 0) + 1
+                src.last_event_count = len(result.events)
+                src.last_method = result.method
+                src.last_error = result.error[:500] if result.error else None
+                src.events_seen_total = (src.events_seen_total or 0) + len(result.events)
+                src.events_saved_total = (src.events_saved_total or 0) + saved
+                src.has_pagination = bool(result.has_pagination)
+                src.pagination_signal = result.pagination_signal
+                src.next_page_url = (result.next_page_url or "")[:1000] or None
+
+                if not result.events:
+                    src.consecutive_empty_runs = (src.consecutive_empty_runs or 0) + 1
+                else:
+                    src.consecutive_empty_runs = 0
+
+                # Auto-demote (skip already-blocked rows defensively).
+                if (src.state in ("trial", "recurring")
+                        and (src.consecutive_empty_runs or 0) >= auto_block_threshold):
+                    src.state = "blocked"
+                    stamp = f"[auto-blocked {datetime.utcnow().date()}] {auto_block_threshold}+ consecutive empty runs"
+                    src.notes = (src.notes + "\n" + stamp) if src.notes else stamp
+                    auto_blocked += 1
+                    logger.info(
+                        f"llm_extract_recurring: auto-blocked {src_url} "
+                        f"(consecutive_empty={src.consecutive_empty_runs})"
+                    )
+
+                db.commit()
+                total_events += len(result.events)
+                total_saved += saved
+
+                logger.info(
+                    f"llm_extract_recurring: {src_url} → {len(result.events)} "
+                    f"events, saved={saved}, method={result.method}"
+                )
+
+                # Free per-source memory before the next iteration.
+                db.expire_all()
+                gc.collect()
+
+            if log.status != "failed":
+                log.status = "success"
+                log.events_found = total_events
+                log.events_saved = total_saved
+                log.notes = (
+                    f"sources={len(sources)} events_found={total_events} "
+                    f"saved={total_saved} auto_blocked={auto_blocked}"
+                )
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"llm_extract_recurring error: {e}")
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
 def cleanup_past_events():
     """Remove events older than CLEANUP_DAYS_AGO."""
     db = SessionLocal()

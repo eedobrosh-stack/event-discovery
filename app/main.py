@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job
 
 scheduler = AsyncIOScheduler()
 
@@ -649,6 +649,18 @@ async def lifespan(app: FastAPI):
         discover_venues_job,
         IntervalTrigger(hours=48, start_date=_t + _td(minutes=185)),
         id="discover_venues",
+        replace_existing=True,
+    )
+    # llm_extract_recurring — Cadence A of Route 1. Re-scans every active
+    # LLMSource (state in trial/recurring) on a 24h cycle, capped at 20
+    # sources per fire so we never burst Gemini's quota or memory.
+    # Slot it at +210min — well after the heavy enrichment chain ends
+    # (enrich_youtube finishes by ~+125min, discover_venues at +185min)
+    # and the _heavy_job_lock further guarantees serialization.
+    scheduler.add_job(
+        llm_extract_recurring_job,
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=210)),
+        id="llm_extract_recurring",
         replace_existing=True,
     )
     scheduler.add_job(
