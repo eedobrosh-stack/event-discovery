@@ -615,10 +615,12 @@ async def lifespan(app: FastAPI):
     #   +25  bandsintown  (~25 min,  ends +50)
     #   +60  enrich_spotify      (~15 min, ends +75)   [was +140]
     #   +90  enrich_performers   (~10 min, ends +100)  [was +125]
-    #   +120 enrich_youtube      (~10 min, ends +130)  [was +95, batch 300→100]
+    #   +120 enrich_youtube      (~5 min, ends +125)
+    #     batch 300 → 100 (Apr 22 OOMs) → 50 (May 4 OOM at 06:22).
+    #     re-fire 2h → 4h to reduce collision risk with the 24h jobs.
     #
-    # enrich_youtube re-fires on a 2h cycle (+240, +360, …); at batch=100
-    # each subsequent run is ~10 min and never collides with a 24h job.
+    # enrich_youtube re-fires on a 4h cycle (+240, +480, …); at batch=50
+    # each subsequent run is ~5min and never collides with a 24h job.
     scheduler.add_job(
         enrich_spotify_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=60)),
@@ -633,7 +635,7 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         enrich_youtube_job,
-        IntervalTrigger(hours=2, start_date=_t + _td(minutes=120)),
+        IntervalTrigger(hours=4, start_date=_t + _td(minutes=120)),
         id="enrich_youtube",
         replace_existing=True,
     )

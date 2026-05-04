@@ -395,16 +395,22 @@ async def collect_platform_venues():
         db.close()
 
 
-async def enrich_youtube_job(batch: int = 100):
-    """Find artists with no YouTube link and look them up. Runs every 2h.
+async def enrich_youtube_job(batch: int = 50):
+    """Find artists with no YouTube link and look them up. Runs every 4h.
 
-    batch=100 (was 300): at 300 the job ran ~30min and its memory footprint
-    (httpx client + SQLAlchemy identity map + per-artist update stream)
-    consistently overlapped the other async enrichment jobs and pushed the
-    instance past the 2GB Render ceiling, causing OOM restarts that orphaned
-    this very row. At batch=100 the job runs ~10min; it still fires every
-    2h, so daily throughput is unchanged: 12 × 100 = 1200 artists/day
-    (previously 12 × 300 = 3600, but very few runs actually completed).
+    batch=50 (was 100, originally 300): the artist pool grew over time
+    (every new event adds candidate artists) and at batch=100 the job
+    again crossed the 2GB Render ceiling — OOM observed 2026-05-04
+    06:22 IL on the 06:20 firing, same shape as the 2026-04-21/22
+    incidents that drove the 300→100 reduction. Halving again pulls
+    peak memory well clear, and re-firing every 4h instead of 2h
+    reduces collision risk with the other long-lived async jobs.
+
+    Daily throughput now: 6 × 50 = 300 artists/day (was 12 × 100 = 1200).
+    Acceptable: artist enrichment is one-shot per artist (cached on the
+    Event row once found), so steady-state coverage matters more than
+    burst rate. New artists drift in slowly; 300/day comfortably keeps
+    pace with the catalog growth rate.
     """
     from sqlalchemy import func as _func, or_
     from app.services.youtube_lookup import lookup_youtube_video
