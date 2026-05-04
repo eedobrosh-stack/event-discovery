@@ -957,3 +957,94 @@ async def upload_events(file: UploadFile = File(...), db: Session = Depends(get_
         added += 1
     db.commit()
     return {"added": added, "skipped": skipped}
+
+
+# ── LLM Sources audit (Route 1, Half 1 task 3/4) ─────────────────────────────
+
+@router.get("/llm-sources")
+def list_llm_sources(db: Session = Depends(get_db)):
+    """Read-only audit feed for the LLMSource registry.
+
+    Returns rows sorted by attention-needed (drift first, errors next,
+    blocked, then trial-with-issues, then clean recurring, then graduated).
+
+    The static page at /admin/llm-sources renders this. Operations
+    (--promote / --block / re-extract) stay in the CLI for now —
+    keeps this endpoint read-only and unauthenticated, matching the
+    rest of /admin.
+    """
+    from app.models import LLMSource
+    rows = db.query(LLMSource).all()
+
+    def _attention_score(s: LLMSource) -> int:
+        # Higher score → needs attention sooner. Combined into one number
+        # so the sort key is monotonic and obvious.
+        score = 0
+        if bool(s.drift_flag):
+            score += 1000
+        if s.last_method == "error":
+            score += 500
+        if s.state == "blocked":
+            score += 200
+        if s.state == "trial":
+            if (s.consecutive_empty_runs or 0) > 0:
+                score += 80   # trial with empties — about to auto-block
+            elif (s.runs_total or 0) == 0:
+                score += 30   # never run yet
+            else:
+                score += 20   # clean trial, awaiting promotion
+        elif s.state == "recurring":
+            score += 5
+        # graduated → 0
+        return score
+
+    rows.sort(key=lambda s: (-_attention_score(s), s.id))
+
+    counts = {"trial": 0, "recurring": 0, "graduated": 0, "blocked": 0}
+    drift_count = 0
+    for s in rows:
+        counts[s.state] = counts.get(s.state, 0) + 1
+        if bool(s.drift_flag):
+            drift_count += 1
+
+    return {
+        "summary": {
+            "total": len(rows),
+            "by_state": counts,
+            "with_drift_flag": drift_count,
+            "thresholds": {
+                "auto_block_threshold": 3,
+                "auto_promote_threshold": 3,
+                "drift_min_history": 3,
+                "drift_threshold": 0.5,
+            },
+        },
+        "sources": [
+            {
+                "id": s.id,
+                "url": s.url,
+                "city_name": s.city_name,
+                "country": s.country,
+                "state": s.state,
+                "last_run_at": str(s.last_run_at) if s.last_run_at else None,
+                "runs_total": s.runs_total or 0,
+                "last_event_count": s.last_event_count,
+                "last_method": s.last_method,
+                "last_error": s.last_error,
+                "events_seen_total": s.events_seen_total or 0,
+                "events_saved_total": s.events_saved_total or 0,
+                "consecutive_empty_runs": s.consecutive_empty_runs or 0,
+                "consecutive_success_runs": s.consecutive_success_runs or 0,
+                "drift_score": s.drift_score,
+                "drift_flag": bool(s.drift_flag),
+                "recent_event_counts": s.recent_event_counts or [],
+                "has_pagination": bool(s.has_pagination),
+                "pagination_signal": s.pagination_signal,
+                "next_page_url": s.next_page_url,
+                "notes": s.notes,
+                "created_at": str(s.created_at) if s.created_at else None,
+                "attention_score": _attention_score(s),
+            }
+            for s in rows
+        ],
+    }

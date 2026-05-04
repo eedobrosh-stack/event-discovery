@@ -904,5 +904,12 @@ app.include_router(version_api.router)
 def admin_page():
     return FileResponse("frontend/admin.html")
 
+
+# Route 1 audit dashboard — read-only view of LLMSource registry. Operations
+# (promote / block / re-extract) live in scripts/llm_run_source.py.
+@app.get("/admin/llm-sources")
+def admin_llm_sources_page():
+    return FileResponse("frontend/llm-sources.html")
+
 # Serve frontend
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

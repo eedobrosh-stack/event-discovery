@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <title>Supercaly Admin — LLM Sources</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #222; }
+
+        header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+        header h1 { font-size: 1.3rem; }
+        header span { opacity: 0.5; font-size: 0.85rem; }
+        header a { color: #a78bfa; font-size: 0.85rem; text-decoration: none; margin-left: auto; }
+
+        .content { max-width: 1500px; margin: 0 auto; padding: 2rem; }
+
+        /* Stat cards */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background: #fff; border-radius: 10px; padding: 1.0rem 1.25rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+        .stat-card .label { font-size: 0.72rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+        .stat-card .value { font-size: 1.6rem; font-weight: 700; color: #1a1a2e; margin-top: 0.2rem; }
+        .stat-card .sub { font-size: 0.72rem; color: #aaa; margin-top: 0.15rem; }
+        .stat-card.warn .value { color: #b45309; }
+        .stat-card.danger .value { color: #b91c1b; }
+
+        .legend { background: #fff; border-radius: 8px; padding: 0.85rem 1.1rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); font-size: 0.78rem; color: #555; }
+        .legend strong { color: #222; }
+
+        /* Section box */
+        .box { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 1.5rem; overflow: hidden; }
+        .box-header { padding: 0.9rem 1.25rem; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 0.75rem; }
+        .box-header h2 { font-size: 0.95rem; font-weight: 600; }
+        .box-header button { margin-left: auto; padding: 0.4rem 0.8rem; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; font-size: 0.78rem; }
+        .box-header button:hover { background: #f9fafb; }
+
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        th { background: #f8f8fb; text-align: left; padding: 0.55rem 0.7rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #888; position: sticky; top: 0; }
+        td { padding: 0.55rem 0.7rem; border-top: 1px solid #f0f0f0; vertical-align: top; }
+        tr:hover td { background: #fafafa; }
+        td.url { max-width: 260px; }
+        td.url a { color: #4338ca; text-decoration: none; word-break: break-all; }
+        td.notes { max-width: 280px; font-size: 0.75rem; color: #666; }
+        td.notes .more { color: #4338ca; cursor: pointer; font-size: 0.7rem; margin-left: 0.3rem; }
+        .truncate { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        /* Status badges */
+        .badge { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 12px; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
+        .badge-trial      { background: #ede9fe; color: #5b21b6; }
+        .badge-recurring  { background: #d1fae5; color: #065f46; }
+        .badge-graduated  { background: #dbeafe; color: #1e40af; }
+        .badge-blocked    { background: #fee2e2; color: #991b1b; }
+        .badge-drift      { background: #fef3c7; color: #92400e; }
+        .badge-err        { background: #fee2e2; color: #991b1b; }
+        .badge-method     { background: #f3f4f6; color: #374151; font-weight: 500; }
+
+        .row-attn td { background: #fffbeb; }
+        .row-attn:hover td { background: #fef3c7; }
+        .row-err td { background: #fef2f2; }
+        .row-err:hover td { background: #fee2e2; }
+
+        .empty { padding: 3rem; text-align: center; color: #888; font-size: 0.9rem; }
+        .loading { padding: 2rem; text-align: center; color: #888; font-size: 0.85rem; }
+
+        details summary { cursor: pointer; color: #4338ca; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LLM Sources</h1>
+        <span>Route 1 source registry — read-only audit</span>
+        <a href="/admin">← back to Admin</a>
+    </header>
+    <div class="content">
+        <div id="summary" class="loading">Loading…</div>
+        <div class="legend">
+            <strong>Sort order:</strong> attention-needed first —
+            <span class="badge badge-drift">drift</span> →
+            <span class="badge badge-err">errors</span> →
+            <span class="badge badge-blocked">blocked</span> →
+            <span class="badge badge-trial">trial w/ issues</span> →
+            <span class="badge badge-trial">trial clean</span> →
+            <span class="badge badge-recurring">recurring</span> →
+            <span class="badge badge-graduated">graduated</span>.
+            Operations (promote / block / re-extract) live in
+            <code>scripts/llm_run_source.py</code>.
+        </div>
+
+        <div class="box">
+            <div class="box-header">
+                <h2>Sources</h2>
+                <button onclick="load()">Refresh</button>
+            </div>
+            <div id="table-wrap">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
+    </div>
+
+<script>
+function esc(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+}
+function fmtDate(s) {
+    if (!s) return "—";
+    // server gives ISO; show YYYY-MM-DD HH:MM
+    return s.slice(0, 16);
+}
+function badge(label, cls) {
+    return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
+async function load() {
+    document.getElementById("table-wrap").innerHTML = '<div class="loading">Loading…</div>';
+    try {
+        const r = await fetch("/api/admin/llm-sources");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        renderSummary(data.summary);
+        renderTable(data.sources);
+    } catch (e) {
+        document.getElementById("table-wrap").innerHTML =
+            `<div class="empty">Error loading: ${esc(e.message)}</div>`;
+    }
+}
+
+function renderSummary(s) {
+    const t = s.thresholds;
+    const cards = [
+        { label: "Total", value: s.total },
+        { label: "Trial", value: s.by_state.trial || 0 },
+        { label: "Recurring", value: s.by_state.recurring || 0 },
+        { label: "Graduated", value: s.by_state.graduated || 0 },
+        { label: "Blocked", value: s.by_state.blocked || 0,
+          extra: s.by_state.blocked > 0 ? "danger" : "" },
+        { label: "Drift flagged", value: s.with_drift_flag,
+          extra: s.with_drift_flag > 0 ? "warn" : "" },
+    ];
+    document.getElementById("summary").outerHTML = `
+        <div id="summary">
+            <div class="stats-grid">
+                ${cards.map(c => `
+                    <div class="stat-card ${c.extra || ''}">
+                        <div class="label">${esc(c.label)}</div>
+                        <div class="value">${c.value}</div>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+    `;
+}
+
+function renderTable(rows) {
+    if (!rows.length) {
+        document.getElementById("table-wrap").innerHTML =
+            '<div class="empty">No sources yet. Onboard one with <code>scripts/llm_run_source.py URL --city X --country Y</code>.</div>';
+        return;
+    }
+    const html = `
+        <table>
+            <thead>
+                <tr>
+                    <th>State</th>
+                    <th>URL</th>
+                    <th>City</th>
+                    <th class="num">Runs</th>
+                    <th class="num">Last #</th>
+                    <th>Method</th>
+                    <th class="num">Streak</th>
+                    <th>Drift</th>
+                    <th>Pagination</th>
+                    <th>Last error</th>
+                    <th>Last run</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rows.map(rowHtml).join("")}
+            </tbody>
+        </table>
+    `;
+    document.getElementById("table-wrap").innerHTML = html;
+}
+
+function rowHtml(s) {
+    const stateBadge = badge(s.state, `badge-${s.state}`);
+    const methodBadge = s.last_method
+        ? `<span class="badge ${s.last_method === 'error' ? 'badge-err' : 'badge-method'}">${esc(s.last_method)}</span>`
+        : "—";
+    const streak = s.consecutive_success_runs > 0
+        ? `<span style="color:#065f46">+${s.consecutive_success_runs}</span>`
+        : (s.consecutive_empty_runs > 0
+              ? `<span style="color:#991b1b">−${s.consecutive_empty_runs}</span>`
+              : "0");
+    const driftCell = s.drift_flag
+        ? `${badge('drift', 'badge-drift')} <span style="color:#92400e">${(s.drift_score * 100).toFixed(0)}%</span>
+           <details style="margin-top:.25rem; font-size:.7rem;">
+             <summary>history</summary>
+             <code>${esc(JSON.stringify(s.recent_event_counts))}</code>
+           </details>`
+        : (s.drift_score === null
+            ? '<span style="color:#aaa">—</span>'
+            : `<span style="color:#888">${(s.drift_score * 100).toFixed(0)}%</span>`);
+    const pagCell = s.has_pagination
+        ? `<span title="${esc(s.next_page_url || '')}">${esc(s.pagination_signal || '')}</span>`
+        : "—";
+    const errCell = s.last_error
+        ? `<span class="truncate" style="max-width:200px;display:inline-block;color:#991b1b" title="${esc(s.last_error)}">${esc(s.last_error.slice(0, 80))}</span>`
+        : "—";
+    const notesCell = s.notes
+        ? `<div class="truncate" title="${esc(s.notes)}">${esc(s.notes)}</div>`
+        : "—";
+    const cls = s.drift_flag || s.last_method === 'error'
+        ? 'row-err'
+        : (s.attention_score >= 80 ? 'row-attn' : '');
+
+    return `
+        <tr class="${cls}">
+            <td>${stateBadge}</td>
+            <td class="url"><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a></td>
+            <td>${esc(s.city_name || s.country || '—')}</td>
+            <td class="num">${s.runs_total}</td>
+            <td class="num">${s.last_event_count !== null ? s.last_event_count : '—'}</td>
+            <td>${methodBadge}</td>
+            <td class="num">${streak}</td>
+            <td>${driftCell}</td>
+            <td>${pagCell}</td>
+            <td>${errCell}</td>
+            <td style="white-space:nowrap;color:#666;font-size:.78rem">${fmtDate(s.last_run_at)}</td>
+            <td class="notes">${notesCell}</td>
+        </tr>
+    `;
+}
+
+load();
+</script>
+</body>
+</html>
