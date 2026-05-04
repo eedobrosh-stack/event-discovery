@@ -579,6 +579,72 @@ def extract(url: str, *,
     )
 
 
+def resolve_template_urls(
+    base_url: str,
+    template: Optional[str] = None,
+    range_months: Optional[int] = None,
+    values: Optional[list] = None,
+) -> list[str]:
+    """Expand a per-source URL template into the concrete URLs to scan.
+
+    Three modes:
+
+      months mode    template + range_months > 0
+                     `{year}` / `{month:02d}` placeholders in the template
+                     are filled with each of the next N months including
+                     the current one.
+
+      values mode    template + non-empty values list
+                     `{value}` placeholder is replaced with each entry.
+
+      passthrough    neither set, OR template missing → just [base_url].
+
+    Months and values are mutually exclusive — months wins if both are
+    somehow populated (defensive; the CLI / model docs forbid setting
+    both).
+
+    The base_url is the source-of-record URL on the LLMSource row; it's
+    included as an explicit "always scan this too" entry in template
+    modes so a partial template (missing recent dates, etc.) doesn't
+    accidentally lose coverage of the canonical landing page.
+    """
+    if template and range_months and range_months > 0:
+        from datetime import date, timedelta
+        urls = [base_url]  # always include canonical landing page
+        today = date.today()
+        for i in range(range_months):
+            # Walk months by stepping ~30.5 days then snapping to month-1.
+            # Naive but correct enough for monthly listings.
+            d = today.replace(day=1)
+            for _ in range(i):
+                # advance one calendar month
+                if d.month == 12:
+                    d = d.replace(year=d.year + 1, month=1)
+                else:
+                    d = d.replace(month=d.month + 1)
+            try:
+                u = template.format(year=d.year, month=d.month)
+            except (KeyError, IndexError):
+                # Bad template; bail with whatever we have.
+                break
+            if u not in urls:
+                urls.append(u)
+        return urls
+
+    if template and values:
+        urls = [base_url]
+        for v in values:
+            try:
+                u = template.format(value=v)
+            except (KeyError, IndexError):
+                break
+            if u not in urls:
+                urls.append(u)
+        return urls
+
+    return [base_url]
+
+
 def extract_auto(url: str, *,
                  source_name: str = "llm_extractor",
                  model: str = "gemini-2.5-flash",

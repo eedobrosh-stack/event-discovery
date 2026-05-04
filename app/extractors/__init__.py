@@ -8,6 +8,7 @@ run the LLM-driven scans on an explicit schedule.
 from app.extractors.llm_extractor import (  # noqa: F401
     extract,
     extract_auto,
+    resolve_template_urls,
     ExtractionResult,
     ExtractorUnconfigured,
 )

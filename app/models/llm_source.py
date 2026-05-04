@@ -80,6 +80,26 @@ class LLMSource(Base):
     pagination_signal = Column(String(50), nullable=True)
     next_page_url = Column(String(1000), nullable=True)
 
+    # ── Per-source URL templates (Move 2 of pagination plan) ─────────────
+    # When set, the recurring scheduler iterates URLs derived from the
+    # template instead of just fetching `url`. Two mutually exclusive
+    # iteration modes:
+    #
+    #   Months mode:  template has {year} / {month:02d} placeholders.
+    #                 Iterate next N months from today.
+    #     example: https://site.com/events?month={year}-{month:02d}
+    #              + url_template_range_months = 6
+    #
+    #   Values mode:  template has a {value} placeholder. Iterate the
+    #                 explicit list of values.
+    #     example: https://site.com/events/{value}
+    #              + url_template_values = ["this-weekend", "music", ...]
+    #
+    # Neither set: iteration is a no-op; only `url` is fetched.
+    url_template = Column(String(1000), nullable=True)
+    url_template_range_months = Column(Integer, nullable=True)
+    url_template_values = Column(JSON, nullable=True)  # list[str]
+
     # ── Drift detection (Half 1 task 2/4) ────────────────────────────────
     # Sliding window of the last N event counts (one per run). Capped at
     # 10; oldest dropped when full. Stored as a JSON list under the hood

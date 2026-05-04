@@ -42,7 +42,9 @@ if ENV_PATH.is_file():
 
 from app.database import SessionLocal, Base, engine                   # noqa: E402
 from app.models import City, LLMSource, LLM_SOURCE_STATES              # noqa: E402
-from app.extractors.llm_extractor import extract_auto, ExtractorUnconfigured  # noqa: E402
+from app.extractors.llm_extractor import (  # noqa: E402
+    extract_auto, resolve_template_urls, ExtractorUnconfigured,
+)
 from app.services.collectors.registry import CollectorRegistry         # noqa: E402
 
 logging.basicConfig(
@@ -74,9 +76,23 @@ def _resolve_city(db, city_name: str | None, country: str | None) -> City | None
     return city
 
 
-def _upsert_source_row(db, *, url, city_name, country) -> LLMSource:
+def _upsert_source_row(
+    db, *, url, city_name, country,
+    url_template=None, url_template_range_months=None, url_template_values=None,
+) -> LLMSource:
     src = db.query(LLMSource).filter(LLMSource.url == url).first()
     if src:
+        # Update template fields on re-run if the operator passed new values
+        # (operators iterate on template choice during onboarding). None
+        # values are ignored so a re-run without flags doesn't wipe an
+        # existing template.
+        if url_template is not None:
+            src.url_template = url_template
+        if url_template_range_months is not None:
+            src.url_template_range_months = url_template_range_months
+        if url_template_values is not None:
+            src.url_template_values = url_template_values
+        db.commit()
         return src
     src = LLMSource(
         url=url,
@@ -86,6 +102,9 @@ def _upsert_source_row(db, *, url, city_name, country) -> LLMSource:
         runs_total=0,
         events_seen_total=0,
         events_saved_total=0,
+        url_template=url_template,
+        url_template_range_months=url_template_range_months,
+        url_template_values=url_template_values,
     )
     db.add(src)
     db.commit()
@@ -141,22 +160,101 @@ def main() -> int:
     ap.add_argument("--block", metavar="REASON",
                     help="Set LLMSource.state='blocked' with REASON in notes")
     ap.add_argument("--note", help="Free-form note to append to LLMSource.notes")
+    # Per-source URL templates (Move 2 of pagination plan).
+    # Mutually exclusive: pick one of --url-template-range-months
+    # or --url-template-values when --url-template is set.
+    ap.add_argument(
+        "--url-template",
+        help='Format string with {year}/{month:02d} or {value}. e.g. '
+             '"https://site.com/events?month={year}-{month:02d}"',
+    )
+    ap.add_argument(
+        "--url-template-range-months", type=int,
+        help="Months mode: iterate next N months (use with {year}/{month:02d}).",
+    )
+    ap.add_argument(
+        "--url-template-values",
+        help="Values mode: comma-separated literals for {value} substitution.",
+    )
     args = ap.parse_args()
 
     _ensure_tables()
 
-    log.info(f"extracting from {args.url}…")
-    try:
-        # extract_auto so manual onboarding sees JSON-LD wins for free,
-        # exactly as the scheduled recurring job does. Earlier the script
-        # called plain extract() which always hit the LLM — masked sources
-        # like allevents.in/tel-aviv that actually have JSON-LD events.
-        result = extract_auto(
-            args.url, source_name="llm_extractor",
-            model=args.model, max_events=args.max_events,
+    # Validate template-flag combinations: months and values modes are
+    # mutually exclusive.
+    template_values_list: list[str] | None = None
+    if args.url_template_values:
+        template_values_list = [
+            v.strip() for v in args.url_template_values.split(",") if v.strip()
+        ]
+    if (args.url_template_range_months and template_values_list):
+        sys.exit(
+            "Pick one: --url-template-range-months OR --url-template-values, "
+            "not both."
         )
+    if (args.url_template_range_months or template_values_list) and not args.url_template:
+        sys.exit(
+            "--url-template is required when using "
+            "--url-template-range-months or --url-template-values."
+        )
+
+    urls_to_scan = resolve_template_urls(
+        args.url,
+        template=args.url_template,
+        range_months=args.url_template_range_months,
+        values=template_values_list,
+    )
+    if len(urls_to_scan) > 1:
+        log.info(
+            f"template expanded to {len(urls_to_scan)} URLs:"
+            + "".join(f"\n   {u}" for u in urls_to_scan[:6])
+            + (f"\n   … ({len(urls_to_scan) - 6} more)" if len(urls_to_scan) > 6 else "")
+        )
+
+    # Aggregate across template-expanded URLs into a single result-shape.
+    log.info(f"extracting from {args.url}…")
+    aggregated_events = []
+    aggregated_method = None
+    aggregated_error = None
+    aggregated_dropped = 0
+    aggregated_pag = {"has_pagination": False, "signal": None, "next_page_url": None}
+    aggregated_raw_bytes = 0
+    aggregated_cleaned_bytes = 0
+    try:
+        for u in urls_to_scan:
+            per = extract_auto(
+                u, source_name="llm_extractor",
+                model=args.model, max_events=args.max_events,
+            )
+            aggregated_events.extend(per.events)
+            aggregated_dropped += per.dropped_for_hallucination
+            aggregated_raw_bytes += per.raw_html_bytes
+            aggregated_cleaned_bytes += per.cleaned_html_bytes
+            aggregated_method = per.method
+            if per.error:
+                aggregated_error = per.error
+            if per.has_pagination:
+                aggregated_pag = {
+                    "has_pagination": True,
+                    "signal": per.pagination_signal,
+                    "next_page_url": per.next_page_url,
+                }
     except ExtractorUnconfigured as e:
         sys.exit(f"extractor unconfigured: {e}")
+
+    from types import SimpleNamespace
+    result = SimpleNamespace(
+        events=aggregated_events,
+        method=aggregated_method or "error",
+        error=aggregated_error if not aggregated_events else None,
+        dropped_for_hallucination=aggregated_dropped,
+        raw_html_bytes=aggregated_raw_bytes,
+        cleaned_html_bytes=aggregated_cleaned_bytes,
+        has_pagination=aggregated_pag["has_pagination"],
+        pagination_signal=aggregated_pag["signal"],
+        next_page_url=aggregated_pag["next_page_url"],
+        api_call_ok=bool(aggregated_events) or aggregated_method != "error",
+    )
 
     log.info(
         f"  method={result.method}  events={len(result.events)}  "
@@ -194,6 +292,9 @@ def main() -> int:
     try:
         src = _upsert_source_row(
             db, url=args.url, city_name=args.city, country=args.country,
+            url_template=args.url_template,
+            url_template_range_months=args.url_template_range_months,
+            url_template_values=template_values_list,
         )
 
         # Promote / block flags take effect even on empty extracts —

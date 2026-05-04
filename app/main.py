@@ -371,6 +371,10 @@ def _run_migrations():
             "recent_event_counts":      "TEXT",   # JSON list under the hood
             "drift_score":              "REAL",
             "drift_flag":               "INTEGER DEFAULT 0",  # SQLite has no Boolean
+            # Per-source URL templates (Half 1 task 4/4 — pagination Move 2).
+            "url_template":              "TEXT",
+            "url_template_range_months": "INTEGER",
+            "url_template_values":       "TEXT",   # JSON list under the hood
         }
         with engine.connect() as conn:
             for col, coltype in llm_incremental_cols.items():

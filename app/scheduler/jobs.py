@@ -1542,7 +1542,9 @@ async def llm_extract_recurring_job(
             # falls through to the LLM extractor only when JSON-LD doesn't yield
             # events. ExtractorUnconfigured is only raised if the LLM path is
             # actually needed — pure JSON-LD sources work without the API key.
-            from app.extractors.llm_extractor import extract_auto, ExtractorUnconfigured
+            from app.extractors.llm_extractor import (
+                extract_auto, resolve_template_urls, ExtractorUnconfigured,
+            )
             from app.services.collectors.registry import CollectorRegistry
 
             cutoff = datetime.utcnow() - timedelta(hours=min_hours_since_last)
@@ -1582,13 +1584,46 @@ async def llm_extract_recurring_job(
                     break
 
                 src_url = src.url
+
+                # Resolve URL template if the source has one (Move 2). For
+                # plain sources this is just [src.url]. For template
+                # sources we iterate the expanded URL list, aggregate
+                # events, and fold the per-URL signals into one result-
+                # shaped object so the rest of the loop is unchanged.
+                urls_to_scan = resolve_template_urls(
+                    src.url,
+                    template=src.url_template,
+                    range_months=src.url_template_range_months,
+                    values=list(src.url_template_values or []) if src.url_template_values else None,
+                )
+
+                aggregated_events = []
+                aggregated_method = "html"   # overwritten below if any path differs
+                aggregated_error = None
+                aggregated_pagination = {"has_pagination": False, "signal": None, "next_page_url": None}
+                aggregated_dropped = 0
+                last_per_url_method = None
+
                 try:
-                    # Run extract_auto on a thread — sync (urllib + bs4 + maybe
-                    # Gemini SDK). JSON-LD path runs without the LLM key.
-                    result = await asyncio.to_thread(
-                        extract_auto, src_url,
-                        source_name="llm_extractor",
-                    )
+                    for u in urls_to_scan:
+                        # Run extract_auto on a thread — sync (urllib + bs4
+                        # + maybe Gemini SDK). JSON-LD path runs without
+                        # the LLM key.
+                        per_result = await asyncio.to_thread(
+                            extract_auto, u,
+                            source_name="llm_extractor",
+                        )
+                        aggregated_events.extend(per_result.events)
+                        aggregated_dropped += per_result.dropped_for_hallucination
+                        last_per_url_method = per_result.method
+                        if per_result.error:
+                            aggregated_error = per_result.error
+                        if per_result.has_pagination:
+                            aggregated_pagination = {
+                                "has_pagination": True,
+                                "signal": per_result.pagination_signal,
+                                "next_page_url": per_result.next_page_url,
+                            }
                 except ExtractorUnconfigured as e:
                     extractor_unavailable = True
                     logger.warning(
@@ -1607,6 +1642,31 @@ async def llm_extract_recurring_job(
                     src.runs_total = (src.runs_total or 0) + 1
                     db.commit()
                     continue
+
+                # Synthesize a single result object so downstream code
+                # (drift update, streak counters, persistence) doesn't
+                # need to know about iteration. method defaults to the
+                # last per-URL method when ≥1 URL succeeded; "error"
+                # only when every URL failed.
+                from types import SimpleNamespace
+                synthesized_method = (
+                    last_per_url_method if aggregated_events
+                    else (last_per_url_method or "error")
+                )
+                result = SimpleNamespace(
+                    events=aggregated_events,
+                    method=synthesized_method,
+                    error=aggregated_error if not aggregated_events else None,
+                    dropped_for_hallucination=aggregated_dropped,
+                    has_pagination=aggregated_pagination["has_pagination"],
+                    pagination_signal=aggregated_pagination["signal"],
+                    next_page_url=aggregated_pagination["next_page_url"],
+                )
+                if len(urls_to_scan) > 1:
+                    logger.info(
+                        f"llm_extract_recurring: {src_url} template-expanded "
+                        f"to {len(urls_to_scan)} URLs → {len(aggregated_events)} events"
+                    )
 
                 # Persist events via the same ingest pipeline collectors use.
                 saved = 0
