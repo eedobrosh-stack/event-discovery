@@ -1428,6 +1428,58 @@ async def collect_mevalim_job():
             db.close()
 
 
+# Drift detection — sliding window + scoring helpers.
+#
+# We keep the last ``_DRIFT_WINDOW`` event counts on each LLMSource. Each
+# run pushes a new count; oldest is dropped when the window is full.
+#
+# drift_score = (avg(recent_excluding_last) - last) / max(avg(...), 1)
+#   ≤ 0   → no drift (events held steady or grew this run)
+#   1.0   → total collapse (last run = 0)
+#   0.5   → events halved vs. the prior average
+#
+# drift_flag fires only when:
+#   • we have ``_DRIFT_MIN_HISTORY`` prior runs (avoid noise from small N)
+#   • drift_score > ``_DRIFT_THRESHOLD``
+#
+# Move 2 of drift work (auto-action on flag) is deliberately deferred:
+# v1 only surfaces the flag for the audit dashboard so we can calibrate
+# the threshold against real noise before any state machine reacts.
+
+_DRIFT_WINDOW = 10
+# Minimum *prior* runs (so the flag earliest can fire on the 4th total
+# run when we have 3 priors). 3 priors is the smallest sample where an
+# average is meaningfully more than "the last value"; smaller and the
+# flag becomes noise.
+_DRIFT_MIN_HISTORY = 3
+_DRIFT_THRESHOLD = 0.5      # >50% reduction vs prior average
+
+
+def _update_drift_state(src, latest_event_count: int) -> None:
+    """Mutates ``src`` in place: appends the latest count to the rolling
+    window, recomputes drift_score + drift_flag.
+
+    No-op cleanup: when latest is 0 due to a transient extractor error
+    (method='error') the caller may want to skip drift updates entirely
+    so we don't over-react to API hiccups. That gating is the caller's
+    responsibility — this helper just does the math when called.
+    """
+    history = list(src.recent_event_counts or [])
+    history.append(int(latest_event_count))
+    history = history[-_DRIFT_WINDOW:]
+    src.recent_event_counts = history
+
+    if len(history) - 1 >= _DRIFT_MIN_HISTORY:
+        prior = history[:-1]
+        prior_avg = sum(prior) / len(prior)
+        denom = max(prior_avg, 1.0)
+        src.drift_score = (prior_avg - latest_event_count) / denom
+        src.drift_flag = bool(src.drift_score > _DRIFT_THRESHOLD)
+    else:
+        src.drift_score = None
+        src.drift_flag = False
+
+
 async def llm_extract_recurring_job(
     max_sources_per_run: int = 20,
     min_hours_since_last: int = 18,
@@ -1600,6 +1652,19 @@ async def llm_extract_recurring_job(
                 src.has_pagination = bool(result.has_pagination)
                 src.pagination_signal = result.pagination_signal
                 src.next_page_url = (result.next_page_url or "")[:1000] or None
+
+                # Drift signal — only update when the run actually reached
+                # an event-extraction phase. Transient extractor errors
+                # (method='error', usually Gemini 5xx exhausted) shouldn't
+                # poison the drift window with a fake "0 events" sample.
+                if result.method != "error":
+                    _update_drift_state(src, len(result.events))
+                    if src.drift_flag:
+                        logger.warning(
+                            f"llm_extract_recurring: drift detected on {src_url} "
+                            f"(score={src.drift_score:.2f}, "
+                            f"recent={src.recent_event_counts})"
+                        )
 
                 # Track consecutive success / empty streaks. A run counts as
                 # "successful" when events were extracted AND no error fired;

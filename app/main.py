@@ -363,14 +363,22 @@ def _run_migrations():
     # of d2d9383; new columns added later need ALTER TABLE on existing rows.
     if "llm_sources" in insp.get_table_names():
         existing_llm_cols = [c["name"] for c in insp.get_columns("llm_sources")]
-        # consecutive_success_runs: powers the auto-promotion logic in
-        # llm_extract_recurring_job (trial → recurring at 3+ successes).
-        if "consecutive_success_runs" not in existing_llm_cols:
-            with engine.connect() as conn:
-                conn.execute(text(
-                    "ALTER TABLE llm_sources ADD COLUMN consecutive_success_runs INTEGER DEFAULT 0"
-                ))
-                conn.commit()
+        llm_incremental_cols: dict[str, str] = {
+            # consecutive_success_runs: auto-promotion gate (cad99b7).
+            "consecutive_success_runs": "INTEGER DEFAULT 0",
+            # Drift detection (Half 1 task 2/4): rolling event-count window
+            # + computed drift score per run + flag for the audit dashboard.
+            "recent_event_counts":      "TEXT",   # JSON list under the hood
+            "drift_score":              "REAL",
+            "drift_flag":               "INTEGER DEFAULT 0",  # SQLite has no Boolean
+        }
+        with engine.connect() as conn:
+            for col, coltype in llm_incremental_cols.items():
+                if col not in existing_llm_cols:
+                    conn.execute(text(
+                        f"ALTER TABLE llm_sources ADD COLUMN {col} {coltype}"
+                    ))
+            conn.commit()
 
     # job_state: persistent key/value store for scheduler state (e.g. the
     # rotating city-batch cursor) so it survives Render restarts / OOM kills.

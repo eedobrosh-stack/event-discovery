@@ -18,7 +18,7 @@ each manual run. The scheduler integration (Step 5) reads
 ``state IN ('trial', 'recurring')`` to decide what to scan.
 """
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Boolean, Float, Text, Index
+    Column, Integer, String, DateTime, Boolean, Float, Text, Index, JSON
 )
 from sqlalchemy.sql import func
 
@@ -79,6 +79,18 @@ class LLMSource(Base):
     has_pagination = Column(Boolean, default=False)
     pagination_signal = Column(String(50), nullable=True)
     next_page_url = Column(String(1000), nullable=True)
+
+    # ── Drift detection (Half 1 task 2/4) ────────────────────────────────
+    # Sliding window of the last N event counts (one per run). Capped at
+    # 10; oldest dropped when full. Stored as a JSON list under the hood
+    # (TEXT in SQLite). Drives drift_score below.
+    recent_event_counts = Column(JSON, nullable=True)
+    # Computed each run: (prior_avg - last) / max(prior_avg, 1).
+    # Range: ≤0 means events held steady or grew. >0 means events shrank;
+    # 1.0 = total collapse. The flag is True only when drift_score
+    # crosses the threshold AND we have enough history to be confident.
+    drift_score = Column(Float, nullable=True)
+    drift_flag = Column(Boolean, default=False)
 
     # ── Operational ──────────────────────────────────────────────────────
     notes = Column(Text, nullable=True)

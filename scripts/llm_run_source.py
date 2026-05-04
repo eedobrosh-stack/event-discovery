@@ -107,6 +107,12 @@ def _record_run(db, src: LLMSource, *, result, saved: int) -> None:
     src.pagination_signal = result.pagination_signal
     src.next_page_url = (result.next_page_url or "")[:1000] or None
 
+    # Drift signal — same gating as the scheduler: only update when the
+    # run reached extraction (skip transient API errors).
+    if result.method != "error":
+        from app.scheduler.jobs import _update_drift_state
+        _update_drift_state(src, len(result.events))
+
     # Streak counters — symmetric reset; the scheduler uses these for
     # auto-demote (consecutive_empty_runs) and auto-promote
     # (consecutive_success_runs). A "successful run" = events extracted
