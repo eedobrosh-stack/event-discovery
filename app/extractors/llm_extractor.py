@@ -121,11 +121,19 @@ event you can identify — concerts, theatre, exhibitions, club nights,
 festivals, talks, tours. Skip past events. Skip non-event content
 (blog posts, articles, "about us" sections).
 
-Rules:
-- Each event must have a real start_date in ISO format (YYYY-MM-DD).
-  Skip the event if you cannot determine a date with reasonable confidence.
-- If the page lists a date range, set start_date to the first day and
-  end_date to the last day. Keep them within the same row.
+Date inference rules (apply in order):
+- If a row shows an explicit ISO or human-readable date, use it.
+- If a row sits under a "Today" / "Tonight" header (or the URL is a
+  "today's events" listing), use today's date as start_date.
+- If a row sits under a "Tomorrow" header, use tomorrow's date.
+- If only "Through MONTH DAY" or a similar "ends-on" string is shown
+  without a start, use today's date as start_date and the parsed date
+  as end_date.
+- For an explicit date range (start visible AND end visible), set
+  start_date to the first day and end_date to the last.
+- Skip the event ONLY when no date signal is recoverable at all.
+
+Other field rules:
 - artist_name only when there's a clear performer/lecturer/headliner.
   For exhibitions or non-headlined events, leave artist_name null.
 - venue_name should be the specific venue (e.g. "Cameri Theatre"), not
@@ -246,16 +254,22 @@ def _clean_html(html: str, base_url: str, max_chars: int = _MAX_CLEANED_HTML) ->
     """Strip noise and resolve relative URLs.
 
     Keeps the structural skeleton (anchors → ticket links, img → posters)
-    so Gemini can emit absolute URLs in extracted fields. Drops scripts,
-    styles, headers/footers/nav/aside since they're chrome that wastes
-    tokens. <noscript> is preserved in case a site uses it for a fallback
-    event listing.
+    so Gemini can emit absolute URLs in extracted fields. Removes only
+    *obviously* non-content tags. <noscript> is preserved in case a site
+    uses it for a fallback event listing.
+
+    Why we no longer strip <nav> / <aside> / <header>: many community/
+    indie event sites use them semantically wrong — wrapping each event
+    card in <nav> (dopdx) or putting the listing inside an <aside>
+    sidebar. Nuking those tags wipes out the real content. The cost is
+    slightly more navigation-chrome tokens on well-structured pages,
+    which the LLM's prompt is robust enough to ignore.
     """
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "lxml")
 
     for tag in soup(["script", "style", "svg", "iframe", "form", "input",
-                     "button", "header", "footer", "nav", "aside"]):
+                     "button", "footer"]):
         tag.decompose()
 
     for a in soup.find_all("a", href=True):
