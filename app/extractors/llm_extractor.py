@@ -182,11 +182,19 @@ _MAX_CLEANED_HTML = 200_000
 
 
 def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
-    """Plain HTTP fetch with Hebrew/CJK URL safety. Returns None on error.
+    """HTTP fetch with anti-bot fallback. Returns None on error.
 
-    Percent-encodes non-ASCII path/query characters so urlopen's ASCII
-    serializer doesn't blow up on URLs with Hebrew components — the same
-    treatment used in scripts/find_city_guides.
+    Tries curl_cffi (Chrome 120 TLS impersonation) first when available —
+    this is what the existing scraper fleet uses (base_scraper.py) to get
+    past the 403/429 walls that plain urllib hits. Many candidate sources
+    we'd want to extract from (shotgun.live, travelportland.com,
+    Cloudflare-fronted venue sites) only respond to TLS-impersonating
+    clients; without curl_cffi they're unreachable.
+
+    Falls back to urllib with browser-like headers for environments
+    where curl_cffi isn't installed (dev shell variations, CI without
+    the extra). Hebrew/CJK URL paths are percent-encoded either way so
+    we don't trip the urllib ASCII serializer.
     """
     parts = urlsplit(url)
     safe_path = quote(parts.path, safe="/%-._~!$&'()*+,;=:@")
@@ -194,6 +202,29 @@ def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
     encoded = urlunsplit((parts.scheme, parts.netloc, safe_path,
                           safe_query, parts.fragment))
 
+    # Path 1: curl_cffi (Chrome 120 TLS fingerprint). Same impersonation
+    # value the scraper fleet uses — well-tested on real anti-bot setups.
+    try:
+        from curl_cffi import requests as _cffi_requests
+        try:
+            resp = _cffi_requests.get(
+                encoded, impersonate="chrome120", timeout=timeout,
+                headers={
+                    "Accept-Language": "en-US,en;q=0.9,he;q=0.8",
+                },
+            )
+            if 200 <= resp.status_code < 300:
+                return resp.text
+            logger.info(
+                f"_fetch_html({url}): curl_cffi got {resp.status_code}, "
+                f"falling back to urllib"
+            )
+        except Exception as e:
+            logger.info(f"_fetch_html({url}): curl_cffi failed ({type(e).__name__}: {e}); falling back to urllib")
+    except ImportError:
+        pass  # curl_cffi not installed in this env
+
+    # Path 2: urllib with browser-ish headers — fallback / dev path.
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -207,7 +238,7 @@ def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read().decode("utf-8", errors="ignore")
     except Exception as e:
-        logger.warning(f"_fetch_html({url}): {type(e).__name__}: {e}")
+        logger.warning(f"_fetch_html({url}): both paths failed; last={type(e).__name__}: {e}")
         return None
 
 
