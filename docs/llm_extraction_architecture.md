@@ -379,3 +379,63 @@ between build steps 1 and 2** before going further.
   the cheap path always runs first.
 - Not a one-shot scrape. The whole point is the recurring extractor +
   graduation flow that turns a model call into stable inventory over time.
+
+---
+
+## Scope decision: Half 1 indefinitely, Half 2 on standby
+
+A natural next step after this architecture is **automatic generation
+of source-specific scraper code** — once an `LLMSource` has been
+extracted from N times successfully, the system would generate a
+purpose-built parser, validate it against a held-out LLM run, and
+promote the source to `state='graduated'` (which already exists in
+the schema for exactly this reason). Each subsequent run uses the
+generated scraper for free instead of paying ~$0.05 to Gemini.
+
+We've explicitly chosen NOT to build that in this iteration.
+
+**The math at our target scale (50–500 cities):**
+
+| Sources in registry | LLM-only $/year   | After Half 2 build  |
+| ------------------- | ----------------- | ------------------- |
+| 50                  | ~$900             | ~$0 + 4–6 weeks dev |
+| 500                 | ~$9 000           | ~$0 + 4–6 weeks dev |
+| 5 000               | ~$90 000          | strong ROI          |
+| 50 000              | ~$900 000         | mandatory           |
+
+Under 500 sources, total LLM bill is under $10K/year — less than the
+engineering cost of building reliable scraper-generation. So we run
+the LLM extractor forever, accept the marginal cost, and put the
+energy elsewhere.
+
+**Half 2 is not impossible — it's just not earned yet.** The pieces
+are well-understood (LLM code generation works, sandboxed execution
+is a solved pattern, drift detection via LLM-as-oracle is conceptually
+clean). A working prototype is ~3 days; a robust production system
+with regeneration + drift + rollback is ~4–6 weeks. The blocker is
+opportunity cost, not technical risk.
+
+**Revisit triggers** — build Half 2 when one of these is true:
+
+- Source count crosses **~1 000** (LLM bill > ~$20K/year, regen cost
+  starts to matter; refactoring beats the reservation curve).
+- Latency becomes user-visible — e.g. someone needs sub-hour event
+  freshness and the LLM scheduler can't run fast enough.
+- Quality plateau — the LLM extractor's accuracy stops improving with
+  prompt tuning, but a generated scraper customized to a specific
+  site's DOM could do better.
+- Vendor risk — Gemini pricing or API stability deteriorates such
+  that paying ~$0.05/source/run becomes uneconomical.
+
+Until any of those fire, the missing 15% of Half 1 is the higher-
+leverage work:
+
+1. Auto-promotion: `trial → recurring` after N successful runs.
+2. Drift detection on the LLM extractor itself (run-to-run delta
+   monitoring; flag sources whose event count collapses).
+3. An audit dashboard surfacing source state, cost, recent runs.
+4. Per-source URL templates (Move 2 of the pagination plan) — handles
+   the travelportland-style "events live one click in" case.
+
+These finish the system we've already started. Half 2 sits behind
+this paragraph until the math demands it.
