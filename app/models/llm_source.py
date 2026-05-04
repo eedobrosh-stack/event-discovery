@@ -69,6 +69,11 @@ class LLMSource(Base):
     dup_rate = Column(Float, nullable=True)
     # Demotion candidate when this passes a threshold (3+).
     consecutive_empty_runs = Column(Integer, default=0)
+    # Promotion candidate. When state='trial' and this passes a threshold
+    # (3+), the recurring scheduler flips the source to state='recurring'
+    # so it stays on the regular cadence without manual review. Reset
+    # symmetrically with consecutive_empty_runs.
+    consecutive_success_runs = Column(Integer, default=0)
 
     # ── Pagination evidence (Move 1 of pagination plan) ──────────────────
     has_pagination = Column(Boolean, default=False)

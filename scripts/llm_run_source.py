@@ -42,7 +42,7 @@ if ENV_PATH.is_file():
 
 from app.database import SessionLocal, Base, engine                   # noqa: E402
 from app.models import City, LLMSource, LLM_SOURCE_STATES              # noqa: E402
-from app.extractors.llm_extractor import extract, ExtractorUnconfigured  # noqa: E402
+from app.extractors.llm_extractor import extract_auto, ExtractorUnconfigured  # noqa: E402
 from app.services.collectors.registry import CollectorRegistry         # noqa: E402
 
 logging.basicConfig(
@@ -107,11 +107,17 @@ def _record_run(db, src: LLMSource, *, result, saved: int) -> None:
     src.pagination_signal = result.pagination_signal
     src.next_page_url = (result.next_page_url or "")[:1000] or None
 
-    # Empty-run streak — used later by the scheduler for auto-demotion.
-    if not result.events:
-        src.consecutive_empty_runs = (src.consecutive_empty_runs or 0) + 1
-    else:
+    # Streak counters — symmetric reset; the scheduler uses these for
+    # auto-demote (consecutive_empty_runs) and auto-promote
+    # (consecutive_success_runs). A "successful run" = events extracted
+    # AND no error.
+    run_was_successful = bool(result.events) and not result.error
+    if run_was_successful:
+        src.consecutive_success_runs = (src.consecutive_success_runs or 0) + 1
         src.consecutive_empty_runs = 0
+    else:
+        src.consecutive_empty_runs = (src.consecutive_empty_runs or 0) + 1
+        src.consecutive_success_runs = 0
     db.commit()
 
 
@@ -135,7 +141,11 @@ def main() -> int:
 
     log.info(f"extracting from {args.url}…")
     try:
-        result = extract(
+        # extract_auto so manual onboarding sees JSON-LD wins for free,
+        # exactly as the scheduled recurring job does. Earlier the script
+        # called plain extract() which always hit the LLM — masked sources
+        # like allevents.in/tel-aviv that actually have JSON-LD events.
+        result = extract_auto(
             args.url, source_name="llm_extractor",
             model=args.model, max_events=args.max_events,
         )

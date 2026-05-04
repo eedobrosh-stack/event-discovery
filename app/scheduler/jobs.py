@@ -1432,6 +1432,7 @@ async def llm_extract_recurring_job(
     max_sources_per_run: int = 20,
     min_hours_since_last: int = 18,
     auto_block_threshold: int = 3,
+    auto_promote_threshold: int = 3,
 ):
     """Run the LLM extractor against active LLMSource rows.
 
@@ -1460,6 +1461,13 @@ async def llm_extract_recurring_job(
     flips state to 'blocked' with a date-stamped note. This catches
     sources that have gone offline, redesigned past our extractor, or
     rate-limited us out.
+
+    Auto-promote: ``consecutive_success_runs >= auto_promote_threshold``
+    on a state='trial' source flips it to 'recurring' with a note.
+    This finishes the source-graduation lifecycle without manual
+    `--promote` flags. Reset symmetrically with consecutive_empty_runs:
+    each run is either a success (events found, no error) or an empty
+    (incrementing the demotion counter), never both.
     """
     import gc
     from sqlalchemy import or_
@@ -1593,10 +1601,17 @@ async def llm_extract_recurring_job(
                 src.pagination_signal = result.pagination_signal
                 src.next_page_url = (result.next_page_url or "")[:1000] or None
 
-                if not result.events:
-                    src.consecutive_empty_runs = (src.consecutive_empty_runs or 0) + 1
-                else:
+                # Track consecutive success / empty streaks. A run counts as
+                # "successful" when events were extracted AND no error fired;
+                # "empty" otherwise. Symmetric reset: incrementing one zeroes
+                # the other so the streaks reflect the most-recent run-shape.
+                run_was_successful = bool(result.events) and not result.error
+                if run_was_successful:
+                    src.consecutive_success_runs = (src.consecutive_success_runs or 0) + 1
                     src.consecutive_empty_runs = 0
+                else:
+                    src.consecutive_empty_runs = (src.consecutive_empty_runs or 0) + 1
+                    src.consecutive_success_runs = 0
 
                 # Auto-demote (skip already-blocked rows defensively).
                 if (src.state in ("trial", "recurring")
@@ -1608,6 +1623,24 @@ async def llm_extract_recurring_job(
                     logger.info(
                         f"llm_extract_recurring: auto-blocked {src_url} "
                         f"(consecutive_empty={src.consecutive_empty_runs})"
+                    )
+
+                # Auto-promote trial → recurring after enough clean runs.
+                # Recurring already runs on the same cadence; promotion is
+                # an operational signal ("this source has earned its place
+                # in the registry") rather than a behavior change. Operators
+                # can still manually --block to override.
+                if (src.state == "trial"
+                        and (src.consecutive_success_runs or 0) >= auto_promote_threshold):
+                    src.state = "recurring"
+                    stamp = (
+                        f"[auto-promoted {datetime.utcnow().date()}] "
+                        f"{auto_promote_threshold}+ consecutive runs with events"
+                    )
+                    src.notes = (src.notes + "\n" + stamp) if src.notes else stamp
+                    logger.info(
+                        f"llm_extract_recurring: auto-promoted {src_url} "
+                        f"trial → recurring (consecutive_success={src.consecutive_success_runs})"
                     )
 
                 db.commit()

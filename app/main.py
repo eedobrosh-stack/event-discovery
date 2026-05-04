@@ -358,6 +358,20 @@ def _run_migrations():
                 conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
         conn.commit()
 
+    # llm_sources: incremental columns added after the table's first ship.
+    # The table itself is created by Base.metadata.create_all on first deploy
+    # of d2d9383; new columns added later need ALTER TABLE on existing rows.
+    if "llm_sources" in insp.get_table_names():
+        existing_llm_cols = [c["name"] for c in insp.get_columns("llm_sources")]
+        # consecutive_success_runs: powers the auto-promotion logic in
+        # llm_extract_recurring_job (trial → recurring at 3+ successes).
+        if "consecutive_success_runs" not in existing_llm_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE llm_sources ADD COLUMN consecutive_success_runs INTEGER DEFAULT 0"
+                ))
+                conn.commit()
+
     # job_state: persistent key/value store for scheduler state (e.g. the
     # rotating city-batch cursor) so it survives Render restarts / OOM kills.
     if "job_state" not in insp.get_table_names():
