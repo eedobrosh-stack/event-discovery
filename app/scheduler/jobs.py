@@ -1800,9 +1800,54 @@ async def llm_extract_recurring_job(
             db.close()
 
 
+# Domains already covered by hand-coded collectors. Discovery skips
+# candidates on these hosts so we don't pay LLM tokens to find inventory
+# we already have via free / cheap paths. New collectors → add the
+# host(s) here to keep discovery efficient.
+_RESERVED_DISCOVERY_DOMAINS: frozenset[str] = frozenset({
+    # API-based collectors
+    "ticketmaster.com", "ticketmaster.co.uk", "ticketmaster.de",
+    "seatgeek.com", "bandsintown.com", "predicthq.com",
+    # Global web scrapers
+    "eventbrite.com", "eventbrite.co.uk", "eventbrite.de",
+    "lu.ma", "meetup.com", "ra.co", "dice.fm",
+    "songkick.com", "skiddle.com", "xceed.me",
+    "concreteplayground.com", "allevents.in", "venuepilot.com",
+    # Israel-specific
+    "tickchak.co.il", "leaan.co.il", "cameri.co.il",
+    "barby.co.il", "smartticket.co.il", "hatarbut.org.il",
+    # City-specific (where we have hand-coded support)
+    "choosechicago.com",
+    # Sports
+    "espn.com", "mlb.com", "openf1.org", "cricapi.com",
+    "euroleague.net",
+})
+
+
+def _is_reserved_discovery_url(url: str) -> bool:
+    """True when ``url``'s host is (a subdomain of) a domain we already
+    cover with a hand-coded collector. Discovery filters these out."""
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    if host in _RESERVED_DISCOVERY_DOMAINS:
+        return True
+    parts = host.split(".")
+    for i in range(1, len(parts) - 1):
+        if ".".join(parts[i:]) in _RESERVED_DISCOVERY_DOMAINS:
+            return True
+    return False
+
+
 async def llm_discover_sources_job(
     candidates_per_city: int = 15,
-    min_event_count_to_register: int = 5,
+    min_event_count_to_register: int = 3,
     max_cities_per_run: int = 6,
 ):
     """Cadence B of Route 1 — find new candidate event sources per city.
@@ -1857,6 +1902,7 @@ async def llm_discover_sources_job(
             cities_to_scan = city_pool[:max_cities_per_run]
 
             stats = {"scanned": 0, "registered": 0, "skipped_existing": 0,
+                     "skipped_reserved": 0,
                      "no_events": 0, "fetch_errors": 0}
 
             for city_name, country in cities_to_scan:
@@ -1877,6 +1923,16 @@ async def llm_discover_sources_job(
                 for cand in candidates:
                     url = (cand.get("url") or "").strip()
                     if not url:
+                        continue
+
+                    # Skip URLs covered by hand-coded collectors — paying
+                    # LLM tokens for inventory we already have is a waste.
+                    if _is_reserved_discovery_url(url):
+                        stats["skipped_reserved"] += 1
+                        logger.info(
+                            f"discovery: skipping reserved-domain {url} "
+                            f"(already covered by a hand-coded collector)"
+                        )
                         continue
 
                     # Skip URLs already in the registry — re-discovery
@@ -1934,6 +1990,7 @@ async def llm_discover_sources_job(
             log.events_saved = stats["registered"]
             log.notes = (
                 f"cities={stats['scanned']} registered={stats['registered']} "
+                f"skipped_reserved={stats['skipped_reserved']} "
                 f"skipped_existing={stats['skipped_existing']} "
                 f"no_events={stats['no_events']} fetch_errors={stats['fetch_errors']}"
             )

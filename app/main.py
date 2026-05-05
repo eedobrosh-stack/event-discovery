@@ -384,6 +384,45 @@ def _run_migrations():
                     ))
             conn.commit()
 
+        # One-time cleanup: block any LLMSource on a domain we already
+        # cover with a hand-coded collector. Prevents the recurring job
+        # from spending Gemini tokens to re-extract events the existing
+        # collectors already write. New rows on reserved domains are
+        # filtered at discovery time (_is_reserved_discovery_url); this
+        # block is for rows that pre-date the filter.
+        try:
+            from app.scheduler.jobs import _is_reserved_discovery_url
+            from app.models import LLMSource
+            from app.database import SessionLocal as _Sess
+            _db = _Sess()
+            try:
+                blocked_now = 0
+                for src in (
+                    _db.query(LLMSource)
+                    .filter(LLMSource.state.in_(["trial", "recurring"]))
+                    .all()
+                ):
+                    if _is_reserved_discovery_url(src.url):
+                        src.state = "blocked"
+                        stamp = (
+                            f"[auto-blocked at startup] domain reserved "
+                            f"by an existing hand-coded collector"
+                        )
+                        src.notes = (src.notes + "\n" + stamp) if src.notes else stamp
+                        blocked_now += 1
+                if blocked_now:
+                    _db.commit()
+                    import logging as _lg
+                    _lg.getLogger(__name__).info(
+                        f"_run_migrations: auto-blocked {blocked_now} LLMSource "
+                        f"row(s) on reserved domains"
+                    )
+            finally:
+                _db.close()
+        except Exception:
+            # Cleanup is best-effort; never let it break boot.
+            pass
+
     # job_state: persistent key/value store for scheduler state (e.g. the
     # rotating city-batch cursor) so it survives Render restarts / OOM kills.
     if "job_state" not in insp.get_table_names():
