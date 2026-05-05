@@ -6,7 +6,9 @@ of candidate dicts; the caller (the discovery scheduler job) is
 responsible for probing each candidate and registering the winners.
 
 Public surface:
-    discover_via_gemini(city, n=15, model='gemini-2.5-flash') -> list[dict]
+    discover_via_gemini(city, n=15, ..., excluded_domains, excluded_urls)
+        -> list[dict]
+    looks_like_event_listing(html, url) -> tuple[bool, str]
 
 Each candidate dict has shape:
     {"url": str, "source_type": str, "language": str, "why_relevant": str}
@@ -30,6 +32,7 @@ import logging
 import os
 import re
 from typing import Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +40,8 @@ logger = logging.getLogger(__name__)
 _PROMPT_TEMPLATE = """\
 You are an event-discovery research assistant. Find websites that publish
 current event listings for a given city. We will scrape these sites for
-schema.org/Event JSON-LD blocks, so we want sites that are likely to
-expose structured event data on individual events pages.
+event listings, so we want sites that publish structured calendars
+(ideally schema.org/Event JSON-LD, but visible HTML lists are fine too).
 
 City: {city}
 
@@ -55,7 +58,7 @@ Avoid:
 - Generic global aggregators (Eventful, AllEvents.in) unless city-specific
 - Forum/Reddit/social-media discussions about events
 - News articles about events (we want listing pages, not articles)
-
+{exclusion_block}
 Return ONLY a JSON array of {n} candidates, no markdown fences, no commentary.
 Each entry MUST have these fields:
 
@@ -73,6 +76,142 @@ Example:
 """
 
 
+def _build_exclusion_block(
+    excluded_domains: Optional[list[str]],
+    excluded_urls: Optional[list[str]],
+) -> str:
+    """Render a hard-negative constraint block for the prompt.
+
+    Two lists, both optional:
+      • excluded_domains — hosts we already cover with hand-coded collectors
+      • excluded_urls    — full URLs already in our LLMSource registry
+
+    Returns an empty string when both inputs are empty (or None) so the
+    prompt template stays clean. When non-empty, returns a block that
+    instructs Gemini explicitly to skip them. We cap the URL list at 60
+    entries to keep the prompt under control as the registry grows.
+    """
+    blocks: list[str] = []
+    if excluded_domains:
+        cleaned_d = sorted({d.strip().lower() for d in excluded_domains if d and d.strip()})
+        if cleaned_d:
+            domain_lines = "\n".join(f"  - {d}" for d in cleaned_d)
+            blocks.append(
+                "Do NOT suggest any URL hosted on any of these domains "
+                "(or their subdomains) — we already cover them with "
+                "purpose-built collectors and re-discovery would be wasted "
+                "work:\n" + domain_lines
+            )
+    if excluded_urls:
+        cleaned_u = sorted({u.strip() for u in excluded_urls if u and u.strip()})
+        if cleaned_u:
+            # Cap to keep prompt size sane. The post-filter is the safety net
+            # for any that slip through; this list is just to nudge Gemini
+            # toward fresh ideas.
+            head = cleaned_u[:60]
+            url_lines = "\n".join(f"  - {u}" for u in head)
+            tail = (f"\n  ...and {len(cleaned_u) - len(head)} more (pattern is clear)"
+                    if len(cleaned_u) > len(head) else "")
+            blocks.append(
+                "Do NOT suggest any of these specific URLs — they are "
+                "already in our registry:\n" + url_lines + tail
+            )
+    if not blocks:
+        return ""
+    return "\nHARD CONSTRAINTS — these take priority over the lists above:\n\n" + "\n\n".join(blocks) + "\n"
+
+
+# ── Visible-content heuristic (lever 1: register candidates without JSON-LD) ──
+#
+# Gemini surfaces lots of legitimate event-listing pages that don't expose
+# schema.org JSON-LD — JS-rendered tourism boards, Wordpress calendars,
+# region-specific magazines. Today they get rejected at the probe step
+# because count_events(html) returns 0. Lever 1: also accept candidates
+# that LOOK like event-listing pages by visible signals, then let the LLM
+# extractor handle the actual extraction. Drift detection prunes any
+# speculative registrations that consistently extract 0 events.
+
+_LISTING_PATH_RE = re.compile(
+    r"/(events?|whats[-_]?on|what'?s[-_]?on|calendar|agenda|programme|program"
+    r"|listings?|happenings?|things[-_]?to[-_]?do|veranstaltungen|eventos"
+    r"|événements|évenements|evenementen|wydarzenia)(?:/|$)",
+    re.I,
+)
+
+# Visible date strings in many forms. Errs toward catching real dates over
+# avoiding false positives — false positives just mean we trial-onboard a
+# slightly noisier source, which drift detection cleans up.
+_DATE_STRING_RE = re.compile(
+    r"(?:"
+    # ISO yyyy-mm-dd
+    r"\b\d{4}-\d{2}-\d{2}\b"
+    # Month-name + day, both orders, en/de/es-light
+    r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}\b"
+    r"|\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\b"
+    r"|\b(?:January|February|March|April|May|June|July|August|September"
+    r"|October|November|December)\s+\d{1,2}\b"
+    r"|\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August"
+    r"|September|October|November|December)\b"
+    # Today / Tomorrow / Tonight in several languages
+    r"|\b(?:Today|Tomorrow|Tonight|Heute|Morgen|Hoy|Mañana|Aujourd'?hui|Demain)\b"
+    r")",
+    re.I,
+)
+
+# Anchors that point at an event-detail URL. Matches /event/... or /events/...
+# with an additional path component (so we don't match the index page itself).
+_EVENT_HREF_RE = re.compile(r'href=["\'][^"\']*/events?/[^"\']+["\']', re.I)
+
+_TAG_STRIP_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re.I)
+_ANY_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html_for_dates(html: str) -> str:
+    """Remove <script>/<style> blocks and HTML tags so date counts reflect
+    visible content, not embedded JS or CSS. Cheap and approximate — full
+    HTML parsing would be overkill for a heuristic."""
+    no_scripts = _TAG_STRIP_RE.sub(" ", html)
+    return _ANY_TAG_RE.sub(" ", no_scripts)
+
+
+def looks_like_event_listing(html: str, url: str) -> tuple[bool, str]:
+    """Heuristic: does this page LOOK like an event-listing page?
+
+    Used to register discovery candidates that lack JSON-LD events but
+    still publish events as visible HTML. Two independent gates — a
+    page passes if either fires:
+
+      • path-and-dates    URL path strongly suggests a calendar
+                          AND ≥3 visible date-shaped strings
+      • anchors-and-dates ≥10 event-detail anchors
+                          AND ≥5 visible date-shaped strings
+
+    The thresholds are deliberately permissive — drift detection is the
+    backstop for false positives (3 consecutive empty extractions blocks
+    the source).
+
+    Returns (passes, reason) so callers can record which signal fired in
+    LLMSource.notes for later debugging.
+    """
+    if not html:
+        return False, "empty html"
+
+    path = urlsplit(url).path or ""
+    path_match = bool(_LISTING_PATH_RE.search(path))
+    visible_text = _strip_html_for_dates(html)
+    date_count = len(_DATE_STRING_RE.findall(visible_text))
+    anchor_count = len(_EVENT_HREF_RE.findall(html))
+
+    if path_match and date_count >= 3:
+        return True, f"path+dates (dates={date_count})"
+    if anchor_count >= 10 and date_count >= 5:
+        return True, f"anchors+dates (anchors={anchor_count}, dates={date_count})"
+    return (
+        False,
+        f"no-signal (path={path_match}, dates={date_count}, anchors={anchor_count})",
+    )
+
+
 class DiscoveryError(RuntimeError):
     """Raised on unrecoverable discovery failures (no key, malformed response,
     network exhaustion). Caller should log and continue with the next city
@@ -83,6 +222,8 @@ def discover_via_gemini(
     city: str,
     n: int = 15,
     model: str = "gemini-2.5-flash",
+    excluded_domains: Optional[list[str]] = None,
+    excluded_urls: Optional[list[str]] = None,
 ) -> list[dict]:
     """Ask Gemini for ``n`` event-listing candidates for ``city``.
 
@@ -93,6 +234,14 @@ def discover_via_gemini(
 
     Raises DiscoveryError if the API key / SDK is missing — that's an
     operator-config issue worth surfacing, not a per-city problem.
+
+    ``excluded_domains`` and ``excluded_urls`` are passed to Gemini as a
+    hard-negative constraint in the prompt. Used to keep Gemini from
+    spending its candidate budget re-suggesting sites we already cover
+    (hand-coded collectors) or already have in our LLMSource registry.
+    LLM compliance with negative lists is imperfect, so the caller still
+    needs the post-filter as a safety net — but the in-prompt list shifts
+    the candidate distribution toward genuinely fresh sources.
     """
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -108,7 +257,8 @@ def discover_via_gemini(
         ) from e
 
     client = genai.Client(api_key=api_key)
-    prompt = _PROMPT_TEMPLATE.format(city=city, n=n)
+    exclusion_block = _build_exclusion_block(excluded_domains, excluded_urls)
+    prompt = _PROMPT_TEMPLATE.format(city=city, n=n, exclusion_block=exclusion_block)
 
     logger.info(f"discover_via_gemini: asking Gemini ({model}) for {n} candidates for {city!r}")
     try:

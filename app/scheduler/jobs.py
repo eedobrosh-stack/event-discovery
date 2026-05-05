@@ -1853,27 +1853,34 @@ async def llm_discover_sources_job(
     """Cadence B of Route 1 — find new candidate event sources per city.
 
     For each priority city we haven't recently scanned: ask Gemini's
-    grounded search for candidate event-listing URLs, probe each via the
-    JSON-LD path (free), and register winners as new LLMSource rows in
-    state='trial' so the recurring extraction job picks them up on its
-    next cycle.
+    grounded search for candidate event-listing URLs, probe each, and
+    register winners as new LLMSource rows in state='trial' so the
+    recurring extraction job picks them up on its next cycle.
 
-    LLM-eligible candidates (probe = no JSON-LD events but page is
-    substantial) are NOT auto-registered — they need human review first
-    to avoid hallucination noise. Operators add those via
-    scripts/llm_run_source.py instead.
+    Two registration paths (a candidate passes if EITHER fires):
+
+      1. JSON-LD path — count_events(html) >= min_event_count_to_register
+         (free, exact). The original cadence-B contract.
+      2. Visible-content heuristic — looks_like_event_listing(html, url)
+         passes. Picks up sites that publish events as visible HTML
+         (JS-rendered tourism boards, Wordpress calendars) without
+         schema.org markup. The LLM extractor handles actual extraction
+         on first cycle; drift detection blocks any speculative
+         registrations that consistently extract 0 events.
 
     Cost: 1 Gemini grounded call per city scanned (~$0.005 each on flash).
     With max_cities_per_run=10 and a daily cron, we make ~300 calls/month
     at ~$1.50/month — a comfortable trade for 10× faster source-inventory
     growth vs the original weekly cadence.
 
-    The probe step is the natural hallucination guard: Gemini sometimes
-    invents URLs (live.today/הופעות-היום… 404'd in early spike runs).
-    Bad URLs return no events from _fetch_html → not registered.
+    Hallucination guards:
+      • Gemini gets the existing-DB exclusion list in the prompt as a
+        hard-negative constraint (saves candidate slots).
+      • Probe step rejects URLs that don't fetch.
+      • Visible-content heuristic requires real date strings on the page.
+      • Drift detection prunes after the fact.
     """
     import gc
-    from sqlalchemy import or_
     from app.models import LLMSource
 
     if _heavy_job_lock.locked():
@@ -1888,7 +1895,11 @@ async def llm_discover_sources_job(
         db.refresh(log)
 
         try:
-            from app.extractors.discovery import discover_via_gemini, DiscoveryError
+            from app.extractors.discovery import (
+                discover_via_gemini,
+                DiscoveryError,
+                looks_like_event_listing,
+            )
             from app.extractors.llm_extractor import _fetch_html
             from app.services.collectors._jsonld import iter_events, detect_pagination
 
@@ -1901,14 +1912,32 @@ async def llm_discover_sources_job(
             city_pool.sort(key=lambda cc: _city_last_discovered_at(db, *cc) or "")
             cities_to_scan = city_pool[:max_cities_per_run]
 
-            stats = {"scanned": 0, "registered": 0, "skipped_existing": 0,
-                     "skipped_reserved": 0,
-                     "no_events": 0, "fetch_errors": 0}
+            # Build the negative-constraint inputs for Gemini once, before
+            # the city loop. URLs already in the registry get added to
+            # the exclusion list for any state — even blocked sources are
+            # ones we don't want re-suggested.
+            existing_urls = [u for (u,) in db.query(LLMSource.url).all() if u]
+            excluded_domains = sorted(_RESERVED_DISCOVERY_DOMAINS)
+
+            stats = {
+                "scanned": 0,
+                "registered": 0,
+                "registered_jsonld": 0,
+                "registered_visible": 0,
+                "skipped_existing": 0,
+                "skipped_reserved": 0,
+                "no_events": 0,
+                "fetch_errors": 0,
+            }
 
             for city_name, country in cities_to_scan:
                 try:
                     candidates = await asyncio.to_thread(
-                        discover_via_gemini, city_name, candidates_per_city,
+                        discover_via_gemini,
+                        city_name,
+                        candidates_per_city,
+                        excluded_domains=excluded_domains,
+                        excluded_urls=existing_urls,
                     )
                 except DiscoveryError as e:
                     log.notes = f"discovery unavailable: {e}"
@@ -1942,23 +1971,44 @@ async def llm_discover_sources_job(
                         stats["skipped_existing"] += 1
                         continue
 
-                    # Probe via JSON-LD: cheap, no LLM call. Only register
-                    # sources that pass this bar.
+                    # Probe — fetch is the only network call this loop
+                    # makes (no LLM yet). Free fetch + cheap parsing.
                     raw_html = await asyncio.to_thread(_fetch_html, url)
                     if not raw_html:
                         stats["fetch_errors"] += 1
                         continue
+
+                    # Path A: JSON-LD (exact, gold-standard signal)
                     ld_events = list(iter_events(raw_html, future_only=True))
-                    if len(ld_events) < min_event_count_to_register:
+                    jsonld_pass = len(ld_events) >= min_event_count_to_register
+
+                    # Path B: visible-content heuristic (catches JS-rendered
+                    # calendars and sites without schema.org markup)
+                    visible_pass = False
+                    visible_reason = ""
+                    if not jsonld_pass:
+                        visible_pass, visible_reason = looks_like_event_listing(
+                            raw_html, url
+                        )
+
+                    if not (jsonld_pass or visible_pass):
                         stats["no_events"] += 1
                         continue
 
                     pag = detect_pagination(raw_html, base_url=url)
+                    if jsonld_pass:
+                        method = f"jsonld ({len(ld_events)} events)"
+                        stats["registered_jsonld"] += 1
+                    else:
+                        method = f"visible ({visible_reason})"
+                        stats["registered_visible"] += 1
+
                     note = (
                         f"[discovered {datetime.utcnow().date()}] "
                         f"{cand.get('source_type', '?')} / "
                         f"{cand.get('language', '?')} — "
-                        f"{cand.get('why_relevant', '')[:200]}"
+                        f"{cand.get('why_relevant', '')[:160]} "
+                        f"[via {method}]"
                     )
                     new_src = LLMSource(
                         url=url,
@@ -1976,8 +2026,13 @@ async def llm_discover_sources_job(
                     db.add(new_src)
                     db.commit()
                     stats["registered"] += 1
+                    # Add the freshly registered URL to the in-memory
+                    # exclusion list so subsequent cities in this run
+                    # don't re-suggest it (rare but possible — Gemini
+                    # often surfaces global aggregators across cities).
+                    existing_urls.append(url)
                     logger.info(
-                        f"discovered: {url} ({len(ld_events)} JSON-LD events) "
+                        f"discovered: {url} via {method} "
                         f"→ LLMSource state=trial for {city_name}"
                     )
 
@@ -1990,6 +2045,8 @@ async def llm_discover_sources_job(
             log.events_saved = stats["registered"]
             log.notes = (
                 f"cities={stats['scanned']} registered={stats['registered']} "
+                f"(jsonld={stats['registered_jsonld']}, "
+                f"visible={stats['registered_visible']}) "
                 f"skipped_reserved={stats['skipped_reserved']} "
                 f"skipped_existing={stats['skipped_existing']} "
                 f"no_events={stats['no_events']} fetch_errors={stats['fetch_errors']}"
