@@ -1848,7 +1848,7 @@ def _is_reserved_discovery_url(url: str) -> bool:
 async def llm_discover_sources_job(
     candidates_per_city: int = 15,
     min_event_count_to_register: int = 3,
-    max_cities_per_run: int = 6,
+    max_cities_per_run: int = 10,
 ):
     """Cadence B of Route 1 — find new candidate event sources per city.
 
@@ -1864,9 +1864,9 @@ async def llm_discover_sources_job(
     scripts/llm_run_source.py instead.
 
     Cost: 1 Gemini grounded call per city scanned (~$0.005 each on flash).
-    With max_cities_per_run=6 and a weekly cron, we cycle through ~24
-    cities/month at ~$0.12/month — negligible vs. the daily extraction
-    budget.
+    With max_cities_per_run=10 and a daily cron, we make ~300 calls/month
+    at ~$1.50/month — a comfortable trade for 10× faster source-inventory
+    growth vs the original weekly cadence.
 
     The probe step is the natural hallucination guard: Gemini sometimes
     invents URLs (live.today/הופעות-היום… 404'd in early spike runs).

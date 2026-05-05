@@ -728,14 +728,18 @@ async def lifespan(app: FastAPI):
         id="llm_extract_recurring",
         replace_existing=True,
     )
-    # llm_discover_sources — Cadence B. Weekly grounded-search per-city
-    # discovery scan, capped at 6 cities per fire (so 50 priority cities
-    # cycle through in ~8 weeks at ~$0.005/city = pennies). Slot it well
-    # after extraction (+240min, 30min after llm_extract_recurring kicks
-    # off) and the _heavy_job_lock keeps them serialized regardless.
+    # llm_discover_sources — Cadence B. Daily grounded-search per-city
+    # discovery scan, capped at 10 cities per fire. With ~30 priority
+    # cities and LRU ordering, each city gets re-scanned every ~3 days.
+    # Cost: 10 × ~$0.005/city/day = ~$1.50/mo on flash. The reserved-
+    # domain filter (176c619) keeps Gemini from re-suggesting big
+    # aggregators we already cover, so the daily run yields novel
+    # candidates instead of repeats. Slot at +240min after boot —
+    # well after extraction (+210min) and the _heavy_job_lock keeps
+    # them serialized.
     scheduler.add_job(
         llm_discover_sources_job,
-        IntervalTrigger(days=7, start_date=_t + _td(minutes=240)),
+        IntervalTrigger(days=1, start_date=_t + _td(minutes=240)),
         id="llm_discover_sources",
         replace_existing=True,
     )
