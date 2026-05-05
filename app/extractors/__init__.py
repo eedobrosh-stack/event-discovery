@@ -15,4 +15,12 @@ from app.extractors.llm_extractor import (  # noqa: F401
 from app.extractors.discovery import (  # noqa: F401
     discover_via_gemini,
     DiscoveryError,
+    looks_like_event_listing,
+)
+from app.extractors.discovery_cse import (  # noqa: F401
+    cse_search,
+    discover_via_cse,
+    filter_candidates_via_llm,
+    discover_via_cse_pipeline,
+    CseHit,
 )

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import date, timedelta, datetime
 
 from sqlalchemy import func
@@ -1900,6 +1901,7 @@ async def llm_discover_sources_job(
                 DiscoveryError,
                 looks_like_event_listing,
             )
+            from app.extractors.discovery_cse import discover_via_cse_pipeline
             from app.extractors.llm_extractor import _fetch_html
             from app.services.collectors._jsonld import iter_events, detect_pagination
 
@@ -1912,12 +1914,27 @@ async def llm_discover_sources_job(
             city_pool.sort(key=lambda cc: _city_last_discovered_at(db, *cc) or "")
             cities_to_scan = city_pool[:max_cities_per_run]
 
-            # Build the negative-constraint inputs for Gemini once, before
-            # the city loop. URLs already in the registry get added to
-            # the exclusion list for any state — even blocked sources are
-            # ones we don't want re-suggested.
+            # Build the negative-constraint inputs for the discovery call
+            # once, before the city loop. URLs already in the registry get
+            # added to the exclusion list for any state — even blocked
+            # sources are ones we don't want re-suggested.
             existing_urls = [u for (u,) in db.query(LLMSource.url).all() if u]
             excluded_domains = sorted(_RESERVED_DISCOVERY_DOMAINS)
+
+            # Discovery method selection. ``cse`` (default when GOOGLE_CSE_ID
+            # is set) uses the hybrid Google Custom Search + LLM-classifier
+            # pipeline — real indexed URLs, no hallucinations.
+            # ``gemini`` uses the original grounded-search prompt that asks
+            # Gemini to generate URLs from scratch.
+            #
+            # Resolution order:
+            #   1. DISCOVERY_METHOD env var if set ('cse' | 'gemini')
+            #   2. 'cse' if GOOGLE_CSE_ID is configured
+            #   3. 'gemini' otherwise
+            method = (os.environ.get("DISCOVERY_METHOD") or "").strip().lower()
+            if method not in ("cse", "gemini"):
+                method = "cse" if os.environ.get("GOOGLE_CSE_ID") else "gemini"
+            logger.info(f"llm_discover_sources: discovery method = {method}")
 
             stats = {
                 "scanned": 0,
@@ -1928,24 +1945,34 @@ async def llm_discover_sources_job(
                 "skipped_reserved": 0,
                 "no_events": 0,
                 "fetch_errors": 0,
+                "method": method,
             }
 
             for city_name, country in cities_to_scan:
                 try:
-                    candidates = await asyncio.to_thread(
-                        discover_via_gemini,
-                        city_name,
-                        candidates_per_city,
-                        excluded_domains=excluded_domains,
-                        excluded_urls=existing_urls,
-                    )
+                    if method == "cse":
+                        candidates = await asyncio.to_thread(
+                            discover_via_cse_pipeline,
+                            city_name,
+                            candidates_per_city,
+                            excluded_domains=excluded_domains,
+                            excluded_urls=existing_urls,
+                        )
+                    else:
+                        candidates = await asyncio.to_thread(
+                            discover_via_gemini,
+                            city_name,
+                            candidates_per_city,
+                            excluded_domains=excluded_domains,
+                            excluded_urls=existing_urls,
+                        )
                 except DiscoveryError as e:
                     log.notes = f"discovery unavailable: {e}"
                     log.status = "failed"
                     logger.warning(f"llm_discover_sources: {e}")
                     return
                 except Exception as e:
-                    logger.warning(f"discover_via_gemini({city_name!r}) error: {e}")
+                    logger.warning(f"discover_{method}({city_name!r}) error: {e}")
                     candidates = []
                 stats["scanned"] += 1
 
