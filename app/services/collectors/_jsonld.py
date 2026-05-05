@@ -91,7 +91,11 @@ def iter_events(html: str, future_only: bool = True) -> Iterator[dict]:
         for item in flatten_ld_items(data):
             if not isinstance(item, dict):
                 continue
-            if item.get("@type") not in EVENT_TYPES:
+            # @type may be a string or a list (e.g. ["Event", "MusicEvent"]).
+            # frozenset membership on a list raises TypeError, so normalise.
+            t = item.get("@type")
+            types = t if isinstance(t, list) else [t]
+            if not any(tt in EVENT_TYPES for tt in types):
                 continue
             if future_only:
                 sd = (item.get("startDate") or "")[:10]
