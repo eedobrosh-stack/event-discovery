@@ -295,24 +295,49 @@ def filter_candidates_via_llm(
     logger.info(
         f"llm-filter({city!r}): classifying {len(hits)} search hits via {model}"
     )
-    try:
-        # No grounding tool here — we have the URLs already, we just need
-        # the classifier. Strict JSON via response_schema is preferred
-        # (and unlike the search-grounded call, response_schema is allowed
-        # in this no-tools mode).
-        resp = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=gtypes.GenerateContentConfig(
-                temperature=0.0,
-                response_mime_type="application/json",
-            ),
-        )
-    except Exception as e:
-        logger.warning(
-            f"filter_candidates_via_llm({city!r}): "
-            f"API call failed: {type(e).__name__}: {e}"
-        )
+
+    # Gemini Flash returns frequent transient 503 ("high demand") errors —
+    # we observed ~75% of cities hitting one in a single sweep during
+    # peak hours. A short retry with backoff turns those from yield-loss
+    # into a tiny added latency (each retry adds at most ~10s).
+    import time
+    resp = None
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=gtypes.GenerateContentConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                ),
+            )
+            break
+        except Exception as e:
+            last_err = e
+            # Only retry on transient classes — 503 / quota / timeout.
+            # Bad-request / unauthorized errors won't recover.
+            msg = str(e).lower()
+            transient = ("503" in msg or "unavailable" in msg
+                         or "timeout" in msg or "deadline" in msg
+                         or "resource_exhausted" in msg)
+            if not transient or attempt == 2:
+                logger.warning(
+                    f"filter_candidates_via_llm({city!r}): "
+                    f"API call failed (attempt {attempt + 1}/3): "
+                    f"{type(e).__name__}: {e}"
+                )
+                return []
+            backoff = 2 ** attempt * 2  # 2s, 4s
+            logger.info(
+                f"filter_candidates_via_llm({city!r}): "
+                f"transient {type(e).__name__} on attempt {attempt + 1}, "
+                f"retrying in {backoff}s"
+            )
+            time.sleep(backoff)
+    if resp is None:
+        # All retries exhausted — last_err already logged above.
         return []
 
     raw = (resp.text or "").strip()

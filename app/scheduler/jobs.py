@@ -2023,11 +2023,18 @@ async def llm_discover_sources_job(
                         continue
 
                     pag = detect_pagination(raw_html, base_url=url)
+                    # NB: keep this variable name distinct from the outer
+                    # `method` (the discovery method). Reusing the name
+                    # here previously clobbered the outer scope and made
+                    # subsequent cities silently fall through to the
+                    # Gemini-grounded path.
+                    register_via = (
+                        f"jsonld ({len(ld_events)} events)" if jsonld_pass
+                        else f"visible ({visible_reason})"
+                    )
                     if jsonld_pass:
-                        method = f"jsonld ({len(ld_events)} events)"
                         stats["registered_jsonld"] += 1
                     else:
-                        method = f"visible ({visible_reason})"
                         stats["registered_visible"] += 1
 
                     note = (
@@ -2035,7 +2042,7 @@ async def llm_discover_sources_job(
                         f"{cand.get('source_type', '?')} / "
                         f"{cand.get('language', '?')} — "
                         f"{cand.get('why_relevant', '')[:160]} "
-                        f"[via {method}]"
+                        f"[via {register_via}]"
                     )
                     new_src = LLMSource(
                         url=url,
@@ -2059,7 +2066,7 @@ async def llm_discover_sources_job(
                     # often surfaces global aggregators across cities).
                     existing_urls.append(url)
                     logger.info(
-                        f"discovered: {url} via {method} "
+                        f"discovered: {url} via {register_via} "
                         f"→ LLMSource state=trial for {city_name}"
                     )
 
