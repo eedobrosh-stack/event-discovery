@@ -1901,7 +1901,7 @@ async def llm_discover_sources_job(
                 DiscoveryError,
                 looks_like_event_listing,
             )
-            from app.extractors.discovery_cse import discover_via_cse_pipeline
+            from app.extractors.discovery_search import discover_via_search_pipeline
             from app.extractors.llm_extractor import _fetch_html
             from app.services.collectors._jsonld import iter_events, detect_pagination
 
@@ -1921,19 +1921,19 @@ async def llm_discover_sources_job(
             existing_urls = [u for (u,) in db.query(LLMSource.url).all() if u]
             excluded_domains = sorted(_RESERVED_DISCOVERY_DOMAINS)
 
-            # Discovery method selection. ``cse`` (default when GOOGLE_CSE_ID
-            # is set) uses the hybrid Google Custom Search + LLM-classifier
-            # pipeline — real indexed URLs, no hallucinations.
+            # Discovery method selection. ``search`` (default when
+            # BRAVE_API_KEY is set) uses the hybrid Brave Search +
+            # LLM-classifier pipeline — real indexed URLs, no hallucinations.
             # ``gemini`` uses the original grounded-search prompt that asks
             # Gemini to generate URLs from scratch.
             #
             # Resolution order:
-            #   1. DISCOVERY_METHOD env var if set ('cse' | 'gemini')
-            #   2. 'cse' if GOOGLE_CSE_ID is configured
+            #   1. DISCOVERY_METHOD env var if set ('search' | 'gemini')
+            #   2. 'search' if BRAVE_API_KEY is configured
             #   3. 'gemini' otherwise
             method = (os.environ.get("DISCOVERY_METHOD") or "").strip().lower()
-            if method not in ("cse", "gemini"):
-                method = "cse" if os.environ.get("GOOGLE_CSE_ID") else "gemini"
+            if method not in ("search", "gemini"):
+                method = "search" if os.environ.get("BRAVE_API_KEY") else "gemini"
             logger.info(f"llm_discover_sources: discovery method = {method}")
 
             stats = {
@@ -1950,9 +1950,9 @@ async def llm_discover_sources_job(
 
             for city_name, country in cities_to_scan:
                 try:
-                    if method == "cse":
+                    if method == "search":
                         candidates = await asyncio.to_thread(
-                            discover_via_cse_pipeline,
+                            discover_via_search_pipeline,
                             city_name,
                             candidates_per_city,
                             excluded_domains=excluded_domains,

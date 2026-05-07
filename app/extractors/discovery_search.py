@@ -1,37 +1,40 @@
-"""Hybrid Google CSE + LLM-classifier discovery — no hallucinated URLs.
+"""Hybrid Brave Search + LLM-classifier discovery — no hallucinated URLs.
 
 Cadence B alternative to ``app.extractors.discovery``: instead of asking
 Gemini to *generate* candidate URLs (which it sometimes hallucinates),
-we (a) fire themed Google Custom Search queries to get *real* indexed
-URLs and (b) ask Gemini to *classify* which results are event-listing
-pages.
+we (a) fire themed Brave Search queries to get *real* indexed URLs and
+(b) ask Gemini to *classify* which results are event-listing pages.
 
 Public surface:
-    discover_via_cse_pipeline(city, ..., excluded_domains, excluded_urls)
+    discover_via_search_pipeline(city, ..., excluded_domains, excluded_urls)
         -> list[dict]    # same shape as discover_via_gemini()
 
-    cse_search(query, n=10)                -> list[CseHit]
-    discover_via_cse(city, ...)            -> list[CseHit]
+    brave_search(query, n=10)              -> list[SearchHit]
+    discover_via_search(city, ...)         -> list[SearchHit]
     filter_candidates_via_llm(hits, city)  -> list[dict]
 
 Each candidate dict (final output) has the same shape used by callers of
 the original discover_via_gemini:
     {"url": str, "source_type": str, "language": str, "why_relevant": str}
 
+Why Brave (and not Google CSE):
+    Google deprecated whole-web Programmable Search Engines for new
+    accounts in 2024 — the "Search the entire web" toggle is permanently
+    disabled in their modern UI, and we hit that wall during setup. Brave
+    runs its own crawler and exposes whole-web results via a clean API
+    with no console gauntlet (one API key, no project linkage).
+
 Cost outline (10 cities × 4 queries × 30 days):
-    CSE   : 1,200 queries × $5/1000 ≈ $6/month
+    Brave : 1,200 queries × $3/1000 ≈ $3.60/month (free up to 2k/mo)
     Gemini: 30 classification calls × ~$0.005 ≈ $0.15/month
 
 Setup requirement (operator, one-time):
-    1. Create a Programmable Search Engine at
-       https://programmablesearchengine.google.com/, set to "search the
-       entire web". Copy the Search Engine ID.
-    2. Enable the "Custom Search API" in your Google Cloud project.
-    3. Set ``GOOGLE_CSE_ID=<id>`` in .env. Reuse the existing
-       ``GEMINI_API_KEY`` (or set ``GOOGLE_API_KEY`` if your CSE key
-       differs from your Gemini key).
+    1. Sign up at https://api.search.brave.com/, copy the API key.
+    2. Set ``BRAVE_API_KEY=<key>`` in .env. Free tier (2k queries/mo) is
+       enough for our scale; bump to a paid plan if you scale beyond
+       ~70 queries/day.
 
-If CSE isn't configured, ``discover_via_cse_pipeline`` raises
+If Brave isn't configured, ``discover_via_search_pipeline`` raises
 DiscoveryError so the scheduler can fall back to the original
 Gemini-grounded path without aborting the whole sweep.
 """
@@ -40,7 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Optional
 
 import urllib.parse
@@ -51,98 +54,95 @@ from app.extractors.discovery import DiscoveryError
 logger = logging.getLogger(__name__)
 
 
-# ── CSE call ────────────────────────────────────────────────────────────────
+# ── Brave Search API call ──────────────────────────────────────────────────
 
-_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+_BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 
 @dataclass
-class CseHit:
-    """One result from Google Programmable Search.
+class SearchHit:
+    """One result from Brave Search.
 
     Three fields are all we need for downstream classification:
       url      : canonical link to the page
-      title    : page title from CSE
-      snippet  : Google's short text excerpt
+      title    : page title from Brave
+      snippet  : Brave's short text excerpt (their "description" field)
     """
     url: str
     title: str
     snippet: str
 
 
-def _cse_credentials() -> tuple[str, str]:
-    """Resolve API key + CSE ID from env, or raise DiscoveryError.
-
-    Reuses GEMINI_API_KEY by default. Operators with separate keys can
-    set GOOGLE_API_KEY to override. Either path works because both endpoints
-    are gated by the same Cloud project's API key restrictions.
-    """
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+def _brave_credentials() -> str:
+    """Resolve API key from env, or raise DiscoveryError."""
+    api_key = os.environ.get("BRAVE_API_KEY")
     if not api_key:
         raise DiscoveryError(
-            "Neither GOOGLE_API_KEY nor GEMINI_API_KEY is set; CSE cannot run."
+            "BRAVE_API_KEY is not set. Sign up at "
+            "https://api.search.brave.com/ and put the key in your .env."
         )
-    cse_id = os.environ.get("GOOGLE_CSE_ID")
-    if not cse_id:
-        raise DiscoveryError(
-            "GOOGLE_CSE_ID is not set. Create a Programmable Search Engine "
-            "at https://programmablesearchengine.google.com/ and put the "
-            "ID in your .env."
-        )
-    return api_key, cse_id
+    return api_key
 
 
-def cse_search(query: str, n: int = 10) -> list[CseHit]:
-    """Fire one Google CSE query and return up to ``n`` parsed hits.
+def brave_search(query: str, n: int = 10) -> list[SearchHit]:
+    """Fire one Brave Search query and return up to ``n`` parsed hits.
 
     Empty list on quota exhaustion or transient errors — we don't want a
     single bad query to abort a full city sweep.
 
-    Free tier is 100 queries/day; paid tier is $5/1000. Operators using
-    discovery at scale need the paid tier enabled in Google Cloud.
+    Free tier is 2,000 queries/month at 1 query/second; "Data for AI" paid
+    plans start at $3/1k. We don't add explicit rate limiting here because
+    Cadence B's per-city sequential loop naturally stays under 1 q/s.
     """
-    api_key, cse_id = _cse_credentials()
-    # CSE caps at 10 results per page. Caller can pass higher n; we cap.
-    n = max(1, min(n, 10))
+    api_key = _brave_credentials()
+    n = max(1, min(n, 20))  # Brave's max page size is 20.
     params = {
-        "key": api_key,
-        "cx": cse_id,
         "q": query,
-        "num": n,
-        "safe": "off",
+        "count": n,
+        "safesearch": "off",
     }
-    url = f"{_CSE_ENDPOINT}?{urllib.parse.urlencode(params)}"
+    url = f"{_BRAVE_ENDPOINT}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "X-Subscription-Token": api_key,
+        },
+    )
 
     try:
-        with urllib.request.urlopen(url, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        # 429 = quota exhausted. 403 = API not enabled / wrong key.
-        # Both are operator-config issues — surface them to the log but
-        # don't abort the sweep; the caller sees an empty list.
+        # 429 = quota exhausted. 401 = bad/missing key. 422 = malformed
+        # query. All operator-config issues — surface them to the log
+        # but don't abort the sweep; the caller sees an empty list.
         body = ""
         try:
             body = e.read().decode("utf-8")[:300]
         except Exception:
             pass
         logger.warning(
-            f"cse_search({query!r}): HTTP {e.code}: {e.reason} — {body}"
+            f"brave_search({query!r}): HTTP {e.code}: {e.reason} — {body}"
         )
         return []
     except Exception as e:
-        logger.warning(f"cse_search({query!r}): {type(e).__name__}: {e}")
+        logger.warning(f"brave_search({query!r}): {type(e).__name__}: {e}")
         return []
 
-    items = data.get("items") or []
-    hits: list[CseHit] = []
+    web = data.get("web") or {}
+    items = web.get("results") or []
+    hits: list[SearchHit] = []
     for it in items:
-        link = (it.get("link") or "").strip()
+        link = (it.get("url") or "").strip()
         if not link:
             continue
-        hits.append(CseHit(
+        hits.append(SearchHit(
             url=link,
             title=(it.get("title") or "").strip(),
-            snippet=(it.get("snippet") or "").strip(),
+            # Brave names this 'description'; we keep the more conventional
+            # 'snippet' on the dataclass for cross-engine consistency.
+            snippet=(it.get("description") or "").strip(),
         ))
     return hits
 
@@ -153,9 +153,9 @@ def cse_search(query: str, n: int = 10) -> list[CseHit]:
 # calendar/what's-on hits the listing pages directly, "things to do this
 # month" finds curated weekly digests, the venue/arts queries pick up
 # performing-arts complexes that magazines miss. The "2026" hint on the
-# first query nudges Google to favour recent pages.
+# first query nudges Brave to favour recent pages.
 #
-# Local-language coverage comes from Google's regional ranking — for
+# Local-language coverage comes from Brave's regional ranking — for
 # Berlin, even the English query "Berlin events calendar" tends to
 # surface visitberlin.de in the results. If yield is poor for non-English
 # cities we'll add per-city local-language templates.
@@ -168,11 +168,11 @@ _QUERY_TEMPLATES: list[str] = [
 ]
 
 
-def discover_via_cse(
+def discover_via_search(
     city: str,
     n_queries: Optional[int] = None,
     n_per_query: int = 10,
-) -> list[CseHit]:
+) -> list[SearchHit]:
     """Fire all query templates for ``city``, dedupe results by URL.
 
     Returns the union (deduped) of hits across queries. Order is roughly
@@ -182,17 +182,17 @@ def discover_via_cse(
     templates = _QUERY_TEMPLATES if n_queries is None else _QUERY_TEMPLATES[:n_queries]
 
     seen: set[str] = set()
-    out: list[CseHit] = []
+    out: list[SearchHit] = []
     for tpl in templates:
         query = tpl.format(city=city)
-        logger.info(f"cse: query {query!r}")
-        for hit in cse_search(query, n=n_per_query):
+        logger.info(f"brave: query {query!r}")
+        for hit in brave_search(query, n=n_per_query):
             if hit.url in seen:
                 continue
             seen.add(hit.url)
             out.append(hit)
     logger.info(
-        f"cse({city!r}): {len(out)} unique hits across "
+        f"brave({city!r}): {len(out)} unique hits across "
         f"{len(templates)} queries"
     )
     return out
@@ -201,7 +201,7 @@ def discover_via_cse(
 # ── LLM-classifier filter ──────────────────────────────────────────────────
 
 _FILTER_PROMPT = """\
-You are reviewing Google search results for {city} event-listing pages.
+You are reviewing search results for {city} event-listing pages.
 
 For each numbered result, decide if the page is likely a CALENDAR or
 LISTING of upcoming events in {city} (or covers {city} as part of a
@@ -240,7 +240,7 @@ Example:
 """
 
 
-def _format_results_block(hits: list[CseHit]) -> str:
+def _format_results_block(hits: list[SearchHit]) -> str:
     """Render the numbered hit list for the LLM prompt."""
     lines: list[str] = []
     for i, h in enumerate(hits, start=1):
@@ -251,28 +251,32 @@ def _format_results_block(hits: list[CseHit]) -> str:
 
 
 def filter_candidates_via_llm(
-    hits: list[CseHit],
+    hits: list[SearchHit],
     city: str,
     model: str = "gemini-2.5-flash",
 ) -> list[dict]:
-    """Classify which CSE hits are real event-listing pages for ``city``.
+    """Classify which search hits are real event-listing pages for ``city``.
 
     Returns candidate dicts in the same shape as discover_via_gemini():
         {"url", "source_type", "language", "why_relevant"}
 
     The LLM only returns indices + classification metadata — we look up
     the URL ourselves so the model can't hallucinate a slightly-different
-    URL than what Google indexed.
+    URL than what the search engine indexed.
 
     Empty list on parse failure or empty input — keeps the city loop moving.
     """
     if not hits:
         return []
 
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    # GEMINI_API_KEY first (it's the dedicated Gemini key); GOOGLE_API_KEY
+    # is a fallback for setups that share one Google Cloud key across
+    # services. Reversing this caused 403s when GOOGLE_API_KEY was a
+    # leftover key without generativelanguage permission.
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise DiscoveryError(
-            "Neither GOOGLE_API_KEY nor GEMINI_API_KEY is set; "
+            "Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set; "
             "LLM classifier cannot run."
         )
     try:
@@ -289,7 +293,7 @@ def filter_candidates_via_llm(
         results_block=_format_results_block(hits),
     )
     logger.info(
-        f"llm-filter({city!r}): classifying {len(hits)} CSE hits via {model}"
+        f"llm-filter({city!r}): classifying {len(hits)} search hits via {model}"
     )
     try:
         # No grounding tool here — we have the URLs already, we just need
@@ -346,10 +350,10 @@ def filter_candidates_via_llm(
             "source_type": d.get("source_type") or "unknown",
             "language": d.get("language") or "en",
             "why_relevant": (d.get("why_relevant") or "")[:300],
-            # Stash the original CSE title/snippet under a private key
+            # Stash the original search title/snippet under a private key
             # so callers (and the audit dashboard) can show provenance.
-            "_cse_title": hit.title,
-            "_cse_snippet": hit.snippet,
+            "_search_title": hit.title,
+            "_search_snippet": hit.snippet,
         })
     logger.info(
         f"llm-filter({city!r}): "
@@ -360,7 +364,7 @@ def filter_candidates_via_llm(
 
 # ── Orchestrator (drop-in for discover_via_gemini) ─────────────────────────
 
-def discover_via_cse_pipeline(
+def discover_via_search_pipeline(
     city: str,
     n: int = 15,                         # noqa: ARG001 — kept for signature parity
     model: str = "gemini-2.5-flash",
@@ -368,7 +372,7 @@ def discover_via_cse_pipeline(
     excluded_urls: Optional[list[str]] = None,
     n_per_query: int = 10,
 ) -> list[dict]:
-    """End-to-end: CSE queries → dedupe → reserved/url filter → LLM classify.
+    """End-to-end: search queries → dedupe → reserved/url filter → LLM classify.
 
     Returns candidate dicts in the same shape as discover_via_gemini, so
     the scheduler job can use either path with no further branching.
@@ -378,13 +382,13 @@ def discover_via_cse_pipeline(
     keeps the prompt tight and the per-call cost predictable.
 
     ``n`` is accepted for signature compatibility with the Gemini path
-    but ignored — CSE is governed by ``n_per_query`` × len(query templates),
-    which we calibrate elsewhere.
+    but ignored — search volume is governed by ``n_per_query`` × len(query
+    templates), which we calibrate elsewhere.
     """
     excl_d = {d.lower() for d in (excluded_domains or []) if d}
     excl_u = set(excluded_urls or [])
 
-    hits = discover_via_cse(city, n_per_query=n_per_query)
+    hits = discover_via_search(city, n_per_query=n_per_query)
 
     def _host_excluded(u: str) -> bool:
         try:
@@ -403,7 +407,7 @@ def discover_via_cse_pipeline(
                 return True
         return False
 
-    pruned: list[CseHit] = []
+    pruned: list[SearchHit] = []
     n_excl_d = n_excl_u = 0
     for h in hits:
         if h.url in excl_u:
@@ -415,7 +419,7 @@ def discover_via_cse_pipeline(
         pruned.append(h)
     if n_excl_d or n_excl_u:
         logger.info(
-            f"cse({city!r}): pruned {n_excl_d} reserved-domain "
+            f"brave({city!r}): pruned {n_excl_d} reserved-domain "
             f"+ {n_excl_u} already-registered hits before LLM"
         )
 
@@ -426,9 +430,9 @@ def discover_via_cse_pipeline(
 
 
 __all__ = [
-    "CseHit",
-    "cse_search",
-    "discover_via_cse",
+    "SearchHit",
+    "brave_search",
+    "discover_via_search",
     "filter_candidates_via_llm",
-    "discover_via_cse_pipeline",
+    "discover_via_search_pipeline",
 ]

@@ -17,10 +17,10 @@ from app.extractors.discovery import (  # noqa: F401
     DiscoveryError,
     looks_like_event_listing,
 )
-from app.extractors.discovery_cse import (  # noqa: F401
-    cse_search,
-    discover_via_cse,
+from app.extractors.discovery_search import (  # noqa: F401
+    brave_search,
+    discover_via_search,
     filter_candidates_via_llm,
-    discover_via_cse_pipeline,
-    CseHit,
+    discover_via_search_pipeline,
+    SearchHit,
 )
