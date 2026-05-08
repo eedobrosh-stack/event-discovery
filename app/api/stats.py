@@ -297,6 +297,144 @@ def upcoming_breakdown(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/genre-coverage")
+def genre_coverage(db: Session = Depends(get_db)):
+    """Artist/genre data-hygiene snapshot.
+
+    Surfaces three things the dashboard needs to make data-quality
+    decisions visible:
+
+    1. Coverage — how many distinct upcoming-event artists have a
+       known parent genre (the % gap is the lever for retrieval-
+       augmented re-classification).
+    2. Confidence — distribution of high/medium/low/unknown across
+       all classified artists. Low+UNKNOWN ≈ "Gemini gave up", which
+       is the bucket Brave-augmented context could rescue.
+    3. Taxonomy — the full parent → sub-genre tree so we can see
+       what categories exist and how they're populated.
+
+    All counts use COUNT(DISTINCT lower(trim(artist_name))) for the
+    upcoming-event side — same canonicalisation the join uses, so the
+    numbers match what an actual query would resolve.
+    """
+    from app.models.genre import ArtistGenre, GenreTaxonomy
+
+    today = date.today()
+    upcoming = Event.start_date >= today
+
+    # Distinct upcoming-event artists, canonicalised the same way the
+    # ArtistGenre join canonicalises them.
+    norm_artist = func.lower(func.trim(Event.artist_name))
+    upcoming_artist_filters = (
+        upcoming,
+        Event.artist_name.isnot(None),
+        Event.artist_name != "",
+    )
+    distinct_upcoming_artists = (
+        db.query(func.count(func.distinct(norm_artist)))
+        .filter(*upcoming_artist_filters)
+        .scalar() or 0
+    )
+
+    # Same set, but only those that resolve to a non-UNKNOWN parent
+    # genre via the taxonomy join.
+    matched = (
+        db.query(func.count(func.distinct(norm_artist)))
+        .join(ArtistGenre, ArtistGenre.normalized_name == norm_artist)
+        .join(GenreTaxonomy, GenreTaxonomy.sub_genre == ArtistGenre.primary_genre)
+        .filter(
+            *upcoming_artist_filters,
+            ArtistGenre.primary_genre.isnot(None),
+            ArtistGenre.primary_genre != "UNKNOWN",
+        )
+        .scalar() or 0
+    )
+
+    # ArtistGenre population stats — across all classified artists,
+    # not just upcoming-event ones.
+    total_classified = db.query(func.count(ArtistGenre.id)).scalar() or 0
+    classified_known = (
+        db.query(func.count(ArtistGenre.id))
+        .filter(
+            ArtistGenre.primary_genre.isnot(None),
+            ArtistGenre.primary_genre != "UNKNOWN",
+        )
+        .scalar() or 0
+    )
+
+    # Confidence distribution. "low" tightly correlates with UNKNOWN —
+    # the prompt mandates `confidence='low'` whenever Gemini can't
+    # recognise the artist — so this gives a quick read on how much of
+    # our classified pool is actually weak signal.
+    conf_rows = (
+        db.query(ArtistGenre.confidence, func.count(ArtistGenre.id))
+        .group_by(ArtistGenre.confidence)
+        .all()
+    )
+    confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "unset": 0}
+    for c, n in conf_rows:
+        key = (c or "").strip().lower()
+        if key in ("high", "medium", "low"):
+            confidence[key] += int(n)
+        else:
+            confidence["unset"] += int(n)
+
+    # Full taxonomy: parent → [sub_genre, …], sorted alphabetically inside
+    # each parent for stable rendering. Sub-genre counts shown as the
+    # number of upcoming events whose primary-classified artist sits in
+    # that sub-genre — gives a quick read on which sub-genres are
+    # populated vs. dormant.
+    sub_event_counts = dict(
+        db.query(ArtistGenre.primary_genre, func.count(func.distinct(Event.id)))
+        .select_from(Event)
+        .join(ArtistGenre, ArtistGenre.normalized_name == norm_artist)
+        .filter(
+            *upcoming_artist_filters,
+            ArtistGenre.primary_genre.isnot(None),
+            ArtistGenre.primary_genre != "UNKNOWN",
+        )
+        .group_by(ArtistGenre.primary_genre)
+        .all()
+    )
+
+    taxonomy_rows = (
+        db.query(GenreTaxonomy.parent_genre, GenreTaxonomy.sub_genre)
+        .order_by(GenreTaxonomy.parent_genre, GenreTaxonomy.sub_genre)
+        .all()
+    )
+    taxonomy: list[dict] = []
+    by_parent: dict[str, list[dict]] = {}
+    for parent, sub in taxonomy_rows:
+        sub_n = int(sub_event_counts.get(sub, 0) or 0)
+        by_parent.setdefault(parent, []).append({"sub_genre": sub, "events": sub_n})
+    # Ranked by total events under each parent, descending — same order
+    # as the by_genre breakdown card so the two views read consistently.
+    parent_totals = {p: sum(s["events"] for s in subs) for p, subs in by_parent.items()}
+    for parent in sorted(by_parent.keys(), key=lambda p: -parent_totals[p]):
+        taxonomy.append({
+            "parent_genre": parent,
+            "events": parent_totals[parent],
+            "sub_genres": by_parent[parent],
+        })
+
+    return {
+        "upcoming_distinct_artists": distinct_upcoming_artists,
+        "upcoming_with_genre": matched,
+        "upcoming_without_genre": max(distinct_upcoming_artists - matched, 0),
+        "coverage_pct": (
+            round(matched * 100 / distinct_upcoming_artists, 1)
+            if distinct_upcoming_artists else 0.0
+        ),
+        "artist_genre_total": total_classified,
+        "artist_genre_known": classified_known,
+        "artist_genre_unknown": max(total_classified - classified_known, 0),
+        "confidence": confidence,
+        "taxonomy": taxonomy,
+        "taxonomy_parent_count": len(taxonomy),
+        "taxonomy_sub_count": sum(len(p["sub_genres"]) for p in taxonomy),
+    }
+
+
 @router.get("/source-detail")
 def source_detail(source: str, db: Session = Depends(get_db)):
     """City breakdown for a given scrape source over the last 24h."""

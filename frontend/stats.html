@@ -510,6 +510,105 @@
             margin: 28px 0;
         }
 
+        /* ── Artist & Genre coverage ── */
+        .genre-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+        .genre-kpi {
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 10px;
+            padding: 12px 14px;
+        }
+        .genre-kpi .kpi-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #888;
+            margin-bottom: 6px;
+        }
+        .genre-kpi .kpi-value {
+            font-size: 1.35rem;
+            font-weight: 600;
+            line-height: 1.1;
+        }
+        .genre-kpi .kpi-sub {
+            font-size: 0.72rem;
+            color: #777;
+            margin-top: 4px;
+        }
+        .taxonomy-details {
+            background: var(--card-bg, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-bottom: 28px;
+        }
+        .taxonomy-details summary {
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: #aaa;
+            user-select: none;
+            outline: none;
+        }
+        .taxonomy-details summary .tax-summary {
+            color: #666;
+            margin-left: 8px;
+            font-weight: 400;
+        }
+        .taxonomy-details[open] summary {
+            margin-bottom: 12px;
+        }
+        .taxonomy-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 12px;
+        }
+        .tax-parent {
+            border: 1px solid var(--border, #333);
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: rgba(255,255,255,0.02);
+        }
+        .tax-parent-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-weight: 600;
+            font-size: 0.85rem;
+            margin-bottom: 6px;
+            color: #ccc;
+        }
+        .tax-parent-head .tax-events {
+            font-weight: 400;
+            font-size: 0.72rem;
+            color: #777;
+        }
+        .tax-subs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .tax-sub {
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.05);
+            color: #aaa;
+            white-space: nowrap;
+        }
+        .tax-sub.empty {
+            color: #555;
+            background: rgba(255,255,255,0.02);
+        }
+        .tax-sub .tax-n {
+            color: #777;
+            margin-left: 3px;
+        }
+
         /* ── Upcoming breakdown (by category / format / genre) ── */
         .breakdown-grid {
             display: grid;
@@ -844,6 +943,31 @@
                 <div class="bd-sub">Parent genre — via artist classification</div>
                 <div class="bd-rows" id="breakdown-genre"></div>
             </div>
+        </div>
+
+        <!-- ── Artist & Genre Coverage ─────────────────────────────────────── -->
+        <hr class="section-divider">
+        <p class="section-title">🎤 Artist & Genre Coverage
+            <span style="font-weight:400; color:#555; font-size:.75rem;" id="genre-cov-sub"></span>
+        </p>
+        <div id="genre-cov-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
+        <div id="genre-cov-wrap" hidden>
+            <!-- KPI strip -->
+            <div class="genre-kpi-grid">
+                <div class="genre-kpi"><div class="kpi-label">Distinct upcoming artists</div><div class="kpi-value" id="kpi-artists">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">With known genre</div><div class="kpi-value" id="kpi-known">—</div><div class="kpi-sub" id="kpi-known-pct">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">Without genre</div><div class="kpi-value" id="kpi-unknown">—</div><div class="kpi-sub" id="kpi-unknown-pct">— gap to close</div></div>
+                <div class="genre-kpi"><div class="kpi-label">ArtistGenre rows</div><div class="kpi-value" id="kpi-ag-total">—</div><div class="kpi-sub" id="kpi-ag-known">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">Confidence: high</div><div class="kpi-value" id="kpi-conf-high">—</div><div class="kpi-sub" id="kpi-conf-high-pct">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">Confidence: medium</div><div class="kpi-value" id="kpi-conf-med">—</div><div class="kpi-sub" id="kpi-conf-med-pct">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">Confidence: low</div><div class="kpi-value" id="kpi-conf-low">—</div><div class="kpi-sub" id="kpi-conf-low-pct">—</div></div>
+            </div>
+
+            <!-- Full taxonomy view -->
+            <details class="taxonomy-details">
+                <summary>📚 Full taxonomy <span class="tax-summary" id="tax-summary"></span></summary>
+                <div class="taxonomy-grid" id="taxonomy-grid"></div>
+            </details>
         </div>
 
         <!-- ── Source Contribution Matrix ──────────────────────────────────── -->
@@ -1454,6 +1578,68 @@
         }
     }
     loadBreakdown();
+
+    // ── Artist & Genre coverage ────────────────────────────────────────────
+    async function loadGenreCoverage() {
+        try {
+            const res = await fetch('/api/stats/genre-coverage');
+            const d = await res.json();
+
+            const fmt = n => (n || 0).toLocaleString();
+            const pct = (num, denom) => denom > 0 ? Math.round(num * 1000 / denom) / 10 : 0;
+
+            // KPI strip
+            document.getElementById('kpi-artists').textContent     = fmt(d.upcoming_distinct_artists);
+            document.getElementById('kpi-known').textContent       = fmt(d.upcoming_with_genre);
+            document.getElementById('kpi-known-pct').textContent   = `${d.coverage_pct}% coverage`;
+            document.getElementById('kpi-unknown').textContent     = fmt(d.upcoming_without_genre);
+            document.getElementById('kpi-unknown-pct').textContent =
+                `${(100 - d.coverage_pct).toFixed(1)}% gap to close`;
+            document.getElementById('kpi-ag-total').textContent    = fmt(d.artist_genre_total);
+            document.getElementById('kpi-ag-known').textContent    =
+                `${fmt(d.artist_genre_known)} known · ${fmt(d.artist_genre_unknown)} UNKNOWN`;
+
+            const conf = d.confidence || {};
+            const confTotal = (conf.high || 0) + (conf.medium || 0) + (conf.low || 0) + (conf.unset || 0);
+            document.getElementById('kpi-conf-high').textContent     = fmt(conf.high);
+            document.getElementById('kpi-conf-high-pct').textContent = `${pct(conf.high, confTotal)}% of classified`;
+            document.getElementById('kpi-conf-med').textContent      = fmt(conf.medium);
+            document.getElementById('kpi-conf-med-pct').textContent  = `${pct(conf.medium, confTotal)}% of classified`;
+            document.getElementById('kpi-conf-low').textContent      = fmt(conf.low);
+            document.getElementById('kpi-conf-low-pct').textContent  = `${pct(conf.low, confTotal)}% — likely UNKNOWN`;
+
+            // Header subtitle
+            document.getElementById('genre-cov-sub').textContent =
+                `${fmt(d.upcoming_with_genre)} / ${fmt(d.upcoming_distinct_artists)} upcoming artists matched`;
+
+            // Full taxonomy
+            document.getElementById('tax-summary').textContent =
+                `(${d.taxonomy_parent_count} parents · ${d.taxonomy_sub_count} sub-genres)`;
+            const grid = document.getElementById('taxonomy-grid');
+            grid.innerHTML = (d.taxonomy || []).map(p => {
+                const subs = p.sub_genres.map(s => {
+                    const empty = (s.events || 0) === 0;
+                    const cls = empty ? 'tax-sub empty' : 'tax-sub';
+                    const n = empty ? '' : `<span class="tax-n">${fmt(s.events)}</span>`;
+                    return `<span class="${cls}" title="${esc(s.sub_genre)} — ${fmt(s.events)} upcoming events">${esc(s.sub_genre)}${n}</span>`;
+                }).join('');
+                return `
+                    <div class="tax-parent">
+                        <div class="tax-parent-head">
+                            <span>${esc(p.parent_genre)}</span>
+                            <span class="tax-events">${fmt(p.events)} events · ${p.sub_genres.length} subs</span>
+                        </div>
+                        <div class="tax-subs">${subs}</div>
+                    </div>`;
+            }).join('');
+
+            document.getElementById('genre-cov-loading').hidden = true;
+            document.getElementById('genre-cov-wrap').hidden = false;
+        } catch (e) {
+            document.getElementById('genre-cov-loading').textContent = 'Failed to load genre coverage: ' + e.message;
+        }
+    }
+    loadGenreCoverage();
 
     // ── Source drill-down ──────────────────────────────────────────────────
     async function toggleSourceDetail(row, source, panelId) {
