@@ -305,27 +305,35 @@ def get_suggestions(
     ][:PER_TYPE]
 
     # Final ordering — explicit user-facing priority, top to bottom:
-    #   1. Artist / Sport team or player  (artists first within the tie,
-    #      since music-driven searches dominate; "stin" → Sting beats
-    #      any team)
-    #   2. Sub-genre  (typed sub-genre name surfaces specific chip)
-    #   3. Genre      (typed parent name)
+    #   1. Sub-genre  (typed sub-genre name surfaces specific chip
+    #                  → discoverability for the curated taxonomy)
+    #   2. Genre      (typed parent name)
+    #   3. Artist / Sport team or player  (artists first within the tie,
+    #                  since music-driven searches dominate; "stin" →
+    #                  Sting beats any team)
     #   4. Format     (EventType.name — Concert, Stand-Up, Ballet, …)
     #   5. Category   (EventType.category — Music, Comedy, Theatre, …)
     #   6. Venue
     #   7. Event name (literal Event.name — fallback for things that
-    #      don't fit any of the above, e.g. mevalim comedians,
-    #      techconf conferences)
+    #                  don't fit any of the above, e.g. mevalim
+    #                  comedians, techconf conferences)
+    #
+    # Why genres-before-artists: typing "rock" or "opera" — both are far
+    # more likely to be category browsing intent ("show me what's on in
+    # Rock/Opera") than to be hunting a specific artist named "Rock"
+    # (yes, that exists). Surfacing the [Rock · Genre] / [Opera ·
+    # Sub-genre] chip first makes the curated taxonomy the dominant
+    # affordance; specific artist hits are still right below.
     #
     # Cities are deliberately NOT surfaced here — the dedicated Location
     # box on both home and results pages owns city navigation; mixing
     # cities into the suggestions just leaks irrelevant rows like
     # "Blowing Rock" when a user types "rock".
     results = (
-        artists                   # 1a
-        + sport_teams             # 1b
-        + sub_genres_results      # 2
-        + genres_results          # 3
+        sub_genres_results        # 1
+        + genres_results          # 2
+        + artists                 # 3a
+        + sport_teams             # 3b
         + event_types             # 4 (Format)
         + categories              # 5 (Category)
         + venue_results           # 6
