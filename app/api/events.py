@@ -41,21 +41,36 @@ _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 
 def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None):
     """Shared filter logic used by both list and count endpoints."""
-    from sqlalchemy import or_, func, select
+    from sqlalchemy import or_, and_, func, select
     from app.models import City
 
     # Strict artist filter — used when the user clicked an "Artist" suggestion
     # in autocomplete. Exact case-insensitive match on artist_name so "Sting"
     # returns ONLY Sting events, never "Stingrays" or "DJ Stingray". Multiple
     # values (comma-separated) are OR'd.
+    #
+    # Two-column match: artist_name OR (name AND empty/null artist_name).
+    # The second branch catches sources that put the performer's name in
+    # Event.name with no artist_name set — chiefly mevalim (Hebrew
+    # comedians like שחר חסון) and techconf (conference speaker names).
+    # Without this branch, clicking the "Artist · שחר חסון" chip would
+    # miss the dozens of mevalim shows that ARE for him but were
+    # ingested with artist_name=''. We constrain the second branch to
+    # rows where artist_name is null/empty so we never accidentally
+    # capture another artist's event whose name happens to equal the
+    # query (e.g. a tribute event titled "Sting Tribute" by some other
+    # band).
     if artist_exact:
         names = [n.strip() for n in artist_exact.split(",") if n.strip()]
         if names:
             lowered = [n.lower() for n in names]
-            query = query.filter(
-                Event.artist_name.isnot(None),
+            query = query.filter(or_(
                 func.lower(Event.artist_name).in_(lowered),
-            )
+                and_(
+                    or_(Event.artist_name.is_(None), Event.artist_name == ""),
+                    func.lower(Event.name).in_(lowered),
+                ),
+            ))
 
     # Genre filter — chip values are *parent* genres (e.g. "Rock", "Electronic").
     # Two complementary match paths combined as OR:
