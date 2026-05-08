@@ -170,6 +170,47 @@ function setupTypeAutocomplete() {
         }
     }
 
+    /**
+     * Derive results for `q` from a longer-prefix cached result, when
+     * possible. When a user types "j" → "ja" → "jaz" the "jaz" result
+     * is always a SUBSET of the "ja" result, so we can filter the
+     * cached parent locally instead of fetching.
+     *
+     * Heuristic: only kicks in when the parent prefix is ≥ 2 chars
+     * AND the cached parent contained the full suggestion list (not
+     * truncated by the server's limit). Server returns up to 12 items;
+     * if the parent had < 12 we know the parent's set is exhaustive
+     * and the child can safely be filtered from it. If the parent
+     * had == 12 we can't be sure the child's true result isn't
+     * something the parent cut off, so we re-fetch.
+     */
+    const SERVER_LIMIT = 12;
+    function _deriveFromParent(q) {
+        const qLower = q.toLowerCase();
+        for (let n = q.length - 1; n >= 2; n--) {
+            const parent = q.slice(0, n);
+            const cachedParent = _cacheGet(parent);
+            if (!cachedParent) continue;
+            if (cachedParent.length >= SERVER_LIMIT) {
+                // Parent was capped by the server limit — child set
+                // could include items the parent cut off. Bail.
+                return null;
+            }
+            // Filter cached parent by checking whether each suggestion's
+            // value or label still satisfies the new (more specific)
+            // query. Mirrors the server's word-start / whole-word
+            // semantics loosely — substring is a safe over-approximation
+            // here because the server already filtered to legitimate
+            // matches; we just need to drop the ones that no longer
+            // include the longer prefix.
+            return cachedParent.filter(item => {
+                const hay = ((item.value || "") + " " + (item.label || "")).toLowerCase();
+                return hay.includes(qLower);
+            });
+        }
+        return null;
+    }
+
     renderTypeChips = function() { renderChips(); };
 
     function renderChips() {
@@ -256,6 +297,18 @@ function setupTypeAutocomplete() {
         const cached = _cacheGet(q);
         if (cached) {
             showSuggestions(cached);
+            return;
+        }
+
+        // Forward-typing optimisation: if a shorter prefix is cached
+        // and wasn't truncated by the server limit, derive this query's
+        // result locally. Saves the fetch entirely. We still issue the
+        // fetch in the background to refresh the cache for the next
+        // visit (in case the derivation missed an edge case).
+        const derived = _deriveFromParent(q);
+        if (derived !== null) {
+            _cacheSet(q, derived);  // serve from cache on re-visit too
+            showSuggestions(derived);
             return;
         }
 

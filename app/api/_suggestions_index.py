@@ -97,6 +97,61 @@ def name_matches(text_lower: str, q: str) -> bool:
     return True
 
 
+# ── Prefix bucket (3-char first-pass narrowing) ────────────────────────────
+#
+# For lists that are large enough that linear scan dominates ("sting"
+# against 30K artists used to take ~53 ms), we bucket every candidate
+# by the first 3 chars of every word it contains. A query that's >=3
+# chars then only scans the relevant bucket, dropping the candidate
+# count from ~30K to typically ~100-300. For shorter queries we fall
+# back to flat scan; the index is too small at that point for bucket
+# narrowing to matter.
+
+class _PrefixBucket:
+    """Map of 3-char prefix → list of candidates whose any-word starts
+    with that prefix. Each candidate is a tuple whose [0] is the
+    pre-lowered text — same shape the matchers downstream expect.
+    A single candidate may live in multiple buckets (one per word).
+    """
+    __slots__ = ("by_prefix", "all_items")
+
+    def __init__(self):
+        # Stable order preserved within each bucket so downstream
+        # ranking stays deterministic.
+        self.by_prefix: dict[str, list[tuple]] = {}
+        self.all_items: list[tuple] = []
+
+    def add(self, item: tuple) -> None:
+        self.all_items.append(item)
+        text_lower = item[0]
+        # De-dupe per item: a candidate "Sting Stings" shouldn't show
+        # up twice in the same "sti" bucket.
+        seen_prefixes: set[str] = set()
+        for word in text_lower.split():
+            if not word:
+                continue
+            key = word[:3] if len(word) >= 3 else word
+            if key not in seen_prefixes:
+                seen_prefixes.add(key)
+                self.by_prefix.setdefault(key, []).append(item)
+
+    def candidates_for(self, q: str) -> list[tuple]:
+        """Return likely candidates for a single-token query.
+
+        For queries 3+ chars: returns only items in the matching
+        bucket. For shorter queries: returns the whole list (the
+        ``name_matches`` path will still apply whole-word semantics).
+        """
+        if not q:
+            return self.all_items
+        if len(q) >= 3:
+            return self.by_prefix.get(q[:3], [])
+        # Short queries fall back to flat scan — the bucket might exist
+        # under the literal short word, but we'd miss whole-word hits
+        # like " jam " in "Pearl Jam" if we only checked one bucket.
+        return self.all_items
+
+
 # ── Index data ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -106,9 +161,15 @@ class SuggestionsIndex:
     All `.lower` fields hold the lowercased form so callers don't
     re-lowercase per scan. The original-cased string is preserved
     alongside for display.
+
+    The two largest lists (artists, event_names) also expose a
+    PrefixBucket for first-pass candidate narrowing on >=3-char
+    queries — turns the worst-case 30K-row scan into a typical
+    100-300 row scan.
     """
     # (lower, original)
     artists: list[tuple[str, str]] = field(default_factory=list)
+    artists_bucket: _PrefixBucket = field(default_factory=_PrefixBucket)
     sport_teams: list[tuple[str, str]] = field(default_factory=list)
     # (event_name_lower, event_name, sport_value)  — for league early-exit
     sport_event_names: list[tuple[str, str, str]] = field(default_factory=list)
@@ -121,6 +182,7 @@ class SuggestionsIndex:
     # (name_lower, name, physical_city)
     venues: list[tuple[str, str, Optional[str]]] = field(default_factory=list)
     event_names: list[tuple[str, str]] = field(default_factory=list)
+    event_names_bucket: _PrefixBucket = field(default_factory=_PrefixBucket)
     built_at: datetime = field(default_factory=datetime.utcnow)
 
     def is_stale(self) -> bool:
@@ -145,7 +207,11 @@ def build_index(db: Session) -> SuggestionsIndex:
         SELECT DISTINCT artist_name FROM events
         WHERE artist_name IS NOT NULL AND artist_name != ''
     """)).fetchall()
-    idx.artists = [(r[0].lower(), r[0]) for r in rows if r[0]]
+    for r in rows:
+        if r[0]:
+            item = (r[0].lower(), r[0])
+            idx.artists.append(item)
+            idx.artists_bucket.add(item)
 
     # Sport teams — combine home_team + away_team, dedupe case-insensitively.
     seen_teams: dict[str, str] = {}
@@ -210,10 +276,11 @@ def build_index(db: Session) -> SuggestionsIndex:
         WHERE name IS NOT NULL AND name != ''
           AND start_date >= DATE('now')
     """)).fetchall()
-    idx.event_names = [
-        (r[0].lower(), r[0]) for r in rows
-        if r[0] and " - " not in r[0]
-    ]
+    for r in rows:
+        if r[0] and " - " not in r[0]:
+            item = (r[0].lower(), r[0])
+            idx.event_names.append(item)
+            idx.event_names_bucket.add(item)
 
     elapsed_ms = (datetime.utcnow() - started).total_seconds() * 1000
     logger.info(
@@ -279,13 +346,33 @@ def _take_matches(items, q: str, limit: int, projector):
     return out
 
 
+def _bucket_candidates_for_query(bucket: _PrefixBucket, q: str) -> list[tuple]:
+    """Pick candidates for the matcher.
+
+    Single-token queries with a token >=3 chars hit the bucket; shorter
+    or empty tokens fall back to the full list. Multi-token queries
+    use the bucket of the FIRST token whose length >= 3 — every other
+    token still gets verified by name_matches, but narrowing on one is
+    enough to dominate the cost.
+    """
+    parts = q.split()
+    if not parts:
+        return bucket.all_items
+    for p in parts:
+        if len(p) >= 3:
+            return bucket.candidates_for(p)
+    # All tokens short — flat scan.
+    return bucket.all_items
+
+
 def filter_artists(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
     """Artists ranked by exact > prefix > word-start (mirrors original
     SQL relevance CASE). All matches are collected, then sorted, then
     capped — the limit is applied AFTER ranking, not during scan."""
     q_lower = q.lower()
     matches: list[tuple[int, str]] = []  # (relevance, original)
-    for low, original in idx.artists:
+    candidates = _bucket_candidates_for_query(idx.artists_bucket, q)
+    for low, original in candidates:
         if not name_matches(low, q):
             continue
         if low == q_lower:
@@ -378,7 +465,8 @@ def filter_event_names(idx: SuggestionsIndex, q: str, limit: int,
     lowercased artist values it already used)."""
     q_lower = q.lower()
     matches: list[tuple[int, str]] = []
-    for low, original in idx.event_names:
+    candidates = _bucket_candidates_for_query(idx.event_names_bucket, q)
+    for low, original in candidates:
         if low in exclude_lower:
             continue
         if not name_matches(low, q):

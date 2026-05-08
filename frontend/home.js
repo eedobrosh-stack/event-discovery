@@ -70,6 +70,24 @@ function setupTypeAutocomplete() {
             suggestionsCache.delete(oldest);
         }
     }
+    // Mirror the keystroke-chaining derivation from app.js — when typing
+    // forward, derive the new result from a cached shorter prefix instead
+    // of fetching. See app.js _deriveFromParent for the rationale.
+    const SERVER_LIMIT = 12;
+    function _deriveFromParent(q) {
+        const qLower = q.toLowerCase();
+        for (let n = q.length - 1; n >= 2; n--) {
+            const parent = q.slice(0, n);
+            const cachedParent = _cacheGet(parent);
+            if (!cachedParent) continue;
+            if (cachedParent.length >= SERVER_LIMIT) return null;
+            return cachedParent.filter(item => {
+                const hay = ((item.value || "") + " " + (item.label || "")).toLowerCase();
+                return hay.includes(qLower);
+            });
+        }
+        return null;
+    }
 
     function showSuggestions(items) {
         if (!items.length) { list.hidden = true; return; }
@@ -128,6 +146,14 @@ function setupTypeAutocomplete() {
         const cached = _cacheGet(q);
         if (cached) {
             showSuggestions(cached);
+            return;
+        }
+
+        // Forward-typing — derive from a cached shorter prefix when safe.
+        const derived = _deriveFromParent(q);
+        if (derived !== null) {
+            _cacheSet(q, derived);
+            showSuggestions(derived);
             return;
         }
 
