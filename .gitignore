@@ -16,3 +16,9 @@ venv/
 scripts/distinct_artists.txt
 scripts/artist_batches/
 scripts/gemini_responses/
+
+# Brave-augmented re-classify cache (Lever C). JSONL of {artist, ts,
+# results} — durable across interrupts but reproducible from another
+# Brave run, so not worth committing (would also leak which artists we
+# were uncertain about into git history).
+scripts/_brave_cache.jsonl
