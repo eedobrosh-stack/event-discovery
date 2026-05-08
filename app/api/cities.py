@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
 from app.models import City
 from app.schemas.city import CityOut
+from app.api._us_states import normalize as normalize_us_state
 
 router = APIRouter(prefix="/api/cities", tags=["cities"])
 
@@ -24,6 +25,11 @@ def _build_city_list(db: Session) -> List:
     1. Collect distinct venue_ids that have events  (uses ix_events_venue index)
     2. Collect distinct city_ids from those venues
     3. Return matching City rows ordered by name
+
+    State values for US rows are normalised to their canonical full
+    name (e.g. "CA" → "California") at API-output time. The DB still
+    stores 2-letter codes (with two known full-name outliers); the
+    frontend should never have to know about either format.
     """
     rows = db.execute(text("""
         SELECT c.id, c.name, c.country, c.state, c.timezone, c.latitude, c.longitude
@@ -40,12 +46,14 @@ def _build_city_list(db: Session) -> List:
         )
         ORDER BY c.name
     """)).fetchall()
-    # Convert raw rows to City-like dicts the schema can serialise
-    return [
-        City(id=r[0], name=r[1], country=r[2], state=r[3],
-             timezone=r[4], latitude=r[5], longitude=r[6])
-        for r in rows
-    ]
+    out: List = []
+    for r in rows:
+        state = r[3]
+        if r[2] == "United States" and state:
+            state = normalize_us_state(state)
+        out.append(City(id=r[0], name=r[1], country=r[2], state=state,
+                        timezone=r[4], latitude=r[5], longitude=r[6]))
+    return out
 
 
 def warm_cities_cache():
@@ -98,4 +106,58 @@ def list_countries(db: Session = Depends(get_db)):
     ]
     _country_cache = result
     _country_cache_ts = time.time()
+    return result
+
+
+# ── States endpoint (US-only) ──────────────────────────────────────────────
+
+_state_cache: List = []
+_state_cache_ts: float = 0.0
+
+
+@router.get("/states")
+def list_states(db: Session = Depends(get_db)):
+    """Return distinct US states that have cities with events.
+
+    State codes (CA / NY / …) and the two known full-name outliers
+    (``"Ohio"`` / ``"West Virginia"``) are aggregated under their
+    canonical full display name in Python — we can't rely on the DB
+    GROUP BY because the two storage forms are different strings.
+    Output shape mirrors /countries:
+        {name, country, city_count, event_count}
+    Ordered by event_count desc so heavyweight states surface first
+    in autocomplete.
+    """
+    global _state_cache, _state_cache_ts
+    if _state_cache and (time.time() - _state_cache_ts) < _TTL:
+        return _state_cache
+
+    raw_rows = db.execute(text("""
+        SELECT c.state, COUNT(DISTINCT c.id) AS city_count,
+               COUNT(DISTINCT e.id) AS event_count
+        FROM cities c
+        JOIN venues v ON v.city_id = c.id
+        JOIN events e ON e.venue_id = v.id
+        WHERE c.country = 'United States'
+          AND c.state IS NOT NULL AND c.state != ''
+        GROUP BY c.state
+    """)).fetchall()
+
+    # Aggregate by canonical full name (handles the OH/Ohio split).
+    by_name: dict[str, dict] = {}
+    for state_value, city_count, event_count in raw_rows:
+        canonical = normalize_us_state(state_value)
+        if not canonical:
+            continue
+        bucket = by_name.setdefault(
+            canonical,
+            {"name": canonical, "country": "United States",
+             "city_count": 0, "event_count": 0},
+        )
+        bucket["city_count"] += int(city_count or 0)
+        bucket["event_count"] += int(event_count or 0)
+
+    result = sorted(by_name.values(), key=lambda r: -r["event_count"])
+    _state_cache = result
+    _state_cache_ts = time.time()
     return result

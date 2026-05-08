@@ -308,12 +308,50 @@ function setupTypeAutocomplete() {
 let allCities = [];
 let allMetroAreas = [];
 let allCountries = [];
+let allStates = [];
+
+// US state names — kept in lockstep with app/api/_us_states.py.US_STATE_NAMES.
+// Used to disambiguate cities whose name overlaps a state name (e.g. the
+// city "New York" → display as "New York City"). The list is small enough
+// to inline rather than fetch on every page load.
+const US_STATE_NAMES_SET = new Set([
+    "Alabama","Alaska","Arizona","Arkansas","California","Colorado",
+    "Connecticut","Delaware","District of Columbia","Florida","Georgia",
+    "Hawaii","Idaho","Illinois","Indiana","Iowa","Kansas","Kentucky",
+    "Louisiana","Maine","Maryland","Massachusetts","Michigan","Minnesota",
+    "Mississippi","Missouri","Montana","Nebraska","Nevada","New Hampshire",
+    "New Jersey","New Mexico","New York","North Carolina","North Dakota",
+    "Ohio","Oklahoma","Oregon","Pennsylvania","Rhode Island","South Carolina",
+    "South Dakota","Tennessee","Texas","Utah","Vermont","Virginia",
+    "Washington","West Virginia","Wisconsin","Wyoming",
+]);
+
+/**
+ * Format a city's user-facing label.
+ *
+ * For US cities:
+ *   - Append " City" to the displayed name when the bare name collides
+ *     with a state name (e.g. the actual NYC row stored as name="New York"
+ *     in NY → "New York City, New York State").
+ *   - Qualifier is "{state} State" instead of "{country}" — the state is
+ *     finer-grained and US-specific, so country becomes redundant.
+ * For everything else: existing "{name}, {country}" format.
+ */
+function formatCityLabel(c) {
+    if (!c) return "";
+    if (c.country === "United States" && c.state) {
+        const dispName = US_STATE_NAMES_SET.has(c.name) ? `${c.name} City` : c.name;
+        return `${dispName}, ${c.state} State`;
+    }
+    return `${c.name}, ${c.country}`;
+}
 
 async function loadCities() {
-    const [citiesResp, metroResp, countriesResp] = await Promise.all([
+    const [citiesResp, metroResp, countriesResp, statesResp] = await Promise.all([
         fetch("/api/cities"),
         fetch("/api/metro-areas"),
         fetch("/api/cities/countries"),
+        fetch("/api/cities/states"),
     ]);
     allCities = await citiesResp.json();
     allMetroAreas = (await metroResp.json()).map(m => ({
@@ -327,6 +365,27 @@ async function loadCities() {
         id: `COUNTRY:${c.name}`,
         label: `🌐 ${c.name} (${c.city_count} cities)`,
     }));
+
+    // States behave like metros at the filter layer — their selection
+    // value is the comma-joined city_ids of all cities in that state, so
+    // the existing city-id/multi-id query path handles them transparently.
+    // Build state → city_ids mapping client-side from the cities list,
+    // since the cities endpoint normalises state codes to canonical names
+    // (matching the /states endpoint output).
+    const stateCityIds = {};
+    for (const c of allCities) {
+        if (c.country === "United States" && c.state) {
+            (stateCityIds[c.state] ||= []).push(c.id);
+        }
+    }
+    allStates = (await statesResp.json()).map(s => ({
+        ...s,
+        _isState: true,
+        _isMeta: true,  // re-use the multi-city-id selection plumbing
+        city_ids: (stateCityIds[s.name] || []).join(","),
+        label: `🏛 ${s.name} State (${s.city_count} cities)`,
+    }));
+
     setupCityAutocomplete();
     detectUserCity();
 }
@@ -386,7 +445,7 @@ function applyCityMatch(cityName, countryName) {
 
     if (best && bestScore >= 30) {
         console.log("[GeoDetect] Matched:", best.name, best.country, "score:", bestScore);
-        document.getElementById("city-input").value = `${best.name}, ${best.country}`;
+        document.getElementById("city-input").value = formatCityLabel(best);
         document.getElementById("city-id").value    = best.id;
         updateCityClearBtn();
         offset = 0;
@@ -404,8 +463,14 @@ function renderCityList(matches) {
     const list = document.getElementById("city-suggestions");
     list.innerHTML = matches.map(c => {
         const id    = c._isMeta ? c.city_ids : (c.id || "");  // country uses COUNTRY: prefix
-        const label = c.label || `${c.name}, ${c.country}`;
-        const cls   = c._isMeta ? " class=\"metro-option\"" : c._isCountry ? " class=\"country-option\"" : "";
+        const label = c.label || formatCityLabel(c);
+        // CSS classes by row kind. State rows reuse the metro selection
+        // mechanism (_isMeta=true) but get their own class so styling
+        // can distinguish them visually if desired.
+        let cls = "";
+        if (c._isState)        cls = " class=\"state-option\"";
+        else if (c._isMeta)    cls = " class=\"metro-option\"";
+        else if (c._isCountry) cls = " class=\"country-option\"";
         return `<li data-id="${id}" data-label="${label}"${cls}>${label}</li>`;
     }).join("");
     list.hidden = matches.length === 0;
@@ -480,12 +545,26 @@ function setupCityAutocomplete() {
             c.name.toLowerCase().includes(q)
         ).slice(0, 3);
 
+        // States: match against the bare name OR "<name> state" so users
+        // can type either "California" or "California State" and land
+        // on the same row.
+        const stateMatches = allStates.filter(s => {
+            const n = s.name.toLowerCase();
+            return n.includes(q) || `${n} state`.includes(q);
+        }).slice(0, 3);
+
+        // Cities: match against the user-facing label (so "New York City"
+        // matches the disambiguated form, and "California State" doesn't
+        // accidentally match a city's qualifier).
         const cityMatches = allCities.filter(c =>
-            `${c.name}, ${c.country}`.toLowerCase().includes(q)
+            formatCityLabel(c).toLowerCase().includes(q)
         ).slice(0, 6);
 
-        // Order: Global → Metros → Countries → Cities
-        const matches = [GLOBAL_CITY, ...metroMatches, ...countryMatches, ...cityMatches];
+        // Order: Global → Metros → Countries → States → Cities. States
+        // sit between countries and cities — coarser than a city, finer
+        // than a country.
+        const matches = [GLOBAL_CITY, ...metroMatches, ...countryMatches,
+                         ...stateMatches, ...cityMatches];
 
         renderCityList(matches);
     });
@@ -597,9 +676,14 @@ function bindEvents() {
 
 function resolveCityLabel(cityId) {
     // Turn a stored cityId back into the human-readable string the city
-    // input shows. Mirrors the three encodings home.js produces:
+    // input shows. Mirrors the four encodings the home and results UIs
+    // produce:
     //   "COUNTRY:Israel"   → country
-    //   "42,43,44"         → metro area (matches metroArea.city_ids)
+    //   "42,43,44"         → metro area OR US state (both store as
+    //                        comma-joined city_ids — match metro first
+    //                        because its labels are more specific
+    //                        ("NYC Metro" beats "New York State"); fall
+    //                        back to state.)
     //   "42"               → single city
     if (!cityId) return "";
     if (cityId.startsWith("COUNTRY:")) {
@@ -609,12 +693,14 @@ function resolveCityLabel(cityId) {
     }
     if (cityId.includes(",")) {
         const m = allMetroAreas.find(x => x.city_ids === cityId);
-        return m?.label || cityId;
+        if (m?.label) return m.label;
+        const s = allStates.find(x => x.city_ids === cityId);
+        return s?.label || cityId;
     }
     const id = parseInt(cityId, 10);
     if (!Number.isFinite(id)) return cityId;
     const city = allCities.find(c => c.id === id);
-    return city ? `${city.name}, ${city.country}` : cityId;
+    return city ? formatCityLabel(city) : cityId;
 }
 
 function applyFiltersFromURL(params) {

@@ -179,6 +179,11 @@
         .suggestions-list li.country-option { font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.07); color: #6ee7b7; }
         .suggestions-list li.country-option:hover,
         .suggestions-list li.country-option.active { background: rgba(16,185,129,0.2); color: #a7f3d0; }
+        /* States: amber tint, between country-green and metro-purple in
+           saturation so the cascade reads cleanly Country → State → City. */
+        .suggestions-list li.state-option { font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.07); color: #fcd34d; }
+        .suggestions-list li.state-option:hover,
+        .suggestions-list li.state-option.active { background: rgba(245,158,11,0.2); color: #fde68a; }
 
         .sugg-badge {
             font-size: 0.6rem; font-weight: 700;
