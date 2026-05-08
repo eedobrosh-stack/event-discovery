@@ -135,12 +135,19 @@ def append_cache(artist: str, results: list[dict]) -> None:
 
 # ── Target selection ──────────────────────────────────────────────────────
 
-def fetch_unmatched_with_event_counts(db) -> list[tuple[str, int]]:
+def fetch_unmatched_with_event_counts(
+    db, country: Optional[str] = None
+) -> list[tuple[str, int]]:
     """Distinct lowercased upcoming-event artist names that aren't in
     the 'known' set, ordered by upcoming-event count descending.
 
     Returns list of (normalized_name, event_count). Highest-impact
     artists first so a partial run still covers them.
+
+    When ``country`` is given, restrict to artists with at least one
+    upcoming event whose venue's city is in that country. Used to
+    target Lever C at a specific geo bucket — e.g. ``--country=Israel``
+    to rescue Hebrew/Israeli musicians the global pass missed.
     """
     today = date.today()
     norm_artist = func.lower(func.trim(Event.artist_name))
@@ -154,7 +161,7 @@ def fetch_unmatched_with_event_counts(db) -> list[tuple[str, int]]:
         .subquery()
     )
 
-    rows = (
+    q = (
         db.query(norm_artist.label("name"), func.count(Event.id).label("n"))
         .filter(
             Event.start_date >= today,
@@ -162,7 +169,20 @@ def fetch_unmatched_with_event_counts(db) -> list[tuple[str, int]]:
             Event.artist_name != "",
             not_(norm_artist.in_(select(known_subq.c.normalized_name))),
         )
-        .group_by(norm_artist)
+    )
+    if country:
+        # Narrow to artists with at least one upcoming event in `country`
+        # via the venue → city → country chain. Local imports keep this
+        # function importable without warming the full ORM at module
+        # load time.
+        from app.models import Venue, City
+        q = (
+            q.join(Venue, Venue.id == Event.venue_id)
+             .join(City, City.id == Venue.city_id)
+             .filter(City.country == country)
+        )
+    rows = (
+        q.group_by(norm_artist)
         .order_by(func.count(Event.id).desc())
         .all()
     )
@@ -274,6 +294,12 @@ def main():
                         help="Gemini batch size (default 30; lower than "
                              "Phase B's 80 because each entry carries ~3 "
                              "snippets of context).")
+    parser.add_argument("--country", default=None,
+                        help="Restrict to artists with at least one "
+                             "upcoming event in this country (matches "
+                             "City.country exactly, e.g. 'Israel'). "
+                             "Useful for targeting a specific bucket of "
+                             "the residual UNKNOWN pile.")
     args = parser.parse_args()
 
     db = SessionLocal()
@@ -284,8 +310,9 @@ def main():
         taxonomy_block = render_taxonomy_block(idx)
 
         log.info("Fetching unmatched upcoming-event artists ranked by event count …")
-        targets = fetch_unmatched_with_event_counts(db)
-        log.info(f"Pool: {len(targets)} unmatched upcoming-event artists")
+        targets = fetch_unmatched_with_event_counts(db, country=args.country)
+        scope = f" in {args.country!r}" if args.country else ""
+        log.info(f"Pool: {len(targets)} unmatched upcoming-event artists{scope}")
         if args.max:
             targets = targets[:args.max]
             log.info(f"Capped to top {len(targets)} by event count")
