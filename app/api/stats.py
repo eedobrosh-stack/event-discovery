@@ -196,16 +196,25 @@ def coverage_health(db: Session = Depends(get_db)):
 @router.get("/upcoming-breakdown")
 def upcoming_breakdown(db: Session = Depends(get_db)):
     """
-    Breakdown of upcoming events by EventType.category and EventType.name.
+    Breakdown of upcoming events along three orthogonal dimensions:
+      • by_category — EventType.category   (top-level bucket)
+      • by_format   — EventType.name        (specific format/type)
+      • by_genre    — GenreTaxonomy.parent_genre via the artist's primary
+                      classification
 
     An event can have multiple types assigned (via event_event_types), so we
     use COUNT(DISTINCT event_id) in each bucket — an event with two jazz
     types counted as one "Jazz" rather than two.
 
-    Events with no type assigned are excluded (they wouldn't contribute to
-    any category/type bucket anyway). The `total` field returns the total
-    number of upcoming events that have at least one type classified, so
-    the frontend can compute a % share per row.
+    Events with no type assigned are excluded from the category/format
+    buckets. Events with no classified artist (or whose artist's primary
+    genre is UNKNOWN) are excluded from the genre bucket. Each dimension
+    has its own denominator (`total_classified` for type-based, and
+    `total_with_genre` for genre-based) so card percentages stay
+    internally consistent.
+
+    Backwards-compatibility: `by_type` is kept as an alias of `by_format`
+    so older clients keep working until we deprecate it.
     """
     today = date.today()
     upcoming = Event.start_date >= today
@@ -224,7 +233,7 @@ def upcoming_breakdown(db: Session = Depends(get_db)):
         )
 
     by_category = _breakdown(EventType.category)
-    by_type     = _breakdown(EventType.name)
+    by_format   = _breakdown(EventType.name)
 
     # Distinct upcoming events with at least one type — denominator for the
     # "% of classified upcoming" stat. Matches the `with_type` metric in
@@ -236,10 +245,55 @@ def upcoming_breakdown(db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
+    # Genre breakdown — different join path. Events match ArtistGenre via
+    # lowercased artist_name, then ArtistGenre.primary_genre (a sub-genre)
+    # rolls up to GenreTaxonomy.parent_genre. UNKNOWN classifications are
+    # excluded — they would only inflate the bucket without conveying
+    # information. Locally imported because models/genre.py is registered
+    # late and a top-level import would force a circular dance with
+    # app.models.__init__.
+    from app.models.genre import ArtistGenre, GenreTaxonomy
+
+    artist_join = ArtistGenre.normalized_name == func.lower(func.trim(Event.artist_name))
+    parent_join = GenreTaxonomy.sub_genre == ArtistGenre.primary_genre
+    genre_filters = (
+        upcoming,
+        Event.artist_name.isnot(None),
+        Event.artist_name != "",
+        ArtistGenre.primary_genre.isnot(None),
+        ArtistGenre.primary_genre != "UNKNOWN",
+    )
+
+    by_genre = (
+        db.query(GenreTaxonomy.parent_genre, func.count(func.distinct(Event.id)).label("n"))
+        .select_from(Event)
+        .join(ArtistGenre, artist_join)
+        .join(GenreTaxonomy, parent_join)
+        .filter(*genre_filters)
+        .group_by(GenreTaxonomy.parent_genre)
+        .order_by(func.count(func.distinct(Event.id)).desc())
+        .all()
+    )
+
+    genre_total = (
+        db.query(func.count(func.distinct(Event.id)))
+        .select_from(Event)
+        .join(ArtistGenre, artist_join)
+        .join(GenreTaxonomy, parent_join)
+        .filter(*genre_filters)
+        .scalar() or 0
+    )
+
+    by_format_payload = [{"name": r[0], "count": r[1]} for r in by_format]
     return {
         "total_classified": classified_total,
+        "total_with_genre": genre_total,
         "by_category": [{"name": r[0], "count": r[1]} for r in by_category],
-        "by_type":     [{"name": r[0], "count": r[1]} for r in by_type],
+        "by_format":   by_format_payload,
+        # Legacy alias — keep until the frontend rename has been deployed
+        # for at least a release cycle.
+        "by_type":     by_format_payload,
+        "by_genre":    [{"name": r[0], "count": r[1]} for r in by_genre],
     }
 
 

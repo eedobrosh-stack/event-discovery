@@ -510,14 +510,17 @@
             margin: 28px 0;
         }
 
-        /* ── Upcoming breakdown (by category / by type) ── */
+        /* ── Upcoming breakdown (by category / format / genre) ── */
         .breakdown-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(3, 1fr);
             gap: 14px;
             margin-bottom: 28px;
         }
-        @media (max-width: 760px) { .breakdown-grid { grid-template-columns: 1fr; } }
+        /* Two-up at intermediate widths so cards don't get crushed; full
+           stack on phones. */
+        @media (max-width: 1100px) { .breakdown-grid { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 760px)  { .breakdown-grid { grid-template-columns: 1fr; } }
         .breakdown-card {
             background: var(--card-bg, #1e1e2e);
             border: 1px solid var(--border, #333);
@@ -819,7 +822,7 @@
             </div>
         </div>
 
-        <!-- ── Upcoming Breakdown: by Category / by Type ───────────────────── -->
+        <!-- ── Upcoming Breakdown: by Category / Format / Genre ────────────── -->
         <hr class="section-divider">
         <p class="section-title">🏷️ Upcoming Events Breakdown
             <span style="font-weight:400; color:#555; font-size:.75rem;" id="breakdown-sub"></span>
@@ -832,9 +835,14 @@
                 <div class="bd-rows" id="breakdown-cat"></div>
             </div>
             <div class="breakdown-card">
-                <div class="bd-title">🎫 By type</div>
-                <div class="bd-sub">Grouped by EventType.name</div>
-                <div class="bd-rows" id="breakdown-type"></div>
+                <div class="bd-title">🎫 By format</div>
+                <div class="bd-sub">Grouped by EventType.name (event format)</div>
+                <div class="bd-rows" id="breakdown-format"></div>
+            </div>
+            <div class="breakdown-card">
+                <div class="bd-title">🎼 By genre</div>
+                <div class="bd-sub">Parent genre — via artist classification</div>
+                <div class="bd-rows" id="breakdown-genre"></div>
             </div>
         </div>
 
@@ -1394,20 +1402,24 @@
     }
     loadMatrix();
 
-    // ── Upcoming breakdown (by category / by type) ─────────────────────────
+    // ── Upcoming breakdown (by category / format / genre) ──────────────────
     async function loadBreakdown() {
         try {
             const res = await fetch('/api/stats/upcoming-breakdown');
             const d = await res.json();
 
-            const cat  = d.by_category || [];
-            const typ  = d.by_type || [];
-            const total = d.total_classified || 0;
+            const cat   = d.by_category || [];
+            // by_format with by_type fallback for one release of overlap.
+            const fmt   = d.by_format || d.by_type || [];
+            const genre = d.by_genre || [];
+            const totalTyped = d.total_classified || 0;
+            const totalGenre = d.total_with_genre || 0;
 
-            // Share % is computed vs the displayed card's max (visually ranks
-            // long tails) but the label text uses % of classified upcoming so
-            // the two cards stay comparable.
-            function renderRows(rows, container) {
+            // Bar width is relative to the card's own max so long tails
+            // visually rank within the card; the % label is relative to
+            // the appropriate denominator (typed events vs genre-known
+            // events), so each card's percentages internally sum to ≤100.
+            function renderRows(rows, container, denom) {
                 if (!rows.length) {
                     container.innerHTML = '<div class="bd-empty">No classified upcoming events yet.</div>';
                     return;
@@ -1415,7 +1427,7 @@
                 const maxN = rows[0].count || 1;
                 container.innerHTML = rows.map(r => {
                     const barW = Math.round(r.count / maxN * 100);
-                    const pct  = total > 0 ? Math.round(r.count * 100 / total) : 0;
+                    const pct  = denom > 0 ? Math.round(r.count * 100 / denom) : 0;
                     return `
                     <div class="bd-row">
                         <span class="bd-name" title="${esc(r.name)}">${esc(r.name)}</span>
@@ -1425,13 +1437,15 @@
                 }).join('');
             }
 
-            renderRows(cat, document.getElementById('breakdown-cat'));
-            renderRows(typ, document.getElementById('breakdown-type'));
+            renderRows(cat,   document.getElementById('breakdown-cat'),    totalTyped);
+            renderRows(fmt,   document.getElementById('breakdown-format'), totalTyped);
+            renderRows(genre, document.getElementById('breakdown-genre'),  totalGenre);
 
+            const parts = [];
+            if (totalTyped) parts.push(`${totalTyped.toLocaleString()} typed events · ${cat.length} categories · ${fmt.length} formats`);
+            if (totalGenre) parts.push(`${totalGenre.toLocaleString()} genre-classified · ${genre.length} genres`);
             document.getElementById('breakdown-sub').textContent =
-                total > 0
-                    ? `${total.toLocaleString()} classified upcoming events · ${cat.length} categories · ${typ.length} types`
-                    : 'No classified upcoming events';
+                parts.length ? parts.join(' · ') : 'No classified upcoming events';
 
             document.getElementById('breakdown-loading').hidden = true;
             document.getElementById('breakdown-grid').hidden = false;
