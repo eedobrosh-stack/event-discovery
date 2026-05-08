@@ -70,13 +70,17 @@ function setupTypeAutocomplete() {
             suggestionsCache.delete(oldest);
         }
     }
-    // Mirror the keystroke-chaining derivation from app.js — when typing
-    // forward, derive the new result from a cached shorter prefix instead
-    // of fetching. See app.js _deriveFromParent for the rationale.
+    // Mirror the keystroke-chaining derivation from app.js. SAFE_DERIVE_FLOOR=4
+    // is the safety guard: shorter parents use whole-word matching while
+    // children >=4 chars use word-start, so child can have legitimate hits
+    // the parent matcher excluded. Filtering the parent set in that case
+    // would falsely return empty (regression: typing "class" after "cla"
+    // returned 0 results when "cla" had 0 due to whole-word strictness).
     const SERVER_LIMIT = 12;
+    const SAFE_DERIVE_FLOOR = 4;
     function _deriveFromParent(q) {
         const qLower = q.toLowerCase();
-        for (let n = q.length - 1; n >= 2; n--) {
+        for (let n = q.length - 1; n >= SAFE_DERIVE_FLOOR; n--) {
             const parent = q.slice(0, n);
             const cachedParent = _cacheGet(parent);
             if (!cachedParent) continue;
