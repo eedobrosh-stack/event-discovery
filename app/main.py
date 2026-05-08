@@ -716,31 +716,38 @@ async def lifespan(app: FastAPI):
         id="discover_venues",
         replace_existing=True,
     )
+    # llm_discover_sources — Cadence B. Daily Brave-Search-driven per-city
+    # discovery scan, capped at 10 cities per fire. With ~30 priority
+    # cities and LRU ordering, each city gets re-scanned every ~3 days.
+    # Cost: 4 queries × 10 cities × 30 days ≈ 1,200 Brave calls/month,
+    # comfortably inside the free $5 monthly credit (~1,000 queries).
+    # The reserved-domain filter (176c619) plus the in-prompt exclusion
+    # list keep the LLM classifier from wasting candidate slots on
+    # aggregators we already cover via hand-coded collectors.
+    #
+    # Scheduled BEFORE Cadence A within each daily cycle so the new
+    # trial pool gets exercised by extraction the same night, instead
+    # of having to wait an extra 24h. Pre-Brave the order was reversed,
+    # which meant the first night after every redeploy effectively
+    # skipped extraction on freshly discovered sources (observed
+    # 2026-05-08).
+    scheduler.add_job(
+        llm_discover_sources_job,
+        IntervalTrigger(days=1, start_date=_t + _td(minutes=210)),
+        id="llm_discover_sources",
+        replace_existing=True,
+    )
     # llm_extract_recurring — Cadence A of Route 1. Re-scans every active
     # LLMSource (state in trial/recurring) on a 24h cycle, capped at 20
     # sources per fire so we never burst Gemini's quota or memory.
-    # Slot it at +210min — well after the heavy enrichment chain ends
-    # (enrich_youtube finishes by ~+125min, discover_venues at +185min)
-    # and the _heavy_job_lock further guarantees serialization.
+    # Slot at +240min — 30 min after Cadence B so the trial pool is
+    # fresh, and well after the heavy enrichment chain ends
+    # (enrich_youtube finishes by ~+125min, discover_venues at +185min).
+    # The _heavy_job_lock further guarantees serialization with B.
     scheduler.add_job(
         llm_extract_recurring_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=210)),
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=240)),
         id="llm_extract_recurring",
-        replace_existing=True,
-    )
-    # llm_discover_sources — Cadence B. Daily grounded-search per-city
-    # discovery scan, capped at 10 cities per fire. With ~30 priority
-    # cities and LRU ordering, each city gets re-scanned every ~3 days.
-    # Cost: 10 × ~$0.005/city/day = ~$1.50/mo on flash. The reserved-
-    # domain filter (176c619) keeps Gemini from re-suggesting big
-    # aggregators we already cover, so the daily run yields novel
-    # candidates instead of repeats. Slot at +240min after boot —
-    # well after extraction (+210min) and the _heavy_job_lock keeps
-    # them serialized.
-    scheduler.add_job(
-        llm_discover_sources_job,
-        IntervalTrigger(days=1, start_date=_t + _td(minutes=240)),
-        id="llm_discover_sources",
         replace_existing=True,
     )
     scheduler.add_job(
