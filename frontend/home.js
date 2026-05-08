@@ -49,6 +49,28 @@ function setupTypeAutocomplete() {
     let debounceTimer = null;
     let suggestController = null;  // AbortController for the in-flight /api/suggestions fetch
 
+    // Client-side response cache (mirrors app.js). Re-typed queries
+    // return instantly with no network round-trip.
+    const suggestionsCache = new Map();
+    const SUGGESTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+    const SUGGESTIONS_CACHE_MAX = 100;
+    function _cacheGet(q) {
+        const e = suggestionsCache.get(q);
+        if (!e) return null;
+        if (Date.now() - e.ts > SUGGESTIONS_CACHE_TTL_MS) {
+            suggestionsCache.delete(q);
+            return null;
+        }
+        return e.data;
+    }
+    function _cacheSet(q, data) {
+        suggestionsCache.set(q, { data, ts: Date.now() });
+        if (suggestionsCache.size > SUGGESTIONS_CACHE_MAX) {
+            const oldest = suggestionsCache.keys().next().value;
+            suggestionsCache.delete(oldest);
+        }
+    }
+
     function showSuggestions(items) {
         if (!items.length) { list.hidden = true; return; }
         activeIdx = -1;
@@ -101,6 +123,14 @@ function setupTypeAutocomplete() {
             suggestController = null;
         }
         if (q.length < 2) { list.hidden = true; return; }
+
+        // Cache hit — render instantly, skip the debounce + network round-trip.
+        const cached = _cacheGet(q);
+        if (cached) {
+            showSuggestions(cached);
+            return;
+        }
+
         debounceTimer = setTimeout(async () => {
             suggestController = new AbortController();
             const signal = suggestController.signal;
@@ -109,7 +139,9 @@ function setupTypeAutocomplete() {
                     `/api/suggestions?q=${encodeURIComponent(q)}`,
                     { signal },
                 );
-                showSuggestions(await resp.json());
+                const items = await resp.json();
+                _cacheSet(q, items);
+                showSuggestions(items);
             } catch (err) {
                 // AbortError = a newer keystroke superseded this one; ignore.
                 if (err && err.name !== "AbortError") {

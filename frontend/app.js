@@ -145,6 +145,31 @@ function setupTypeAutocomplete() {
     let debounceTimer = null;
     let suggestController = null;  // AbortController for the in-flight /api/suggestions fetch
 
+    // Client-side response cache. Re-typed queries (e.g. user types
+    // "ja" → "jaz" → backspaces to "ja" again) return instantly with
+    // no network. TTL matches the server cache (5 min) so we don't
+    // serve stale results across long-lived sessions.
+    const suggestionsCache = new Map();   // q → {data, ts}
+    const SUGGESTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+    const SUGGESTIONS_CACHE_MAX = 100;
+    function _cacheGet(q) {
+        const e = suggestionsCache.get(q);
+        if (!e) return null;
+        if (Date.now() - e.ts > SUGGESTIONS_CACHE_TTL_MS) {
+            suggestionsCache.delete(q);
+            return null;
+        }
+        return e.data;
+    }
+    function _cacheSet(q, data) {
+        suggestionsCache.set(q, { data, ts: Date.now() });
+        if (suggestionsCache.size > SUGGESTIONS_CACHE_MAX) {
+            // Drop oldest insertion (Map preserves insertion order).
+            const oldest = suggestionsCache.keys().next().value;
+            suggestionsCache.delete(oldest);
+        }
+    }
+
     renderTypeChips = function() { renderChips(); };
 
     function renderChips() {
@@ -226,6 +251,14 @@ function setupTypeAutocomplete() {
             suggestController = null;
         }
         if (q.length < 2) { list.hidden = true; return; }
+
+        // Cache hit — render instantly, skip the debounce + network round-trip.
+        const cached = _cacheGet(q);
+        if (cached) {
+            showSuggestions(cached);
+            return;
+        }
+
         debounceTimer = setTimeout(async () => {
             suggestController = new AbortController();
             const signal = suggestController.signal;
@@ -235,6 +268,7 @@ function setupTypeAutocomplete() {
                     { signal },
                 );
                 const items = await resp.json();
+                _cacheSet(q, items);
                 showSuggestions(items);
             } catch (err) {
                 // AbortError = a newer keystroke superseded this one; ignore.

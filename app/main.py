@@ -694,6 +694,23 @@ async def lifespan(app: FastAPI):
             _log.info("Metro areas cache warmed")
         except Exception as e:
             _log.warning(f"Cache warm failed: {e}")
+
+        # Warm the suggestions index too — first user keystroke on a
+        # fresh boot otherwise pays the ~2s build cost. Imports lazily so
+        # the suggestions module isn't loaded at app-import time.
+        try:
+            from app.api._suggestions_index import warm_index
+            from app.database import SessionLocal
+            def _warm():
+                db = SessionLocal()
+                try:
+                    warm_index(db)
+                finally:
+                    db.close()
+            await asyncio.get_event_loop().run_in_executor(None, _warm)
+            _log.info("Suggestions index warmed")
+        except Exception as e:
+            _log.warning(f"Suggestions index warm failed: {e}")
     asyncio.create_task(_deferred_startup())
 
     # Schedule jobs
