@@ -192,13 +192,28 @@ function setupCityAutocomplete() {
             return n.includes(q) || `${n} state`.includes(q);
         }).slice(0, 3);
 
-        const cityMatches = allCities
-            .filter(c => formatCityLabel(c).toLowerCase().includes(q))
+        // Cities split into two buckets:
+        //   • exact (name starts with the query) — promoted above
+        //     metros so a literal city hit isn't hidden by the
+        //     parent metro group ("tel av" → Tel Aviv before Gush Dan).
+        //   • other (substring matches further down the label) — stay
+        //     in the normal cascade slot.
+        const cityAll = allCities.filter(c =>
+            formatCityLabel(c).toLowerCase().includes(q)
+        );
+        const cityExact = cityAll
+            .filter(c => c.name.toLowerCase().startsWith(q))
+            .slice(0, 3)
+            .map(c => ({ ...c, label: formatCityLabel(c) }));
+        const exactSet = new Set(cityExact.map(c => c.id));
+        const cityOther = cityAll
+            .filter(c => !exactSet.has(c.id))
             .slice(0, 5)
             .map(c => ({ ...c, label: formatCityLabel(c) }));
 
-        // Order: Metro → Country → State → City (matches results page).
-        return [...metroMatches, ...countryMatches, ...stateMatches, ...cityMatches];
+        // Order: ExactCity → Metro → Country → State → OtherCity.
+        return [...cityExact, ...metroMatches, ...countryMatches,
+                ...stateMatches, ...cityOther];
     }
 
     clearBtn.addEventListener("click", () => {

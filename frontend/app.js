@@ -555,16 +555,34 @@ function setupCityAutocomplete() {
 
         // Cities: match against the user-facing label (so "New York City"
         // matches the disambiguated form, and "California State" doesn't
-        // accidentally match a city's qualifier).
-        const cityMatches = allCities.filter(c =>
+        // accidentally match a city's qualifier). We then split into
+        // two buckets:
+        //   • cityMatchesExact — name starts with the query. These are
+        //     direct hits ("tel av" → Tel Aviv) and beat the metro
+        //     grouping that contains them ("Gush Dan (Tel Aviv Metro)").
+        //   • cityMatchesOther — substring matches further down the
+        //     label (country, state suffix, mid-name). Stay in the
+        //     normal cascade slot.
+        const cityMatchesAll = allCities.filter(c =>
             formatCityLabel(c).toLowerCase().includes(q)
-        ).slice(0, 6);
+        );
+        const cityMatchesExact = cityMatchesAll
+            .filter(c => c.name.toLowerCase().startsWith(q))
+            .slice(0, 3);
+        const exactSet = new Set(cityMatchesExact);
+        const cityMatchesOther = cityMatchesAll
+            .filter(c => !exactSet.has(c))
+            .slice(0, 6);
 
-        // Order: Global → Metros → Countries → States → Cities. States
-        // sit between countries and cities — coarser than a city, finer
-        // than a country.
-        const matches = [GLOBAL_CITY, ...metroMatches, ...countryMatches,
-                         ...stateMatches, ...cityMatches];
+        // Order:
+        //   Global → Direct City Hits → Metros → Countries → States →
+        //   Other Cities.
+        // The direct-hit slot keeps the explicit city the user typed
+        // visible at the top while preserving the cascade for all the
+        // less-specific matches below.
+        const matches = [GLOBAL_CITY, ...cityMatchesExact,
+                         ...metroMatches, ...countryMatches,
+                         ...stateMatches, ...cityMatchesOther];
 
         renderCityList(matches);
     });
