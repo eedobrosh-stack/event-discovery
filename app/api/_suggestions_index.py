@@ -203,13 +203,48 @@ def build_index(db: Session) -> SuggestionsIndex:
 
     # Artists — distinct values from events. Past + future, since artist
     # popularity isn't time-bound for autocomplete suggestion purposes.
+    #
+    # Two-source UNION:
+    #   1. Event.artist_name (the canonical column).
+    #   2. Event.name from sources known to put the performer's name
+    #      there with an empty artist_name — chiefly mevalim (Hebrew
+    #      stand-up / shows) and techconf (conference speakers). Acts
+    #      as a safety net when the collector hasn't populated
+    #      artist_name yet (older rows pre-backfill, future collectors
+    #      that miss the convention). De-duplicated case-insensitively
+    #      with the canonical set so a name appearing in both columns
+    #      shows up exactly once.
+    seen_lower: set[str] = set()
     rows = db.execute(text("""
         SELECT DISTINCT artist_name FROM events
         WHERE artist_name IS NOT NULL AND artist_name != ''
     """)).fetchall()
     for r in rows:
         if r[0]:
-            item = (r[0].lower(), r[0])
+            low = r[0].lower()
+            if low in seen_lower:
+                continue
+            seen_lower.add(low)
+            item = (low, r[0])
+            idx.artists.append(item)
+            idx.artists_bucket.add(item)
+
+    # Safety-net branch — keep restricted to known performer-named
+    # sources so we don't accidentally promote conference-event
+    # titles or generic listing rows into the Artist surface.
+    rows = db.execute(text("""
+        SELECT DISTINCT name FROM events
+        WHERE name IS NOT NULL AND name != ''
+          AND (artist_name IS NULL OR artist_name = '')
+          AND scrape_source IN ('mevalim', 'techconf')
+    """)).fetchall()
+    for r in rows:
+        if r[0]:
+            low = r[0].lower()
+            if low in seen_lower:
+                continue
+            seen_lower.add(low)
+            item = (low, r[0])
             idx.artists.append(item)
             idx.artists_bucket.add(item)
 

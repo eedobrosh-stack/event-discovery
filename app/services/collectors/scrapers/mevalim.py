@@ -428,6 +428,18 @@ def _parse_event(item: dict, page_url: str, page_h1: str = "") -> Optional[RawEv
 
     return RawEvent(
         name=name,
+        # Mirror the event title as artist_name. mevalim is a stand-up /
+        # show aggregator — each row's `name` is overwhelmingly the
+        # performer's name (e.g. "שחר חסון", "מאיה וולף"). Without
+        # this mirror, the artist_exact filter in /api/events misses
+        # mevalim shows when a user clicks an Artist chip, because the
+        # filter only looks at Event.artist_name. Populating both
+        # columns the same way keeps the autocomplete chip → events
+        # path coherent. Tribute / festival names (e.g. "תזמורת
+        # הבימה") still get listed as artists, which is the right
+        # call: clicking them returns the events that ARE for that
+        # entity.
+        artist_name=name,
         start_date=start_date_,
         start_time=start_time_,
         end_date=end_date_,

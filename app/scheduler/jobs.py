@@ -1357,11 +1357,19 @@ async def collect_mevalim_job():
                         existing.purchase_link = raw.purchase_link
                         existing.venue_id     = venue.id
                         existing.venue_name   = raw.venue_name
+                        # Backfill artist_name on every refresh — older
+                        # rows ingested before the mevalim collector
+                        # populated this field will gradually get fixed
+                        # as the daily job re-touches them, with no
+                        # separate migration needed.
+                        if raw.artist_name and not existing.artist_name:
+                            existing.artist_name = raw.artist_name
                         updated += 1
                         continue
 
                     new_ev = Event(
                         name=raw.name,
+                        artist_name=raw.artist_name,
                         start_date=raw.start_date,
                         start_time=raw.start_time,
                         end_date=raw.end_date,
