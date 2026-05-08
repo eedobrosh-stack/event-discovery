@@ -65,8 +65,8 @@ def word_start_ilike(col, term: str):
     )
 
 
-def name_match_ilike(col, term: str):
-    """Length-aware match: word-start for long terms, whole-word for short.
+def _single_word_match(col, term: str):
+    """Length-aware single-word match.
 
     Long terms (≥4 chars) use word-start so plurals/inflections still hit.
     Short terms (<4 chars) use strict whole-word so 2-3 char queries don't
@@ -75,6 +75,36 @@ def name_match_ilike(col, term: str):
     if len(term) >= _WHOLE_WORD_BELOW:
         return word_start_ilike(col, term)
     return word_boundary_ilike(col, term)
+
+
+def name_match_ilike(col, term: str):
+    """Length-aware, word-aware match.
+
+    Single-word term: word-start for long terms, whole-word for short
+    (see _single_word_match).
+
+    Multi-word term: every word in the query must hit, in any order. Each
+    word matches as a word-start (regardless of its length) — the
+    co-required other words act as the noise filter, so we don't need
+    the strict whole-word rule on short tokens. This is what makes
+    "Tel A" match "Hapoel IBI Tel Aviv" (both "Tel" and "A" hit
+    word-starts in the column) while still filtering out unrelated
+    rows that happen to contain just one of the two tokens.
+    """
+    parts = term.split()
+    if not parts:
+        # Empty input — no filter; safe truthy expression so SQL stays
+        # well-formed when this is OR'd / AND'd with other predicates.
+        return col.ilike("%")
+    if len(parts) == 1:
+        return _single_word_match(col, parts[0])
+    from sqlalchemy import and_
+    # Per-word word-start match, AND'd. Order-independent by construction
+    # (AND is commutative). Short tokens use the same word-start rule as
+    # long ones in this multi-word path — the other tokens contain the
+    # noise, so a 1-2 char token like "A" won't flood here even though it
+    # would alone.
+    return and_(*(word_start_ilike(col, p) for p in parts))
 
 
 def resolve_genre_artist_names(db: Session, genres: Optional[str]) -> Optional[list[str]]:

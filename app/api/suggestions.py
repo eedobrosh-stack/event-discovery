@@ -161,42 +161,63 @@ def get_suggestions(
             for t in sorted(seen.values())
         ][:PER_TYPE]
 
-    # 3b. Genres — match the query against parent OR sub-genre names, but
-    # always present the *parent* as the suggestion. Users never see the
-    # 92-row sub-genre list directly: typing "techno" surfaces "Electronic",
-    # typing "indie" surfaces "Rock"/"Pop", typing "rock" surfaces "Rock".
+    # 3b. Genres — match the query against parent name. Direct parent hits
+    # become Genre chips. If there's no parent hit but the query matches
+    # one or more sub-genre names, those become Sub-genre chips.
     #
-    # Two-pass ranking so a direct parent hit isn't drowned out by accidental
-    # sub-genre word matches. If the query matches any parent name directly,
-    # use those parents only — otherwise "rock" would pull in Country (because
-    # of the Country Rock sub-genre), polluting the obvious case. Only when
-    # there is no parent hit do we fan out across sub-genre matches.
+    # Sub-genre chips are a thin discoverability layer: typing "techno"
+    # surfaces a `[Techno (Sub-genre)]` chip whose downstream filter value
+    # is the *parent* ("Electronic"), so clicking it lands on the parent's
+    # full results page (Flavor 1 — sub-genre is a friendly entry point
+    # to the parent filter). The label tells the user what they typed,
+    # the value drives the filter.
+    #
+    # The parent-vs-sub split avoids flooding: when the query directly
+    # matches a parent name (e.g. "rock"), we don't ALSO surface every
+    # sub-genre that happens to contain that word ("Hard Rock", "Punk
+    # Rock", "Pop Rock", …) — those would crowd out other categories.
     parent_hit_rows = (
         db.query(GenreTaxonomy.parent_genre)
         .filter(name_match_ilike(GenreTaxonomy.parent_genre, q_stripped))
         .distinct()
         .all()
     )
+
+    genres_results: list = []
+    sub_genres_results: list = []
+
     if parent_hit_rows:
-        genre_parents = [r[0] for r in parent_hit_rows if r[0]]
+        seen_parents: set[str] = set()
+        for (parent,) in parent_hit_rows:
+            if parent and parent not in seen_parents:
+                seen_parents.add(parent)
+                genres_results.append({
+                    "kind": "genre", "value": parent, "label": parent,
+                    "badge": "Genre",
+                })
+        genres_results = genres_results[:PER_TYPE]
     else:
         sub_hit_rows = (
-            db.query(GenreTaxonomy.parent_genre)
+            db.query(GenreTaxonomy.sub_genre, GenreTaxonomy.parent_genre)
             .filter(name_match_ilike(GenreTaxonomy.sub_genre, q_stripped))
             .distinct()
             .all()
         )
-        genre_parents = [r[0] for r in sub_hit_rows if r[0]]
-
-    seen_parents: set[str] = set()
-    genres_results: list = []
-    for parent in genre_parents:
-        if parent not in seen_parents:
-            seen_parents.add(parent)
-            genres_results.append({
-                "kind": "genre", "value": parent, "label": parent, "badge": "Genre",
+        seen_subs: set[str] = set()
+        for sub, parent in sub_hit_rows:
+            if not (sub and parent) or sub in seen_subs:
+                continue
+            seen_subs.add(sub)
+            sub_genres_results.append({
+                # kind=genre so downstream search_filters apply the
+                # existing parent-genre expansion. value is the parent
+                # (Flavor 1 — sub-genre chip filters to parent's full set).
+                "kind": "genre",
+                "value": parent,
+                "label": sub,
+                "badge": "Sub-genre",
             })
-    genres_results = genres_results[:PER_TYPE]
+        sub_genres_results = sub_genres_results[:PER_TYPE]
 
     # 4. Artists — word-aware match on artist_name, no date filtering for speed.
     # Rank by exact > prefix > word-start so "Sting" beats "Stingrays" in the
@@ -283,20 +304,32 @@ def get_suggestions(
         and " - " not in name
     ][:PER_TYPE]
 
-    # Order: artists first (the dominant intent for music-driven searches —
-    # "stin" → user almost always means Sting), then sports teams (won't
-    # collide with artists since teams aren't named "Sting"), then literal
-    # event-name hits, then everything else. Cities are deliberately NOT
-    # surfaced here — the dedicated Location box on both home and results
-    # pages owns city navigation; mixing cities into the type/performer
-    # suggestions just leaks irrelevant rows like "Blowing Rock" when a user
-    # types "rock".
-    # Order: artists first (the dominant intent for music-driven searches),
-    # then genres (tolerant fallback when the user typed a sub-genre or a
-    # vague genre word), then sports teams, then everything else.
+    # Final ordering — explicit user-facing priority, top to bottom:
+    #   1. Artist / Sport team or player  (artists first within the tie,
+    #      since music-driven searches dominate; "stin" → Sting beats
+    #      any team)
+    #   2. Sub-genre  (typed sub-genre name surfaces specific chip)
+    #   3. Genre      (typed parent name)
+    #   4. Format     (EventType.name — Concert, Stand-Up, Ballet, …)
+    #   5. Category   (EventType.category — Music, Comedy, Theatre, …)
+    #   6. Venue
+    #   7. Event name (literal Event.name — fallback for things that
+    #      don't fit any of the above, e.g. mevalim comedians,
+    #      techconf conferences)
+    #
+    # Cities are deliberately NOT surfaced here — the dedicated Location
+    # box on both home and results pages owns city navigation; mixing
+    # cities into the suggestions just leaks irrelevant rows like
+    # "Blowing Rock" when a user types "rock".
     results = (
-        artists + genres_results + sport_teams + event_results
-        + categories + event_types + venue_results
+        artists                   # 1a
+        + sport_teams             # 1b
+        + sub_genres_results      # 2
+        + genres_results          # 3
+        + event_types             # 4 (Format)
+        + categories              # 5 (Category)
+        + venue_results           # 6
+        + event_results           # 7
     )[:limit]
     _cache_set(q, results)
     return results
