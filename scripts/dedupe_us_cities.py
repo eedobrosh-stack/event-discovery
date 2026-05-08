@@ -80,18 +80,71 @@ def _canonicalise_name(s: str | None) -> str:
     return s
 
 
+def _trim_lower(s: str | None) -> str:
+    return (s or "").strip().lower()
+
+
+def _is_whitespace_dupe(a: dict, b: dict) -> bool:
+    """True when two rows have the same trimmed-lowercase name AND
+    compatible state attribution (both null OR both same value).
+
+    Catches the "Pittsburgh" / "Pittsburgh " (trailing space) and
+    " Des Moines" / "Des Moines" (leading space) cases. Pure name
+    duplicates differing only in whitespace.
+    """
+    if _trim_lower(a["name"]) != _trim_lower(b["name"]):
+        return False
+    a_st = _trim_lower(a["state"])
+    b_st = _trim_lower(b["state"])
+    return a_st == b_st
+
+
+def _is_city_suffix_dupe(a: dict, b: dict) -> bool:
+    """True when one row's trimmed name = "<X>" and the other's =
+    "<X> City", AND <X> is a US state name (so the " City" is the
+    state-disambiguation form), AND at least one side has a state
+    value.
+
+    Catches the New York pattern (one side state=NY, other state=null)
+    AND the Washington-DC pattern (both sides state=DC). The "at
+    least one has state" guard keeps us from folding pairs like
+    "Kansas City" / "Kansas" when neither side has a state — those
+    are likely bad-data shapes that need human judgment, not an
+    auto-merge.
+    """
+    a_name = _trim_lower(a["name"])
+    b_name = _trim_lower(b["name"])
+    short_long_pairs = [(a_name, b_name), (b_name, a_name)]
+    for n_short, n_long in short_long_pairs:
+        if n_long == n_short + " city" and n_short.title() in US_STATE_NAME_SET:
+            # State-name guard: prefix must really be a state.
+            if a["state"] or b["state"]:
+                return True
+    return False
+
+
 def find_duplicate_pairs(db) -> list[tuple[dict, dict]]:
     """Return [(canonical, duplicate), …] for US-city dupes.
 
-    Pair criteria (BOTH must hold):
-      • Same canonicalised name (see _canonicalise_name).
-      • country = 'United States'.
-      • Exactly one of the two rows has a state value; the other is
-        NULL/empty.
+    Strategy:
+      1. Group US cities by canonicalised name (state-disambiguation-
+         aware — see _canonicalise_name).
+      2. Inside each multi-row group, rank by (venues + events) desc;
+         the heaviest row is canonical.
+      3. For each non-canonical row, fold IF it matches the canonical
+         under one of these safe rules:
+           • whitespace-only dupe (same trimmed name)
+           • NY/Washington-style " City" suffix where the prefix is a
+             state name AND at least one side carries a state value.
+      4. Otherwise log a warning and leave both rows alone.
 
-    The "with state" row is canonical. Venue counts are loaded so
-    callers can sanity-check (canonical should generally hold the
-    bulk of the data).
+    Counter-examples kept safe by these rules:
+      • Lincoln, NE  vs  Lincoln City, IN — different canonical
+        groups (Lincoln isn't a state name, so " City" isn't stripped)
+      • Kansas City  vs  Kansas (no state) — same group, but neither
+        side has a state, so the suffix rule doesn't fire.
+      • Washington, DC  vs  Washington City, DC — same group, both
+        have DC state, suffix rule fires → fold.
     """
     rows = db.execute(text("""
         SELECT c.id, c.name, c.state,
@@ -119,18 +172,29 @@ def find_duplicate_pairs(db) -> list[tuple[dict, dict]]:
     for key, group in by_key.items():
         if len(group) < 2:
             continue
-        with_state = [g for g in group if g["state"]]
-        without_state = [g for g in group if not g["state"]]
-        if len(with_state) != 1 or len(without_state) != 1:
-            # Skip more complex shapes (multiple has-state rows, etc.)
-            # — those need a human eye, log them so we don't silently
-            # ignore.
+        # Canonical = heaviest row by (venues + events). When tied,
+        # prefer the row that already carries a state value.
+        ranked = sorted(
+            group,
+            key=lambda g: (-(g["venues"] + g["events"]), 0 if g["state"] else 1),
+        )
+        canonical = ranked[0]
+        skipped: list[dict] = []
+        for other in ranked[1:]:
+            if _is_whitespace_dupe(canonical, other):
+                pairs.append((canonical, other))
+            elif _is_city_suffix_dupe(canonical, other):
+                pairs.append((canonical, other))
+            else:
+                skipped.append(other)
+        if skipped:
+            extra = ", ".join(f"{o['name']!r}(id={o['id']}, "
+                              f"v={o['venues']}/e={o['events']})"
+                              for o in skipped)
             log.warning(
-                f"skip group {key!r} — non-trivial shape: "
-                f"{len(with_state)} with-state, {len(without_state)} without"
+                f"skip group {key!r} — couldn't fold canonical "
+                f"{canonical['name']!r}(id={canonical['id']}) with: {extra}"
             )
-            continue
-        pairs.append((with_state[0], without_state[0]))
     return pairs
 
 
