@@ -55,6 +55,13 @@ def main() -> int:
                 "secondary_1": r.secondary_1,
                 "secondary_2": r.secondary_2,
                 "confidence": r.confidence,
+                # Preserve source so downstream loaders can distinguish
+                # between gemini-classified, performer-bridge-derived,
+                # and (future) brave-augmented rows. Lever C will need
+                # to target only the bridge/UNKNOWN bucket without
+                # re-classifying anything that came from a strong
+                # gemini high-confidence pass.
+                "source": r.source,
             }
             for r in db.query(ArtistGenre).order_by(ArtistGenre.normalized_name).all()
         ]

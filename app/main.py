@@ -230,32 +230,61 @@ def _seed_artist_classifications():
             _log.info(f"_seed_artist_classifications: +{len(new_taxonomy)} taxonomy rows")
 
         # ── artists ─────────────────────────────────────────────────────
-        # Fast-path: if counts match exactly, nothing to do. Saves loading
-        # 15K normalized_names into a set on every boot once steady state.
-        artist_count = db.query(ArtistGenre).count()
-        if artist_count >= len(artists):
-            _log.info(
-                f"_seed_artist_classifications: bundle v{bundle_version} "
-                f"already applied ({artist_count} artists in DB ≥ {len(artists)} in bundle)"
-            )
-            return
-
-        existing_norms = {
-            row[0] for row in db.query(ArtistGenre.normalized_name).all()
+        # Two operations on each boot:
+        #   1. INSERT bundle rows we've never seen.
+        #   2. UPGRADE existing rows whose primary_genre is NULL or
+        #      'UNKNOWN' when the bundle has a real classification —
+        #      lets a later iteration of improve_genre_coverage.py /
+        #      Brave-augmented re-classify rescue rows that prod
+        #      previously had no signal for.
+        # We never DOWNGRADE: a known classification on disk always
+        # wins over an UNKNOWN bundle entry, so a partial-bundle
+        # accidentally redacting good data is impossible.
+        existing_rows = {
+            row[0]: row[1]
+            for row in db.query(ArtistGenre.normalized_name, ArtistGenre.primary_genre).all()
         }
-        new_artists = [
-            ArtistGenre(
-                artist_name=a["artist_name"],
-                normalized_name=a["normalized_name"],
-                primary_genre=a.get("primary_genre"),
-                secondary_1=a.get("secondary_1"),
-                secondary_2=a.get("secondary_2"),
-                confidence=a.get("confidence"),
-                source="gemini",
-            )
-            for a in artists
-            if a["normalized_name"] not in existing_norms
-        ]
+
+        new_artists: list[ArtistGenre] = []
+        upgrade_mappings: list[dict] = []
+        UPGRADABLE = {None, "UNKNOWN"}
+
+        for a in artists:
+            norm = a["normalized_name"]
+            bundle_primary = a.get("primary_genre")
+            existing_primary = existing_rows.get(norm, "__missing__")
+
+            if existing_primary == "__missing__":
+                # New row — straight insert.
+                new_artists.append(ArtistGenre(
+                    artist_name=a["artist_name"],
+                    normalized_name=norm,
+                    primary_genre=bundle_primary,
+                    secondary_1=a.get("secondary_1"),
+                    secondary_2=a.get("secondary_2"),
+                    confidence=a.get("confidence"),
+                    # Preserve bundle source if present (post-2026-05-09);
+                    # default 'gemini' for the legacy bundle that didn't
+                    # round-trip the field.
+                    source=a.get("source") or "gemini",
+                ))
+                continue
+
+            # Existing row — only upgrade NULL/UNKNOWN to a real label.
+            if existing_primary in UPGRADABLE and bundle_primary not in UPGRADABLE:
+                upgrade_mappings.append({
+                    # ArtistGenre doesn't have a stable PK other than id,
+                    # so we update by the unique normalized_name. SQLA's
+                    # bulk_update_mappings needs the PK; emit one UPDATE
+                    # statement per row via a where=normalized_name path.
+                    "normalized_name": norm,
+                    "primary_genre": bundle_primary,
+                    "secondary_1": a.get("secondary_1"),
+                    "secondary_2": a.get("secondary_2"),
+                    "confidence": a.get("confidence"),
+                    "source": a.get("source") or "gemini",
+                })
+
         if new_artists:
             # bulk_save_objects skips per-row identity-map cost; ~10× faster
             # than individual db.add() loops at this scale.
@@ -264,6 +293,43 @@ def _seed_artist_classifications():
             _log.info(
                 f"_seed_artist_classifications: +{len(new_artists):,} artist rows "
                 f"from bundle v{bundle_version}"
+            )
+
+        if upgrade_mappings:
+            # bulk_update_mappings requires the table's primary key column;
+            # ArtistGenre's PK is `id`, so use a per-batch UPDATE keyed on
+            # normalized_name. Done in a single pass via Core for speed at
+            # 15K rows (well under 1s in practice).
+            from sqlalchemy import update
+            stmt = (
+                update(ArtistGenre)
+                .where(ArtistGenre.normalized_name == None)  # noqa: E711 — placeholder, replaced below
+            )
+            # SQLA's `update().values()` doesn't support per-row data in
+            # one call; iterate but keep it short. The loop is bounded by
+            # how many UNKNOWNs we have (low triple digits typically).
+            for m in upgrade_mappings:
+                db.execute(
+                    update(ArtistGenre)
+                    .where(ArtistGenre.normalized_name == m["normalized_name"])
+                    .values(
+                        primary_genre=m["primary_genre"],
+                        secondary_1=m["secondary_1"],
+                        secondary_2=m["secondary_2"],
+                        confidence=m["confidence"],
+                        source=m["source"],
+                    )
+                )
+            db.commit()
+            _log.info(
+                f"_seed_artist_classifications: upgraded {len(upgrade_mappings):,} "
+                f"NULL/UNKNOWN rows from bundle v{bundle_version}"
+            )
+
+        if not new_artists and not upgrade_mappings:
+            _log.info(
+                f"_seed_artist_classifications: bundle v{bundle_version} "
+                f"applied — no inserts, no upgrades"
             )
     except Exception as e:
         _log.warning(f"_seed_artist_classifications failed: {e}")
