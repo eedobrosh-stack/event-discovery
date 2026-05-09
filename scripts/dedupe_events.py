@@ -21,10 +21,12 @@ when ALL of these hold:
   1. Same ``start_date``.
   2. Same non-null ``venue_id``. (Events with null venue can't be
      reliably cross-deduped on venue identity; they're skipped.)
-  3. Same identifier:
-       - if both have non-null ``artist_name``: ``LOWER(strip(artist_name))`` matches
-       - else if both have null/empty ``artist_name``: ``LOWER(strip(name))`` matches
-       - mixed (one has artist_name, other doesn't): NOT matched
+  3. Same primary identifier — ``LOWER(strip(coalesce(artist_name, name)))``.
+     Different collectors stash the title in different fields (Smarticket
+     leaves ``artist_name`` null and puts the title in ``name``; mevalim
+     duplicates the title into both). The identifier collapses to one
+     string so the title doesn't need to live in the same column on
+     each side.
   4. Different ``scrape_source`` (so we don't fight ``ix_events_dedup``).
   5. Time check — if BOTH have non-null ``start_time`` and they differ,
      DO NOT match (different shows on the same day, e.g. matinee +
@@ -117,18 +119,21 @@ def _norm(s: str | None) -> str:
     return re.sub(r"[,.;:!?]+$", "", s).strip()
 
 
-def _identifier(e: Event) -> tuple[str, str] | None:
-    """Return (kind, key) where ``kind`` is "artist" or "name" and
-    ``key`` is the normalized comparison string. Two events match when
-    their identifiers compare EQUAL — same kind AND same key. Returns
-    None when neither artist_name nor name yields a usable key (both
-    empty)."""
+def _identifier(e: Event) -> str | None:
+    """Primary normalized identifier for equality comparison. Uses
+    ``artist_name`` when set, falling back to ``name``. Different
+    collectors store the same show's title in different fields:
+    Smarticket leaves ``artist_name`` null and puts the title in
+    ``name``; mevalim duplicates the title into both fields. The
+    identifier collapses both shapes to one string so cross-source
+    matches don't require the title to live in the same column on
+    each row. Returns None when both fields are empty."""
     a = _norm(e.artist_name)
     if a:
-        return ("artist", a)
+        return a
     n = _norm(e.name)
     if n:
-        return ("name", n)
+        return n
     return None
 
 
