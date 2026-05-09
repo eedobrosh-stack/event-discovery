@@ -163,6 +163,73 @@ def _populated_count(v: dict) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Sub-venue (hall) detection
+# ──────────────────────────────────────────────────────────────────────
+# Two venue names that look almost identical but differ in a hall
+# qualifier represent distinct rooms inside one building, NOT a
+# duplicate. Examples we observed in Tel Aviv:
+#   "בית ציוני אמריקה תל אביב" (the building, 140 events) vs
+#   "בית ציוני אמריקה (אולם מרתה), תל אביב" (Marta Hall, 14 events)
+#   "תיאטרון הקאמרי תל אביב" vs "תיאטרון הקאמרי - אולם 1 תל אביב"
+#   "היכל התרבות, אולם צוקר" (Tzucker Hall) vs
+#   "היכל התרבות (אולם ע"ש לאוי)" (Lewy Hall — DIFFERENT room)
+#
+# The guard extracts a "hall identifier" set from each name. Two
+# venues are considered different sub-rooms when:
+#   * one has any identifier and the other has none, or
+#   * both have identifiers and the sets don't overlap.
+# In either case we VETO the heuristic merge regardless of other
+# signals. Forced merges via --merge-pair bypass this guard.
+HALL_KEYWORDS = [
+    "אולם", "אודיטוריום", "במה",         # he: hall, auditorium, stage
+    "Hall", "Auditorium", "Stage", "Studio",
+]
+_HALL_KW_RE = re.compile(
+    r"(?:" + "|".join(re.escape(k) for k in HALL_KEYWORDS) + r")"
+    r"[\s\-]*(?:ע\"ש\s+|של\s+)?"
+    r"([\w\"'\-]+)",
+    re.IGNORECASE,
+)
+_PARENS_RE = re.compile(r"\(([^)]+)\)")
+_HALL_PREFIX_STRIP = re.compile(r'^(?:אולם|Hall|Auditorium|Studio|Stage|ע\"ש|של)\s+', re.IGNORECASE)
+
+
+def _norm_hall_token(s: str) -> str:
+    s = s.strip()
+    # Strip leading hall-prefix words (so "אולם מרתה" inside parens
+    # collapses to "מרתה" — matches against bare "מרתה" outside parens).
+    s = _HALL_PREFIX_STRIP.sub("", s).strip()
+    s = re.sub(r"[^\w]+", "", s, flags=re.UNICODE)
+    return s.lower()
+
+
+def _extract_hall_ids(name: str | None) -> set[str]:
+    """Tokens that distinguish a sub-room within a building. Empty
+    set ⇒ no hall qualification (refers to the whole venue)."""
+    if not name:
+        return set()
+    out: set[str] = set()
+    for inside in _PARENS_RE.findall(name):
+        tok = _norm_hall_token(inside)
+        if tok:
+            out.add(tok)
+    for m in _HALL_KW_RE.finditer(name):
+        tok = _norm_hall_token(m.group(1))
+        if tok:
+            out.add(tok)
+    return out
+
+
+def _is_sub_venue_distinction(a: str | None, b: str | None) -> bool:
+    """True when ``a`` and ``b`` look like different sub-rooms of one
+    building (or one is the building, the other is a sub-room)."""
+    ha, hb = _extract_hall_ids(a), _extract_hall_ids(b)
+    if ha and hb:
+        return not (ha & hb)         # disjoint sets ⇒ different rooms
+    return bool(ha) != bool(hb)      # exactly one has a hall id ⇒ split
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Detection
 # ──────────────────────────────────────────────────────────────────────
 def _load_venues(db, city_id: int | None) -> list[dict]:
@@ -278,6 +345,13 @@ def _build_clusters(
             for j in range(i + 1, len(group)):
                 a, b = group[i], group[j]
                 pair = (a["id"], b["id"]) if a["id"] < b["id"] else (b["id"], a["id"])
+                # Sub-venue veto — see _is_sub_venue_distinction.
+                # Suppresses cases like "Cameri" vs "Cameri Hall 1" or
+                # "(אולם מרתה)" vs "(אולם מאירהוף)" where a metadata
+                # match is structural (same building) but the names
+                # disambiguate distinct rooms.
+                if _is_sub_venue_distinction(a["name"], b["name"]):
+                    continue
                 cn = cooccur.get(pair, 0)
                 sig = _signals(a, b, cn)
                 if _signal_count(sig) >= 2:
