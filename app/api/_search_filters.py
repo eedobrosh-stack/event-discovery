@@ -228,6 +228,64 @@ def build_genre_format_event_type_subquery(db: Session, genres: Optional[str]):
     )
 
 
+# Venue-name fallback for the Genre filter.
+#
+# Problem: even after the artist-genre and format-fallback matches, events
+# at a venue whose IDENTITY is the genre (e.g. "Shablul Jazz Club", "Comedy
+# Cellar", "Royal Opera House") miss the filter when:
+#   - the artist isn't classified, AND
+#   - the per-event event_type tag is generic ("Concert", "Performance") or
+#     a sibling-genre tag (we observed Hebrew-Shablul events tagged "Pop
+#     Concert" by their collector, even though they're at a jazz club).
+#
+# The venue's name is a strong genre signal that the per-event metadata
+# can drown out. This subquery surfaces events whose venue name contains
+# any of the registered venue-name keywords for the requested parent
+# genre.
+#
+# Conservative keyword list: only genres with unambiguous venue-name
+# vocabulary. "Rock" / "Pop" / "Country" are deliberately omitted — they
+# alias too easily ("Rock Climbing Centre", "Pop-up Theatre", "Country
+# Club"). Hebrew variants included because Israeli venues mix scripts.
+_GENRE_VENUE_NAME_MATCH = {
+    # Latin English form + Hebrew variants (apostrophe / geresh / no-mark)
+    "Jazz":      ["jazz", "ג'אז", "ג׳אז", "גאז"],
+    # Comedy clubs are universally named with the word "comedy"
+    "Comedy":    ["comedy", "סטנד אפ", "סטנדאפ", "קומדי"],
+    # Classical venues are named after the institution form, not "classical"
+    "Classical": ["philharmonic", "opera house", "symphony hall",
+                  "פילהרמונית", "סימפונית", "אופרה"],
+}
+
+
+def build_genre_venue_name_subquery(db: Session, genres: Optional[str]):
+    """Subquery returning event IDs at venues whose ``Venue.name`` contains
+    any keyword registered for the requested parent genres. The third leg
+    of the genre filter; OR'd alongside artist and format matches.
+
+    Returns None if `genres` is empty or no requested genre has a venue
+    keyword set."""
+    if not genres:
+        return None
+    from sqlalchemy import select, func
+    from app.models import Event, Venue
+
+    genre_list = [g.strip() for g in genres.split(",") if g.strip()]
+    keywords: list[str] = []
+    for g in genre_list:
+        keywords.extend(_GENRE_VENUE_NAME_MATCH.get(g, []))
+    if not keywords:
+        return None
+    return (
+        select(Event.id)
+        .join(Venue, Event.venue_id == Venue.id)
+        .where(or_(*[
+            func.lower(Venue.name).like(f"%{kw.lower()}%") for kw in keywords
+        ]))
+        .scalar_subquery()
+    )
+
+
 def build_classified_artists_subquery(db: Session):
     """Subquery returning normalized_name of artists with a non-UNKNOWN
     classification — i.e. artists whose Genre column would NOT be null

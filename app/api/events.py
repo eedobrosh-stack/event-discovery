@@ -11,6 +11,7 @@ from app.api._search_filters import (
     name_match_ilike,
     resolve_genre_artist_names,
     build_genre_format_event_type_subquery,
+    build_genre_venue_name_subquery,
     build_classified_artists_subquery,
 )
 
@@ -73,7 +74,7 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             ))
 
     # Genre filter — chip values are *parent* genres (e.g. "Rock", "Electronic").
-    # Two complementary match paths combined as OR:
+    # Three complementary match paths combined as OR:
     #
     #   1. Artist-genre match (the canonical one).
     #      Parent → sub-genres in genre_taxonomy → artists tagged with any
@@ -88,12 +89,24 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     #      Genre=Jazz — without it, we'd only return the ~2 jazz artists
     #      whose name happens to be classified.
     #
+    #   3. Venue-name match (the venue-identity safety net).
+    #      Events at a venue whose name contains the genre keyword
+    #      (e.g. "Shablul Jazz Club", "Comedy Cellar"). Catches the case
+    #      where the per-event event_type is generic ("Concert") or
+    #      mis-tagged (Hebrew-Shablul events tagged "Pop Concert" by
+    #      their collector). NOT guarded by "artist unclassified" — the
+    #      venue identity is a strong genre signal that should win over
+    #      generic per-event tags. Conservative keyword set in
+    #      _GENRE_VENUE_NAME_MATCH; only well-disambiguated genres
+    #      (Jazz/Comedy/Classical) participate.
+    #
     # Together they give the same recall as a free-text "jazz" search but
     # with the precision of the taxonomy (no Rock Climbing under Rock).
     artist_norms = resolve_genre_artist_names(db, genres)
     if artist_norms is not None:
         from sqlalchemy import and_
         format_subq = build_genre_format_event_type_subquery(db, genres)
+        venue_subq = build_genre_venue_name_subquery(db, genres)
         conditions = []
         if artist_norms:
             conditions.append(
@@ -113,6 +126,14 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 # bug upstream, but it would be very visible here without
                 # this filter. Cheap to enforce; nothing legitimate is lost
                 # since music genres don't apply to sports anyway.
+                Event.sport.is_(None),
+            ))
+        if venue_subq is not None:
+            conditions.append(and_(
+                Event.id.in_(venue_subq),
+                # Same sports guardrail — a "Comedy Cellar" venue could
+                # technically host a sports trivia event tagged with
+                # sport != null. Keep the genre filter clean of those.
                 Event.sport.is_(None),
             ))
         if conditions:
