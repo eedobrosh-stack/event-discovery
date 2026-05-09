@@ -107,13 +107,23 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
         from sqlalchemy import and_
         format_subq = build_genre_format_event_type_subquery(db, genres)
         venue_subq = build_genre_venue_name_subquery(db, genres)
+        # The classified-artists subquery is the gate both fallback
+        # legs use: "fire only when the artist is null or unclassified
+        # — if the artist IS classified, path 1 has already handled
+        # them (correctly when they match the requested genre,
+        # silently when they don't, which is what we want)." Built
+        # once and shared so we don't pay the planning cost twice.
+        classified_subq = (
+            build_classified_artists_subquery(db)
+            if (format_subq is not None or venue_subq is not None)
+            else None
+        )
         conditions = []
         if artist_norms:
             conditions.append(
                 func.lower(Event.artist_name).in_(artist_norms)
             )
         if format_subq is not None:
-            classified_subq = build_classified_artists_subquery(db)
             conditions.append(and_(
                 or_(
                     Event.artist_name.is_(None),
@@ -129,7 +139,22 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 Event.sport.is_(None),
             ))
         if venue_subq is not None:
+            # Precision gate: exclude events whose artist is already
+            # classified into ANY genre. Without this, a non-jazz artist
+            # booked at "Shablul Jazz Club" (Israeli jazz venue that
+            # occasionally hosts pop tributes / classical crossover
+            # nights) would falsely surface under Genre=Jazz purely
+            # because of the venue name. With the gate, classified
+            # artists are routed exclusively through path 1: they
+            # surface ONLY under genres their classification supports.
+            # Unclassified artists and null-artist rows still benefit
+            # from the venue-name signal — that's the recall win the
+            # path was added for.
             conditions.append(and_(
+                or_(
+                    Event.artist_name.is_(None),
+                    func.lower(Event.artist_name).notin_(classified_subq),
+                ),
                 Event.id.in_(venue_subq),
                 # Same sports guardrail — a "Comedy Cellar" venue could
                 # technically host a sports trivia event tagged with
