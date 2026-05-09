@@ -185,10 +185,14 @@ def _load_venues(db, city_id: int | None) -> list[dict]:
 def _cooccurrence_pairs(db, city_id: int | None, min_n: int) -> dict[tuple[int, int], int]:
     """For every ordered pair of venue ids in the same city, count
     events that share ``(start_date, artist_name)`` (artist_name not
-    null/empty). Returns {(a, b): n} with a < b and n ≥ min_n."""
+    null/empty). Returns {(a, b): n} with a < b and n ≥ min_n.
+
+    The ``e1.venue_id < e2.venue_id`` JOIN predicate guarantees the
+    smaller id appears as ``a`` — no need for LEAST/GREATEST (which
+    SQLite lacks anyway)."""
     sql = """
-        SELECT LEAST(e1.venue_id, e2.venue_id) AS a,
-               GREATEST(e1.venue_id, e2.venue_id) AS b,
+        SELECT e1.venue_id AS a,
+               e2.venue_id AS b,
                COUNT(*) AS n
         FROM events e1
         JOIN events e2 ON e1.start_date = e2.start_date
