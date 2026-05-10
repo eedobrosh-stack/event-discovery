@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, classify_new_artists_job
 
 scheduler = AsyncIOScheduler()
 
@@ -423,6 +423,19 @@ def _run_migrations():
             if col not in existing_event_cols:
                 conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
         conn.commit()
+
+    # artist_genre.classification_attempts — added so the auto-classification
+    # cron can park artists that have failed to classify N times. Default 0
+    # so existing rows are eligible for the next retry pass.
+    if "artist_genre" in insp.get_table_names():
+        existing_artist_genre_cols = [c["name"] for c in insp.get_columns("artist_genre")]
+        if "classification_attempts" not in existing_artist_genre_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE artist_genre ADD COLUMN "
+                    "classification_attempts INTEGER NOT NULL DEFAULT 0"
+                ))
+                conn.commit()
 
     # llm_sources: incremental columns added after the table's first ship.
     # The table itself is created by Base.metadata.create_all on first deploy
@@ -831,6 +844,18 @@ async def lifespan(app: FastAPI):
         llm_extract_recurring_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=240)),
         id="llm_extract_recurring",
+        replace_existing=True,
+    )
+    # classify_new_artists — Daily auto-classification for artists newly
+    # introduced by Cadence A (the LLM extractor) and for the rolling
+    # UNKNOWN-with-retries-left pool. +30 min after Cadence A so today's
+    # extracts are queryable when this runs. Caps spend at 800 artists/
+    # night; UNKNOWN-with-attempts >= retry_budget rows get parked and
+    # excluded from the pool, so cost converges on net-new arrivals.
+    scheduler.add_job(
+        classify_new_artists_job,
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=270)),
+        id="classify_new_artists",
         replace_existing=True,
     )
     scheduler.add_job(

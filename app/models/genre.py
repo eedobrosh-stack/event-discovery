@@ -69,6 +69,15 @@ class ArtistGenre(Base):
     source = Column(String(50), default="gemini")     # gemini / manual / ...
     classified_at = Column(DateTime, server_default=func.now())
 
+    # Number of times this artist has been run through the classifier.
+    # Bumped on every attempt regardless of outcome (UNKNOWN counts as an
+    # attempt). Used by the auto-classification cron to park artists that
+    # the classifier can't recognise even with Brave context: after
+    # ``MAX_CLASSIFICATION_ATTEMPTS`` failed runs (UNKNOWN result), the
+    # row stays in the table but is excluded from the retry pool. Manual
+    # re-classification (or a new prompt) can override by direct edit.
+    classification_attempts = Column(Integer, nullable=False, server_default="0")
+
     __table_args__ = (
         Index("ix_artist_genre_normalized", "normalized_name"),
         Index("ix_artist_genre_primary", "primary_genre"),

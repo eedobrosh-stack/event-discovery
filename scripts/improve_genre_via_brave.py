@@ -136,10 +136,19 @@ def append_cache(artist: str, results: list[dict]) -> None:
 # ── Target selection ──────────────────────────────────────────────────────
 
 def fetch_unmatched_with_event_counts(
-    db, country: Optional[str] = None
+    db,
+    country: Optional[str] = None,
+    retry_budget: int = 3,
 ) -> list[tuple[str, int]]:
-    """Distinct lowercased upcoming-event artist names that aren't in
-    the 'known' set, ordered by upcoming-event count descending.
+    """Distinct lowercased upcoming-event artist names eligible for
+    classification, ordered by upcoming-event count desc.
+
+    "Eligible" means EITHER (a) the artist is not in artist_genre at
+    all (never classified), OR (b) they have ``primary_genre='UNKNOWN'``
+    AND ``classification_attempts < retry_budget`` (still within the
+    retry budget). Artists with a real classification, AND artists
+    parked at ``UNKNOWN`` after exhausting their retry budget, are
+    excluded.
 
     Returns list of (normalized_name, event_count). Highest-impact
     artists first so a partial run still covers them.
@@ -152,11 +161,20 @@ def fetch_unmatched_with_event_counts(
     today = date.today()
     norm_artist = func.lower(func.trim(Event.artist_name))
 
-    known_subq = (
+    # Artists we should NOT re-classify on this run:
+    #   - successful classification: primary IS NOT NULL AND != UNKNOWN
+    #   - parked: primary == UNKNOWN AND classification_attempts >= retry_budget
+    excluded_subq = (
         db.query(ArtistGenre.normalized_name)
         .filter(
-            ArtistGenre.primary_genre.isnot(None),
-            ArtistGenre.primary_genre != "UNKNOWN",
+            (
+                ArtistGenre.primary_genre.isnot(None)
+                & (ArtistGenre.primary_genre != "UNKNOWN")
+            )
+            | (
+                (ArtistGenre.primary_genre == "UNKNOWN")
+                & (ArtistGenre.classification_attempts >= retry_budget)
+            )
         )
         .subquery()
     )
@@ -167,7 +185,7 @@ def fetch_unmatched_with_event_counts(
             Event.start_date >= today,
             Event.artist_name.isnot(None),
             Event.artist_name != "",
-            not_(norm_artist.in_(select(known_subq.c.normalized_name))),
+            not_(norm_artist.in_(select(excluded_subq.c.normalized_name))),
         )
     )
     if country:
@@ -281,27 +299,22 @@ class Stats:
     by_confidence: dict[str, int] = field(default_factory=dict)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--max", type=int, default=None,
-                        help="Cap on artists processed (testing).")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Report only — no DB writes (Brave still queried).")
-    parser.add_argument("--no-fetch", action="store_true",
-                        help="Use cache only, skip Brave calls. Useful for "
-                             "re-classifying after a prompt tweak.")
-    parser.add_argument("--batch-size", type=int, default=30,
-                        help="Gemini batch size (default 30; lower than "
-                             "Phase B's 80 because each entry carries ~3 "
-                             "snippets of context).")
-    parser.add_argument("--country", default=None,
-                        help="Restrict to artists with at least one "
-                             "upcoming event in this country (matches "
-                             "City.country exactly, e.g. 'Israel'). "
-                             "Useful for targeting a specific bucket of "
-                             "the residual UNKNOWN pile.")
-    args = parser.parse_args()
+DEFAULT_RETRY_BUDGET = 3
 
+
+def run(
+    *,
+    country: Optional[str] = None,
+    max: Optional[int] = None,
+    retry_budget: int = DEFAULT_RETRY_BUDGET,
+    dry_run: bool = False,
+    no_fetch: bool = False,
+    batch_size: int = 30,
+) -> Stats:
+    """Programmatic entry point. Same behaviour as the CLI ``main()``
+    but callable in-process from the scheduler. Returns the run's
+    Stats object so the caller can record events_found / events_saved
+    on a ScanLog row."""
     db = SessionLocal()
     try:
         idx = build_taxonomy_index(db)
@@ -310,11 +323,14 @@ def main():
         taxonomy_block = render_taxonomy_block(idx)
 
         log.info("Fetching unmatched upcoming-event artists ranked by event count …")
-        targets = fetch_unmatched_with_event_counts(db, country=args.country)
-        scope = f" in {args.country!r}" if args.country else ""
-        log.info(f"Pool: {len(targets)} unmatched upcoming-event artists{scope}")
-        if args.max:
-            targets = targets[:args.max]
+        targets = fetch_unmatched_with_event_counts(
+            db, country=country, retry_budget=retry_budget
+        )
+        scope = f" in {country!r}" if country else ""
+        log.info(f"Pool: {len(targets)} unmatched upcoming-event artists{scope} "
+                 f"(retry_budget={retry_budget})")
+        if max:
+            targets = targets[:max]
             log.info(f"Capped to top {len(targets)} by event count")
 
         cache = load_cache()
@@ -331,7 +347,7 @@ def main():
                 stats.cached_hits += 1
                 artist_context.append((name, cache[name]))
                 continue
-            if args.no_fetch:
+            if no_fetch:
                 # Cache miss in cache-only mode — skip; can't classify
                 # without context.
                 continue
@@ -353,9 +369,9 @@ def main():
 
         # ── Phase: classify in batches ────────────────────────────────
         log.info("Phase 2/2: Gemini classification …")
-        n_batches = (len(artist_context) + args.batch_size - 1) // args.batch_size
-        for bi, start in enumerate(range(0, len(artist_context), args.batch_size), start=1):
-            batch = artist_context[start:start + args.batch_size]
+        n_batches = (len(artist_context) + batch_size - 1) // batch_size
+        for bi, start in enumerate(range(0, len(artist_context), batch_size), start=1):
+            batch = artist_context[start:start + batch_size]
             log.info(f"  Batch {bi}/{n_batches}: {len(batch)} artists")
             prompt = _PROMPT_TEMPLATE.format(
                 taxonomy=taxonomy_block,
@@ -395,8 +411,8 @@ def main():
                     continue
                 artist_raw = cleaned["artist"]
                 normalized = normalize_artist_name(artist_raw)
-                if not args.dry_run:
-                    upsert_artist_genre(
+                if not dry_run:
+                    row, _ = upsert_artist_genre(
                         db,
                         artist_name=artist_raw,
                         normalized_name=normalized,
@@ -406,10 +422,15 @@ def main():
                         confidence=cleaned["confidence"],
                         source="brave-bridge",
                     )
+                    # Bump the attempt counter on every classification —
+                    # successful or UNKNOWN — so the parking gate in
+                    # fetch_unmatched_with_event_counts can excise rows
+                    # the classifier has visibly failed on N times.
+                    row.classification_attempts = (row.classification_attempts or 0) + 1
                 stats.classified += 1
                 conf = cleaned["confidence"]
                 stats.by_confidence[conf] = stats.by_confidence.get(conf, 0) + 1
-            if not args.dry_run:
+            if not dry_run:
                 db.commit()
 
         log.info(
@@ -418,8 +439,46 @@ def main():
             f"classified={stats.classified} skipped_no_match={stats.skipped_no_match} "
             f"by_confidence={stats.by_confidence}"
         )
+        return stats
     finally:
         db.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--max", type=int, default=None,
+                        help="Cap on artists processed (testing).")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Report only — no DB writes (Brave still queried).")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="Use cache only, skip Brave calls. Useful for "
+                             "re-classifying after a prompt tweak.")
+    parser.add_argument("--batch-size", type=int, default=30,
+                        help="Gemini batch size (default 30; lower than "
+                             "Phase B's 80 because each entry carries ~3 "
+                             "snippets of context).")
+    parser.add_argument("--country", default=None,
+                        help="Restrict to artists with at least one "
+                             "upcoming event in this country (matches "
+                             "City.country exactly, e.g. 'Israel'). "
+                             "Useful for targeting a specific bucket of "
+                             "the residual UNKNOWN pile.")
+    parser.add_argument("--retry-budget", type=int, default=DEFAULT_RETRY_BUDGET,
+                        help=f"Number of times an UNKNOWN-classified artist "
+                             f"may be retried before being parked (default "
+                             f"{DEFAULT_RETRY_BUDGET}). Once "
+                             f"classification_attempts ≥ retry_budget AND "
+                             f"primary_genre='UNKNOWN', the artist is "
+                             f"excluded from the pool.")
+    args = parser.parse_args()
+    run(
+        country=args.country,
+        max=args.max,
+        retry_budget=args.retry_budget,
+        dry_run=args.dry_run,
+        no_fetch=args.no_fetch,
+        batch_size=args.batch_size,
+    )
 
 
 if __name__ == "__main__":

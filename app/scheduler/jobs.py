@@ -2105,6 +2105,80 @@ async def llm_discover_sources_job(
             db.close()
 
 
+async def classify_new_artists_job(
+    max_per_run: int = 800,
+    retry_budget: int = 3,
+):
+    """Auto-classify newly-arrived event artists via the Brave-augmented
+    Gemini classifier (Lever C).
+
+    Cron-friendly wrapper around scripts.improve_genre_via_brave.run().
+    Runs scoped to all countries — the pool query naturally narrows to
+    upcoming-event artists missing a real classification, which after
+    the Spotify-tag bridge (Lever A) is mostly LLM-extracted local
+    acts (Hebrew, Arabic, etc.).
+
+    Slot in the schedule: 30 minutes after Cadence A so any new artists
+    introduced by tonight's LLM extractor get classified before
+    tomorrow's search resolves Genre filters. Boot offset +270 (B at
+    +210, A at +240, classify at +270) per app/main.py wiring.
+
+    Cost gate: ``max_per_run`` caps the artists processed per fire,
+    bounding nightly Brave + Gemini spend. Steady-state cost is
+    dominated by net-new arrivals + the shrinking UNKNOWN-retry tail
+    that the retry_budget gate eventually exhausts.
+
+    Memory gate: heavy-job lock and synchronous run() means we don't
+    overlap with collect_events / enrich_youtube / llm_extract.
+    """
+    if _heavy_job_lock.locked():
+        logger.info("classify_new_artists: another heavy job is running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="classify_new_artists", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        try:
+            # Late import — avoids loading google-genai + Brave SDK at
+            # scheduler-init time. The script function is sync, so we
+            # offload to a thread.
+            from scripts.improve_genre_via_brave import run as brave_classify
+
+            stats = await asyncio.to_thread(
+                brave_classify,
+                country=None,
+                max=max_per_run,
+                retry_budget=retry_budget,
+                dry_run=False,
+                no_fetch=False,
+            )
+
+            log.status = "success"
+            log.events_found = stats.targeted
+            log.events_saved = stats.classified
+            log.notes = (
+                f"targeted={stats.targeted} brave_calls={stats.brave_calls} "
+                f"brave_empty={stats.brave_empty} cached_hits={stats.cached_hits} "
+                f"classified={stats.classified} "
+                f"skipped_no_match={stats.skipped_no_match} "
+                f"by_confidence={stats.by_confidence}"
+            )
+            logger.info(f"classify_new_artists: {log.notes}")
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"classify_new_artists error: {e}")
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
 def _city_last_discovered_at(db, city_name: str, country: str):
     """Most-recent LLMSource.created_at for (city, country), or None.
 
