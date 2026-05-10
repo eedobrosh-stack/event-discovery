@@ -782,9 +782,16 @@ async def lifespan(app: FastAPI):
     #
     # enrich_youtube re-fires on a 4h cycle (+240, +480, …); at batch=50
     # each subsequent run is ~5min and never collides with a 24h job.
+    # enrich_spotify — bumped from once-daily / batch=150 (113-day full
+    # enrichment) to twice-daily / batch=500 (~17-day full enrichment).
+    # Spotify's documented rate limit is ~180 requests / minute / app;
+    # batch=500 with the lookup pacing currently in lookup_spotify_artist
+    # stays comfortably below that. Halving the interval to 12h doubles
+    # nightly throughput without overlap risk (the heavy-job lock
+    # serialises against collect_events / enrich_youtube anyway).
     scheduler.add_job(
         enrich_spotify_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=60)),
+        IntervalTrigger(hours=12, start_date=_t + _td(minutes=60)),
         id="enrich_spotify",
         replace_existing=True,
     )

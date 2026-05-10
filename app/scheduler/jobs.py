@@ -1082,7 +1082,7 @@ async def collect_techconf_job():
         db.close()
 
 
-async def enrich_spotify_job(batch: int = 150):
+async def enrich_spotify_job(batch: int = 500):
     """
     Enrich Performer records with Spotify data: genres, image, popularity, URL.
     Prioritises performers with no spotify_id yet, ordered by event count.
