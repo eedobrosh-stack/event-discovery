@@ -1854,6 +1854,33 @@ def _is_reserved_discovery_url(url: str) -> bool:
     return False
 
 
+def _registered_domain(url: str) -> str:
+    """Bare hostname with leading 'www.' stripped, lowercased. Empty
+    string when ``url`` doesn't parse to a netloc.
+
+    Limitation: doesn't deconstruct subdomains, so ``news.timeout.com``
+    and ``timeout.com`` are treated as separate domains. The discovery
+    same-domain gate accepts that — we'd rather over-fetch a subdomain
+    than miss a genuinely-different event-listing site that happens to
+    sit on a public hosting provider's bare domain (e.g.
+    ``something.eventbrite.com``)."""
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+# LLMSource states that count as "this domain has proven itself" for
+# the same-domain gate. Once a domain has any row in one of these
+# states, the gate stops blocking new URLs on that domain — fresh
+# pages from a known-good source are welcome.
+_DOMAIN_VERIFIED_STATES = frozenset({"recurring", "graduated"})
+
+
 async def llm_discover_sources_job(
     candidates_per_city: int = 15,
     min_event_count_to_register: int = 3,
@@ -1929,6 +1956,22 @@ async def llm_discover_sources_job(
             existing_urls = [u for (u,) in db.query(LLMSource.url).all() if u]
             excluded_domains = sorted(_RESERVED_DISCOVERY_DOMAINS)
 
+            # Same-domain gate: build a {domain → set(states)} map so we
+            # can skip fetching new URLs whose base domain already has
+            # rows in the registry but none verified (recurring /
+            # graduated). Without this, multi-city aggregator domains
+            # (timeout.com, ifema.es, yesmilano.it, etc.) accumulate
+            # 5–10+ trial rows in parallel before any single URL gets
+            # extracted enough times to prove the domain is scrapable —
+            # wasting Cadence A budget on duplicate-domain probes. The
+            # set is mutated in-loop so newly-registered domains
+            # immediately gate their siblings within the same run.
+            domain_states: dict[str, set[str]] = {}
+            for u, st in db.query(LLMSource.url, LLMSource.state).all():
+                d = _registered_domain(u or "")
+                if d:
+                    domain_states.setdefault(d, set()).add(st or "")
+
             # Discovery method selection. ``search`` (default when
             # BRAVE_API_KEY is set) uses the hybrid Brave Search +
             # LLM-classifier pipeline — real indexed URLs, no hallucinations.
@@ -1951,6 +1994,7 @@ async def llm_discover_sources_job(
                 "registered_visible": 0,
                 "skipped_existing": 0,
                 "skipped_reserved": 0,
+                "skipped_same_domain": 0,
                 "no_events": 0,
                 "fetch_errors": 0,
                 "method": method,
@@ -2005,6 +2049,26 @@ async def llm_discover_sources_job(
                     if existing:
                         stats["skipped_existing"] += 1
                         continue
+
+                    # Same-domain gate (see domain_states block above).
+                    # Skip URLs whose base domain is already represented
+                    # by trial/blocked rows but has no verified
+                    # (recurring/graduated) row yet. The first URL from
+                    # a brand-new domain still gets through; only
+                    # *additional* URLs from already-pending domains
+                    # are blocked, until at least one URL on that
+                    # domain proves itself.
+                    domain = _registered_domain(url)
+                    if domain:
+                        states = domain_states.get(domain)
+                        if states and not (states & _DOMAIN_VERIFIED_STATES):
+                            stats["skipped_same_domain"] += 1
+                            logger.info(
+                                f"discovery: skipping {url} — "
+                                f"domain {domain!r} has unverified "
+                                f"siblings (states={sorted(states)})"
+                            )
+                            continue
 
                     # Probe — fetch is the only network call this loop
                     # makes (no LLM yet). Free fetch + cheap parsing.
@@ -2073,6 +2137,12 @@ async def llm_discover_sources_job(
                     # don't re-suggest it (rare but possible — Gemini
                     # often surfaces global aggregators across cities).
                     existing_urls.append(url)
+                    # Mark this domain as pending in the gate map so
+                    # any further URLs from the same domain in this
+                    # run get blocked (until a future cycle promotes
+                    # the source to recurring/graduated).
+                    if domain:
+                        domain_states.setdefault(domain, set()).add("trial")
                     logger.info(
                         f"discovered: {url} via {register_via} "
                         f"→ LLMSource state=trial for {city_name}"
@@ -2091,6 +2161,7 @@ async def llm_discover_sources_job(
                 f"visible={stats['registered_visible']}) "
                 f"skipped_reserved={stats['skipped_reserved']} "
                 f"skipped_existing={stats['skipped_existing']} "
+                f"skipped_same_domain={stats['skipped_same_domain']} "
                 f"no_events={stats['no_events']} fetch_errors={stats['fetch_errors']}"
             )
             logger.info(f"llm_discover_sources: {log.notes}")
