@@ -394,6 +394,10 @@ def _run_migrations():
         "spotify_url": "TEXT",
         "image_url":   "TEXT",
         "popularity":  "INTEGER",
+        # Internally-derived 0-100 popularity score. Replaces
+        # `popularity` (Spotify-deprecated late 2024) as the live
+        # signal. Populated by scripts/recompute_popularity.py.
+        "derived_popularity": "INTEGER",
     }
     with engine.connect() as conn:
         for col, coltype in spotify_performer_cols.items():

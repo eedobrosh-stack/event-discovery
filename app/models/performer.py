@@ -31,7 +31,17 @@ class Performer(Base):
     spotify_id  = Column(String(100), nullable=True)   # Spotify artist ID
     spotify_url = Column(String(500), nullable=True)   # https://open.spotify.com/artist/...
     image_url   = Column(String(500), nullable=True)   # Artist photo from Spotify
-    popularity  = Column(Integer, nullable=True)       # 0-100 Spotify popularity score
+    popularity  = Column(Integer, nullable=True)       # 0-100 Spotify popularity score (DEAD: Spotify
+                                                       # removed this from the public API in late 2024;
+                                                       # column kept in case Spotify reverses the change.
+                                                       # See derived_popularity below for the active
+                                                       # internally-derived score.)
+    # Internally-derived popularity (0-100) computed by
+    # scripts/recompute_popularity.py from upcoming-events,
+    # past-events, distinct-cities, median-ticket-price, and
+    # brave-search-footprint signals. NULL when never computed for
+    # this performer (e.g. orphan performer rows with no events).
+    derived_popularity = Column(Integer, nullable=True)
 
     # Lookup metadata
     source = Column(String(50), default="musicbrainz")  # musicbrainz / spotify / manual / fallback
