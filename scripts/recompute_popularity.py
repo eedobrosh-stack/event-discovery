@@ -265,6 +265,39 @@ def _apply_scores(
     }
 
 
+# ── Programmatic entry ────────────────────────────────────────────────
+def run(*, apply: bool = False, limit: int | None = None) -> dict:
+    """Programmatic entry point so the scheduler can invoke recompute
+    in-process. Mirrors the CLI ``main()``. Returns the result dict
+    augmented with the top-20 list (handy for the audit log)."""
+    db = SessionLocal()
+    try:
+        agg = _aggregate_signals(db)
+        log.info(f"aggregated {len(agg):,} distinct artist keys")
+
+        result = _apply_scores(db, agg, apply=apply, limit=limit)
+        log.info(
+            f"performers_total={result['performers_total']:,}  "
+            f"matched={result['performers_matched']:,}  "
+            f"scored={result['performers_scored']:,}  "
+            f"written={result['performers_written']:,}"
+        )
+        log.info(f"distribution: {result['distribution']}")
+
+        top = sorted(
+            ((k, _score(
+                s["upcoming"], s["past"], len(s["cities"]),
+                _median(s["prices"]), s["brave"],
+            )) for k, s in agg.items()),
+            key=lambda x: -x[1],
+        )[:20]
+        result["top"] = [{"name": n, "score": s} for n, s in top]
+        result["aggregated_keys"] = len(agg)
+        return result
+    finally:
+        db.close()
+
+
 # ── Main ──────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])

@@ -92,3 +92,37 @@ class ArtistGenre(Base):
         Index("ix_artist_genre_normalized", "normalized_name"),
         Index("ix_artist_genre_primary", "primary_genre"),
     )
+
+
+class GenrePopularityThresholds(Base):
+    """Per-parent-genre percentile thresholds over Performer.derived_popularity.
+
+    Computed weekly by scripts/recompute_genre_thresholds.py from the
+    current distribution of derived_popularity per parent genre. The
+    API uses these to convert an artist's raw 0-100 score into a 1-5
+    star rating *relative to their genre*: a 75 in Jazz is a top-tier
+    jazz artist, while a 75 in Pop is mid-tier — they shouldn't render
+    the same star count.
+
+    One row per parent genre with at least N classified+scored
+    performers (statistical floor — see MIN_N in
+    scripts/recompute_genre_thresholds.py). Genres below the floor
+    have no row, signalling to the API that stars are not yet
+    displayable for that genre.
+    """
+    __tablename__ = "genre_popularity_thresholds"
+
+    parent_genre = Column(String(100), primary_key=True)
+
+    # 4 percentile boundaries against derived_popularity (0..100).
+    # Mapping: score >= p80 → 5★, >= p60 → 4★, >= p40 → 3★, >= p20 → 2★, else 1★ (when displayable at all).
+    p20 = Column(Integer, nullable=False)
+    p40 = Column(Integer, nullable=False)
+    p60 = Column(Integer, nullable=False)
+    p80 = Column(Integer, nullable=False)
+
+    # Sample size used to compute the percentiles. Surfaced for
+    # debugging / audit; not used in star lookup.
+    n_performers = Column(Integer, nullable=False)
+
+    computed_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

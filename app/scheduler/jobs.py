@@ -2261,6 +2261,69 @@ async def classify_new_artists_job(
             db.close()
 
 
+async def recompute_popularity_job():
+    """Weekly recompute of derived popularity scores + per-genre
+    threshold table.
+
+    Runs two scripts in sequence in-process (no subprocess shenanigans):
+      1. scripts.recompute_popularity.run() — aggregate event signals
+         + Brave footprint per artist, write Performer.derived_popularity.
+      2. scripts.recompute_genre_thresholds.run() — partition the new
+         scores by parent genre, write the 20/40/60/80 percentiles.
+
+    Order matters: thresholds READ derived_popularity, so the popularity
+    pass must complete first. The two are intentionally bundled into a
+    single cron because thresholds without fresh scores would be stale
+    by definition.
+
+    Cadence: weekly. Popularity changes slowly (a single new tour
+    rarely shifts an artist's percentile rank) and the recompute
+    touches all 9.5k+ scored performers, so daily would be wasteful.
+    Heavy-job lock serialises against collect_events / enrich_youtube /
+    extract / discover so the wall-clock wait shouldn't matter in
+    practice.
+    """
+    if _heavy_job_lock.locked():
+        logger.info("recompute_popularity: another heavy job is running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="recompute_popularity", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        try:
+            # Late imports — keep cold-start cheap, and avoid loading
+            # statistics / dotenv at scheduler init.
+            from scripts.recompute_popularity import run as run_popularity
+            from scripts.recompute_genre_thresholds import run as run_thresholds
+
+            pop_result = await asyncio.to_thread(run_popularity, apply=True)
+            thr_result = await asyncio.to_thread(run_thresholds, apply=True)
+
+            log.status = "success"
+            log.events_found = pop_result.get("performers_scored", 0)
+            log.events_saved = pop_result.get("performers_written", 0)
+            log.notes = (
+                f"performers_scored={pop_result.get('performers_scored', 0)} "
+                f"distribution={pop_result.get('distribution')} "
+                f"thresholds_kept={len(thr_result.get('kept', {}))} "
+                f"thresholds_skipped={len(thr_result.get('skipped', {}))}"
+            )
+            logger.info(f"recompute_popularity: {log.notes}")
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"recompute_popularity error: {e}")
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
 def _city_last_discovered_at(db, city_name: str, country: str):
     """Most-recent LLMSource.created_at for (city, country), or None.
 
