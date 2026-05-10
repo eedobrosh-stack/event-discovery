@@ -70,35 +70,106 @@ MAX_PRICE = 5000.0
 # venue/ticket sites that didn't ask to be re-fetched.
 FETCH_DELAY_SEC = 0.6
 
+# Domains whose anti-bot stack consistently blocks both curl_cffi and
+# urllib (observed 2026-05-10: 100% 403 rate). Short-circuit before
+# even attempting the fetch — saves wall time + bandwidth and stops
+# us from sending repeated declined requests. Substring match against
+# the URL host (lowercase, leading "www." stripped).
+BLOCKED_HOST_SUBSTRINGS = (
+    "ticketmaster.",   # .com, .de, .com.au, .ca, .co.uk, etc.
+    "ra.co",            # Resident Advisor
+    "axs.com",          # AXS
+    "ticketweb.com",
+    "stubhub.com",
+    "vividseats.com",
+    "seetickets.",
+    "songkick.com",     # tracker, not a price source
+)
+
+
+def _host_is_blocked(url: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return any(sub in host for sub in BLOCKED_HOST_SUBSTRINGS)
+
 
 def _norm_text(s: str | None) -> str:
     return (s or "").strip().lower()
 
 
-def _matches_target(jsonld_ev, target_event: Event) -> bool:
+def _jsonld_start_date(ev: dict) -> str:
+    """ISO YYYY-MM-DD date from a JSON-LD Event's startDate, or empty
+    string if absent / unparseable. Just the prefix — we compare on
+    date, not datetime."""
+    return (ev.get("startDate") or "")[:10]
+
+
+def _jsonld_artist_name(ev: dict) -> str:
+    """Best-effort artist name from a JSON-LD Event's `performer`
+    field. Performer can be a dict, a list of dicts, or a string."""
+    p = ev.get("performer")
+    if isinstance(p, list):
+        p = p[0] if p else None
+    if isinstance(p, dict):
+        return (p.get("name") or "").strip()
+    if isinstance(p, str):
+        return p.strip()
+    return ""
+
+
+def _jsonld_offer_price(ev: dict) -> tuple[float | None, str | None]:
+    """Extract (price, currency) from a JSON-LD Event's offers field.
+    Mirrors the parsing in app.services.collectors._jsonld so behaviour
+    here is consistent with the in-line collectors. lowPrice is
+    preferred over price (price-range case)."""
+    offers = ev.get("offers") or {}
+    if isinstance(offers, list):
+        offers = offers[0] if offers else {}
+    if not isinstance(offers, dict):
+        return None, None
+    raw = offers.get("lowPrice") if offers.get("lowPrice") is not None else offers.get("price")
+    if raw is None:
+        return None, None
+    try:
+        price = float(str(raw).replace(",", "").replace("$", "").strip())
+    except (TypeError, ValueError):
+        return None, None
+    currency = offers.get("priceCurrency")
+    if isinstance(currency, str):
+        currency = currency.strip().upper() or None
+    else:
+        currency = None
+    return price, currency
+
+
+def _matches_target(jsonld_ev: dict, target_event: Event) -> bool:
     """True when a JSON-LD event from the fetched page corresponds to
     the target Event we're trying to enrich.
 
     Match rules (must satisfy ALL):
-      • same start_date — strict, no fuzzy date matching.
+      • same start_date (ISO prefix) — strict, no fuzzy date matching.
       • name OR artist overlap: at least one of the target's name /
         artist_name (lowercased) is a substring of the JSON-LD event's
-        name OR artist, or vice-versa. Substring rather than equality
-        because event-detail pages often append "Live in <City>" or
-        " - <YYYY>" and we shouldn't reject those.
+        name OR performer, or vice-versa. Substring rather than
+        equality because event-detail pages often append "Live in
+        <City>" or " - <YYYY>" and we shouldn't reject those.
     """
-    if jsonld_ev.start_date != target_event.start_date:
+    target_iso = target_event.start_date.isoformat() if target_event.start_date else ""
+    if not target_iso or _jsonld_start_date(jsonld_ev) != target_iso:
         return False
-    target_strs = [
+    target_strs = [s for s in [
         _norm_text(target_event.name),
         _norm_text(target_event.artist_name),
-    ]
-    target_strs = [s for s in target_strs if s]
-    cand_strs = [
-        _norm_text(jsonld_ev.name),
-        _norm_text(jsonld_ev.artist_name),
-    ]
-    cand_strs = [s for s in cand_strs if s]
+    ] if s]
+    cand_strs = [s for s in [
+        _norm_text(jsonld_ev.get("name")),
+        _norm_text(_jsonld_artist_name(jsonld_ev)),
+    ] if s]
     if not target_strs or not cand_strs:
         return False
     for t in target_strs:
@@ -150,16 +221,17 @@ def main() -> None:
 
     db = SessionLocal()
     stats = {
-        "targeted":          0,
-        "fetch_errors":      0,
-        "no_jsonld_events":  0,
-        "no_match":          0,
-        "ambiguous_match":   0,
-        "match_no_price":    0,
-        "match_invalid_price": 0,
-        "wrote_price":       0,
+        "targeted":              0,
+        "skipped_blocked_host":  0,
+        "fetch_errors":          0,
+        "no_jsonld_events":      0,
+        "no_match":              0,
+        "ambiguous_match":       0,
+        "match_no_price":        0,
+        "match_invalid_price":   0,
+        "wrote_price":           0,
     }
-    samples = []  # [(event_id, name, old_price, new_price, currency, source_url)]
+    samples = []
 
     try:
         targets = _fetch_targets(db, args.limit)
@@ -168,6 +240,14 @@ def main() -> None:
 
         for i, ev in enumerate(targets, start=1):
             stats["targeted"] += 1
+
+            # Pre-fetch domain check — short-circuit known-403 hosts
+            # so we don't waste a 1-2s fetch budget per event for no
+            # gain. See BLOCKED_HOST_SUBSTRINGS for the list.
+            if _host_is_blocked(ev.purchase_link):
+                stats["skipped_blocked_host"] += 1
+                continue
+
             html = _fetch_html(ev.purchase_link)
             if not html:
                 stats["fetch_errors"] += 1
@@ -186,10 +266,7 @@ def main() -> None:
                 stats["ambiguous_match"] += 1
                 continue
 
-            matched = matches[0]
-            price = matched.price
-            currency = matched.price_currency or ev.price_currency or "USD"
-
+            price, currency = _jsonld_offer_price(matches[0])
             if price is None:
                 stats["match_no_price"] += 1
                 continue
@@ -197,16 +274,17 @@ def main() -> None:
                 stats["match_invalid_price"] += 1
                 log.debug(f"rejected price={price!r} for ev_id={ev.id} {ev.name!r}")
                 continue
+            currency = currency or ev.price_currency or "USD"
 
             stats["wrote_price"] += 1
             samples.append({
-                "event_id": ev.id,
-                "name": ev.name,
-                "artist_name": ev.artist_name,
-                "start_date": str(ev.start_date),
-                "old_price": ev.price,
-                "new_price": float(price),
-                "currency": currency,
+                "event_id":      ev.id,
+                "name":          ev.name,
+                "artist_name":   ev.artist_name,
+                "start_date":    str(ev.start_date),
+                "old_price":     ev.price,
+                "new_price":     float(price),
+                "currency":      currency,
                 "purchase_link": ev.purchase_link,
             })
 
@@ -223,6 +301,7 @@ def main() -> None:
                     f"wrote={stats['wrote_price']}  "
                     f"no_match={stats['no_match']}  "
                     f"no_jsonld={stats['no_jsonld_events']}  "
+                    f"blocked={stats['skipped_blocked_host']}  "
                     f"fetch_err={stats['fetch_errors']}"
                 )
 
@@ -232,6 +311,7 @@ def main() -> None:
             "done. "
             f"targeted={stats['targeted']}  "
             f"wrote_price={stats['wrote_price']}  "
+            f"skipped_blocked_host={stats['skipped_blocked_host']}  "
             f"fetch_errors={stats['fetch_errors']}  "
             f"no_jsonld={stats['no_jsonld_events']}  "
             f"no_match={stats['no_match']}  "
