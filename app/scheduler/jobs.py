@@ -1152,6 +1152,16 @@ async def enrich_spotify_job(batch: int = 500):
 
             # Propagate 1-10 popularity score + Spotify URL to all
             # events for this artist so the frontend can display it.
+            # Match case-insensitively against artist_name — the
+            # SELECT-pending block above also uses func.lower() and
+            # the same casing inconsistency that lets Performer rows
+            # be picked up under any artist_name capitalisation must
+            # apply to the WRITE path too. Without LOWER on both
+            # sides, the propagation silently no-ops on every
+            # event whose collector wrote the artist_name in a
+            # different case than Performer.name was registered with.
+            # That bug left Event.artist_popularity at 0/145k rows
+            # despite 708 performers having popularity (2026-05-10).
             raw_pop = result["popularity"] or 0
             score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
             event_update: dict = {}
@@ -1159,10 +1169,11 @@ async def enrich_spotify_job(batch: int = 500):
                 event_update["artist_popularity"] = score_1_10
             if result["spotify_url"]:
                 event_update["artist_spotify_url"] = result["spotify_url"]
+            name_lower = (name or "").lower()
             # Fill missing event image with artist photo
             if result["image_url"]:
                 db.query(Event).filter(
-                    Event.artist_name == name,
+                    func.lower(Event.artist_name) == name_lower,
                     Event.image_url.is_(None),
                 ).update(
                     {"image_url": result["image_url"]},
@@ -1170,7 +1181,7 @@ async def enrich_spotify_job(batch: int = 500):
                 )
             if event_update:
                 db.query(Event).filter(
-                    Event.artist_name == name,
+                    func.lower(Event.artist_name) == name_lower,
                 ).update(event_update, synchronize_session=False)
 
             db.commit()
