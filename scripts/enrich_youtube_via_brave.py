@@ -214,19 +214,11 @@ def _select_artists_pending(db, limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-# ── Main ──────────────────────────────────────────────────────────────
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--apply", action="store_true",
-                        help="Write changes. Without this, runs as a dry-run.")
-    parser.add_argument("--limit", type=int, default=200,
-                        help="Cap on artists processed per run (default 200). "
-                             "Each artist is one Brave query.")
-    args = parser.parse_args()
-
-    mode = "APPLY" if args.apply else "DRY-RUN"
-    log.info(f"mode={mode} limit={args.limit}")
-
+# ── Programmatic entry ────────────────────────────────────────────────
+def run(*, apply: bool = False, limit: int = 200) -> dict:
+    """Programmatic entry. Mirrors main() so the scheduler can invoke
+    in-process. Returns the stats dict + a sample list (capped) for
+    the cron's ScanLog notes."""
     db = SessionLocal()
     cache = load_cache()
     log.info(f"cache: {len(cache)} previously-attempted artists on disk")
@@ -243,7 +235,7 @@ def main() -> None:
     samples = []
 
     try:
-        artists = _select_artists_pending(db, args.limit)
+        artists = _select_artists_pending(db, limit)
         log.info(f"artists pending YouTube channel: {len(artists):,}")
 
         for i, name in enumerate(artists, start=1):
@@ -279,7 +271,7 @@ def main() -> None:
                 "channel_url": channel_url,
             })
 
-            if args.apply:
+            if apply:
                 # Case-insensitive write to ALL events for this artist.
                 # Preserves any non-empty value already on rows (don't
                 # clobber a manually-set channel) — only fill empty/null.
@@ -321,7 +313,7 @@ def main() -> None:
         )
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        suffix = "apply" if args.apply else "dryrun"
+        suffix = "apply" if apply else "dryrun"
         audit_path = ROOT / "data" / f"enrich_youtube_via_brave_{ts}_{suffix}.json"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         audit_path.write_text(json.dumps({
@@ -330,10 +322,24 @@ def main() -> None:
             "samples_total": len(samples),
         }, ensure_ascii=False, indent=2))
         log.info(f"audit written: {audit_path}")
-        if not args.apply:
+        if not apply:
             log.info("DRY-RUN — re-run with --apply to write.")
+        return {"stats": stats, "samples": samples[:50]}
     finally:
         db.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--apply", action="store_true",
+                        help="Write changes. Without this, runs as a dry-run.")
+    parser.add_argument("--limit", type=int, default=200,
+                        help="Cap on artists processed per run (default 200). "
+                             "Each artist is one Brave query.")
+    args = parser.parse_args()
+    mode = "APPLY" if args.apply else "DRY-RUN"
+    log.info(f"mode={mode} limit={args.limit}")
+    run(apply=args.apply, limit=args.limit)
 
 
 if __name__ == "__main__":

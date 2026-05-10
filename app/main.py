@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, classify_new_artists_job, recompute_popularity_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job
 
 scheduler = AsyncIOScheduler()
 
@@ -878,6 +878,18 @@ async def lifespan(app: FastAPI):
         classify_new_artists_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=270)),
         id="classify_new_artists",
+        replace_existing=True,
+    )
+    # enrich_youtube_via_brave — Brave-search fallback for artists the
+    # YouTube Data API job didn't find a channel for. Daily, slot at
+    # boot+330 min — late enough that the YT API job (every 4h) has
+    # had several cycles to claim what it can. Hit rate ~40% on the
+    # long-tail pool, ~$2.50/night at limit=500. Cache makes per-
+    # artist cost one-shot.
+    scheduler.add_job(
+        enrich_youtube_via_brave_job,
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=330)),
+        id="enrich_youtube_via_brave",
         replace_existing=True,
     )
     # recompute_popularity — Weekly recompute of Performer.derived_popularity

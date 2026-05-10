@@ -2261,6 +2261,68 @@ async def classify_new_artists_job(
             db.close()
 
 
+async def enrich_youtube_via_brave_job(max_per_run: int = 500):
+    """Brave-search fallback for artist YouTube channel URLs.
+
+    Companion to enrich_youtube_job (which uses the YouTube Data API).
+    Runs daily *after* the YouTube API job has had its 4-hour cycles
+    to claim what it can; whatever artists are still missing a
+    channel after that get a Brave-search second pass. Hit rate
+    observed at ~40% on the long-tail population (the top tier of
+    well-known artists hits ~70% but those mostly clear via the
+    YouTube API path first).
+
+    Cost gate: ``max_per_run`` caps the Brave queries per fire.
+    Each query is ~$0.005, so --limit=500 = ~$2.50/night. Cache at
+    scripts/_brave_youtube_cache.jsonl makes the per-artist cost
+    one-shot — re-runs after partial caps don't re-spend.
+
+    Heavy-job lock as elsewhere — we don't want to overlap
+    collect_events / enrich_youtube / llm_extract.
+    """
+    if _heavy_job_lock.locked():
+        logger.info("enrich_youtube_via_brave: another heavy job is running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="enrich_youtube_via_brave", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        try:
+            from scripts.enrich_youtube_via_brave import run as run_brave_yt
+
+            result = await asyncio.to_thread(
+                run_brave_yt, apply=True, limit=max_per_run
+            )
+            stats = result.get("stats", {})
+
+            log.status = "success"
+            log.events_found = stats.get("targeted", 0)
+            log.events_saved = stats.get("wrote_events", 0)
+            log.notes = (
+                f"targeted={stats.get('targeted', 0)} "
+                f"channel_found={stats.get('channel_found', 0)} "
+                f"no_match={stats.get('no_match', 0)} "
+                f"brave_calls={stats.get('brave_calls', 0)} "
+                f"brave_empty={stats.get('brave_empty', 0)} "
+                f"cache_hits={stats.get('cache_hits', 0)} "
+                f"wrote_events={stats.get('wrote_events', 0)}"
+            )
+            logger.info(f"enrich_youtube_via_brave: {log.notes}")
+        except Exception as e:
+            log.status = "failed"
+            log.notes = str(e)
+            logger.error(f"enrich_youtube_via_brave error: {e}")
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
 async def recompute_popularity_job():
     """Weekly recompute of derived popularity scores + per-genre
     threshold table.
