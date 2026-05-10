@@ -153,7 +153,31 @@ PRIORITY_CITIES = [
     ("Athens",         "Greece"),
     # ── Israel ──────────────────────────────────────────────────────────────
     ("Tel Aviv",       "Israel"),
+    ("Jerusalem",      "Israel"),
+    ("Haifa",          "Israel"),
+    ("Eilat",          "Israel"),
 ]
+
+
+# Discovery bias — cities to push to the front of the LRU rotation
+# until they've been "saturated" (no new event-listing aggregators
+# found across consecutive runs). Cadence B's per-fire cap of 10
+# cities is unchanged; biased cities take the first slots, the
+# remaining slots fall through to normal LRU.
+#
+# Curated by hand — when a biased city stops yielding new
+# registrations across 2-3 consecutive runs, drop it from this set
+# (no auto-detection: the cost of a wrong detection is bigger than
+# the cost of one extra fire). Smaller sets keep the bias focused.
+#
+# Current focus (set 2026-05-10): Israel — easier to ground-truth
+# against real-life venues for a Tel Aviv-based operator.
+DISCOVERY_BIAS_CITIES: set[tuple[str, str]] = {
+    ("Tel Aviv",   "Israel"),
+    ("Jerusalem",  "Israel"),
+    ("Haifa",      "Israel"),
+    ("Eilat",      "Israel"),
+}
 
 
 def _get_batch_index() -> int:
@@ -1956,9 +1980,25 @@ async def llm_discover_sources_job(
             # the most-recent created_at on any LLMSource row scoped to
             # that (city_name, country) tuple. New cities (no rows yet)
             # come first — they need the most help.
+            #
+            # Bias overlay: any city in DISCOVERY_BIAS_CITIES sorts ahead
+            # of the rest, regardless of its LRU position. Within each
+            # tier (biased / not-biased) the LRU rule still applies so
+            # we don't keep hitting the same biased city run after run.
+            # Cap of max_cities_per_run unchanged — biased cities take
+            # the first slots, non-biased fill the remainder.
             city_pool = list(PRIORITY_CITIES)
-            city_pool.sort(key=lambda cc: _city_last_discovered_at(db, *cc) or "")
+            city_pool.sort(key=lambda cc: (
+                0 if cc in DISCOVERY_BIAS_CITIES else 1,
+                _city_last_discovered_at(db, *cc) or "",
+            ))
             cities_to_scan = city_pool[:max_cities_per_run]
+            biased_in_run = sum(1 for cc in cities_to_scan if cc in DISCOVERY_BIAS_CITIES)
+            logger.info(
+                f"llm_discover_sources: city pool of {len(city_pool)}, "
+                f"this run scans {len(cities_to_scan)} "
+                f"({biased_in_run} biased + {len(cities_to_scan) - biased_in_run} LRU)"
+            )
 
             # Build the negative-constraint inputs for the discovery call
             # once, before the city loop. URLs already in the registry get
