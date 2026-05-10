@@ -427,6 +427,10 @@ def _run_migrations():
     # artist_genre.classification_attempts — added so the auto-classification
     # cron can park artists that have failed to classify N times. Default 0
     # so existing rows are eligible for the next retry pass.
+    # artist_genre.brave_total_results — added so the popularity recompute
+    # job has access to "Brave web-footprint" as one input signal. NULL
+    # for any row that pre-dates the column or hasn't been Brave-searched
+    # since.
     if "artist_genre" in insp.get_table_names():
         existing_artist_genre_cols = [c["name"] for c in insp.get_columns("artist_genre")]
         if "classification_attempts" not in existing_artist_genre_cols:
@@ -434,6 +438,13 @@ def _run_migrations():
                 conn.execute(text(
                     "ALTER TABLE artist_genre ADD COLUMN "
                     "classification_attempts INTEGER NOT NULL DEFAULT 0"
+                ))
+                conn.commit()
+        if "brave_total_results" not in existing_artist_genre_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE artist_genre ADD COLUMN "
+                    "brave_total_results INTEGER"
                 ))
                 conn.commit()
 

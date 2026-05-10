@@ -94,14 +94,18 @@ from scripts.ingest_gemini_classifications import (  # noqa: E402
 CACHE_PATH = ROOT / "scripts" / "_brave_cache.jsonl"
 
 
-def load_cache() -> dict[str, list[dict]]:
-    """Read the JSONL cache into {normalized_artist → results list}.
+def load_cache() -> dict[str, dict]:
+    """Read the JSONL cache into {normalized_artist → {results, total}}.
 
     JSONL is append-only and durable across interrupts. If the same
     artist appears multiple times (re-queried during dev), the LAST
     entry wins.
+
+    Backwards-compatible: older entries lacking 'total' get total=None
+    in the returned dict so callers can detect "we have results but
+    no count" and decide whether to fall back to len(results).
     """
-    cache: dict[str, list[dict]] = {}
+    cache: dict[str, dict] = {}
     if not CACHE_PATH.exists():
         return cache
     with CACHE_PATH.open("r", encoding="utf-8") as f:
@@ -114,17 +118,22 @@ def load_cache() -> dict[str, list[dict]]:
             except json.JSONDecodeError:
                 continue
             artist = rec.get("artist")
-            if artist:
-                cache[artist] = rec.get("results") or []
+            if not artist:
+                continue
+            cache[artist] = {
+                "results": rec.get("results") or [],
+                "total": rec.get("total"),
+            }
     return cache
 
 
-def append_cache(artist: str, results: list[dict]) -> None:
+def append_cache(artist: str, results: list[dict], total: int | None) -> None:
     """Append one entry to the cache file. fsync to survive a crash."""
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     rec = {
         "artist": artist,
         "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "total": total,
         "results": results,
     }
     with CACHE_PATH.open("a", encoding="utf-8") as f:
@@ -216,18 +225,25 @@ def fetch_unmatched_with_event_counts(
 BRAVE_QPS_DELAY = 1.1
 
 
-def fetch_artist_context(artist: str) -> list[dict]:
-    """Brave search for an artist, return top 3 (url, title, snippet) dicts.
+def fetch_artist_context(artist: str) -> tuple[list[dict], int]:
+    """Brave search for an artist. Returns (top-3 dicts, total_count).
 
-    Brave returns SearchHit objects from our shared discovery_search
-    module. We unpack into plain dicts so they survive the JSONL cache.
-    Empty list on Brave failure (gets logged inside brave_search).
+    We ask Brave for its max page size (20) so we can record the full
+    returned-result count as a "web-footprint" popularity signal, then
+    slice the top 3 to feed the Gemini classifier (more snippets dilute
+    the prompt and didn't measurably improve recall in early tests).
+    Same single query cost — Brave bills per request, not per result.
+
+    Empty list on Brave failure (gets logged inside brave_search), in
+    which case the count is 0.
     """
-    hits = brave_search(artist, n=3)
-    return [
+    hits = brave_search(artist, n=20)
+    total = len(hits)
+    top3 = [
         {"url": h.url, "title": h.title, "snippet": h.snippet}
         for h in hits[:3]
     ]
+    return top3, total
 
 
 # ── Gemini classifier with snippet context ────────────────────────────────
@@ -339,24 +355,37 @@ def run(
         stats = Stats()
 
         # ── Phase: gather context ─────────────────────────────────────
+        # Two parallel structures:
+        #   artist_context — (name, snippets) pairs fed to the Gemini
+        #     classifier. Same shape as before so the prompt code is
+        #     unchanged.
+        #   brave_totals   — name → int|None map of "total Brave results
+        #     returned" (capped at 20). Persisted onto ArtistGenre at
+        #     upsert time so the popularity recompute job has access.
+        #     None when the artist has cache from before this column
+        #     was added (we treat None as "unknown footprint", not 0).
         artist_context: list[tuple[str, list[dict]]] = []
+        brave_totals: dict[str, int | None] = {}
         log.info("Phase 1/2: gathering search context …")
         for i, (name, ev_count) in enumerate(targets, start=1):
             stats.targeted += 1
             if name in cache:
                 stats.cached_hits += 1
-                artist_context.append((name, cache[name]))
+                cached = cache[name]
+                artist_context.append((name, cached["results"]))
+                brave_totals[name] = cached["total"]
                 continue
             if no_fetch:
                 # Cache miss in cache-only mode — skip; can't classify
                 # without context.
                 continue
-            results = fetch_artist_context(name)
+            results, total = fetch_artist_context(name)
             stats.brave_calls += 1
             if not results:
                 stats.brave_empty += 1
-            append_cache(name, results)
+            append_cache(name, results, total)
             artist_context.append((name, results))
+            brave_totals[name] = total
             if i % 25 == 0:
                 log.info(f"  Brave: {i}/{len(targets)} "
                          f"(cache_hits={stats.cached_hits}, "
@@ -427,6 +456,16 @@ def run(
                     # fetch_unmatched_with_event_counts can excise rows
                     # the classifier has visibly failed on N times.
                     row.classification_attempts = (row.classification_attempts or 0) + 1
+                    # Persist Brave footprint count if we captured one
+                    # for this artist this run. We use the input-side
+                    # ``normalized`` key (matches how brave_totals is
+                    # populated above — by the same lower-cased pool
+                    # name). None entries are kept as None on the row,
+                    # not overwritten with 0, so a future re-run can
+                    # backfill once Brave is queried.
+                    bt = brave_totals.get(normalized)
+                    if bt is not None:
+                        row.brave_total_results = bt
                 stats.classified += 1
                 conf = cleaned["confidence"]
                 stats.by_confidence[conf] = stats.by_confidence.get(conf, 0) + 1

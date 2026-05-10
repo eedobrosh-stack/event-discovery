@@ -78,6 +78,16 @@ class ArtistGenre(Base):
     # re-classification (or a new prompt) can override by direct edit.
     classification_attempts = Column(Integer, nullable=False, server_default="0")
 
+    # Number of Brave search results returned when the classifier
+    # queried this artist (capped at 20, Brave's max page size).
+    # Captures a "web footprint" signal we already pay for during
+    # classification — popular artists max out at 20, obscure artists
+    # return 0-5. Used as one input to the internal-derived
+    # popularity score (see scripts/recompute_popularity.py once
+    # implemented). NULL when the artist hasn't been Brave-searched
+    # yet, or pre-existed the column addition.
+    brave_total_results = Column(Integer, nullable=True)
+
     __table_args__ = (
         Index("ix_artist_genre_normalized", "normalized_name"),
         Index("ix_artist_genre_primary", "primary_genre"),
