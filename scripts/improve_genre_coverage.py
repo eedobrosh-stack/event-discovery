@@ -467,6 +467,15 @@ Rules:
       Do NOT skip artists — emit UNKNOWN with confidence=low if needed.
   R6. Output STRICTLY JSON: {{"classifications":[{{...}}, ...]}}.
       No prose, no markdown fences.
+  R7. Cross-category secondaries: if primary's parent is Comedy or
+      Spoken Word, secondaries MUST also be Comedy or Spoken Word
+      sub-genres (or null). A stand-up comedian is not a "Hard Rock"
+      artist just because they walk on to a metal track; a poet is
+      not a "Punk Rock" musician. For Theatre and Family primaries,
+      music secondaries are acceptable only when the act genuinely
+      involves that music genre as content (e.g. a jukebox musical
+      built on Contemporary Pop hits; a Ballet performed to Symphony
+      score). When in doubt, leave the secondaries null.
 
 Example one-entry shape:
   {{"artist": "Foo Bar", "primary": "Hard Rock", "secondary_1": "Heavy Metal",
