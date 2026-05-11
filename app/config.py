@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     SPOTIFY_CLIENT_ID: str = ""    # developer.spotify.com — Client Credentials flow, no user login
     SPOTIFY_CLIENT_SECRET: str = ""
 
+    # scrapingbee.com — paid fallback for Cloudflare-challenged sites
+    # (metopera.org, residentadvisor.net edge cases, the long-tail
+    # /venues we keep discovering that 403 us). Only invoked when
+    # `_fetch_html` detects a CF managed-challenge signature in the
+    # response — never used as a blanket fetcher, to keep cost bounded
+    # to ~$0.04/request × actual-CF-failure-count/day.
+    SCRAPINGBEE_API_KEY: str = ""
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

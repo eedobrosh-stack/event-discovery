@@ -40,6 +40,7 @@ from typing import Optional
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import urllib.request
+import urllib.error
 
 from app.services.collectors.base import RawEvent
 
@@ -189,20 +190,134 @@ _SPA_THRESHOLD_BYTES = 2_000
 _MAX_CLEANED_HTML = 200_000
 
 
+# Cloudflare managed-challenge fingerprints. These appear in the body
+# of the interstitial page CF serves before letting traffic through.
+# Detection is fingerprint-based rather than status-code-based because
+# a real 403 (genuinely forbidden, e.g. region-blocked) and a CF
+# challenge both return 403 — only the body tells them apart, and we
+# want to spend paid-scraper quota only on the latter.
+_CF_CHALLENGE_SIGNATURES = (
+    "Just a moment",            # managed challenge title
+    "challenge-platform",       # CF JS script path
+    "cf-mitigated",             # response header name leaked into body
+    "Attention Required",       # legacy "I'm Under Attack" page
+    "cdn-cgi/challenge-platform",
+)
+
+
+def _is_cf_challenge(body: str | None) -> bool:
+    if not body:
+        return False
+    head = body[:4000]
+    return any(sig in head for sig in _CF_CHALLENGE_SIGNATURES)
+
+
+def _record_failure(
+    url: str,
+    *,
+    http_status: int | None = None,
+    error_class: str | None = None,
+    error_message: str | None = None,
+    is_cf_challenge: bool = False,
+    fetcher: str | None = None,
+) -> None:
+    """Best-effort write to FetchAttempt. Never raises.
+
+    Imported lazily so the extractor stays usable in unit tests that
+    don't bring up the DB engine. Any write failure is swallowed —
+    visibility into fetch failures is a "nice to have" and must never
+    block the actual fetch retry path.
+    """
+    try:
+        from app.database import SessionLocal
+        from app.models import FetchAttempt
+        from urllib.parse import urlsplit as _u
+        db = SessionLocal()
+        try:
+            db.add(FetchAttempt(
+                url=url[:1000],
+                domain=(_u(url).netloc or "")[:200],
+                http_status=http_status,
+                error_class=(error_class or "")[:100] or None,
+                error_message=(error_message or "")[:500] or None,
+                is_cf_challenge=is_cf_challenge,
+                fetcher=fetcher,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        # Don't surface — this is best-effort observability.
+        logger.debug(f"_record_failure({url}): {type(e).__name__}: {e}")
+
+
+def _fetch_via_scrapingbee(url: str, timeout: int = 45) -> str | None:
+    """ScrapingBee bypass for Cloudflare-challenged sites.
+
+    Only invoked from `_fetch_html` after curl_cffi has returned a body
+    matching `_is_cf_challenge` — never used as a blanket fetcher. The
+    `premium_proxy=true` flag is what carries us past CF managed
+    challenges; `render_js=true` ensures JS-rendered SPAs (like the Met
+    /calendar/ endpoint, RA city pages) actually emit content. Cost
+    is ~75 credits/call → ~$0.037 at the $49/100K credit plan.
+    """
+    from app.config import settings
+    if not settings.SCRAPINGBEE_API_KEY:
+        return None
+    try:
+        from curl_cffi import requests as _cffi_requests
+    except ImportError:
+        # curl_cffi isn't available; we could also use plain urllib here
+        # but the ScrapingBee path implies we're already past the local
+        # fetcher anyway, so it's a clean place to give up.
+        return None
+
+    api_url = "https://app.scrapingbee.com/api/v1/"
+    params = {
+        "api_key": settings.SCRAPINGBEE_API_KEY,
+        "url": url,
+        "render_js": "true",
+        "premium_proxy": "true",
+    }
+    try:
+        resp = _cffi_requests.get(api_url, params=params, timeout=timeout)
+        if 200 <= resp.status_code < 300:
+            return resp.text
+        logger.warning(
+            f"_fetch_via_scrapingbee({url}): status={resp.status_code} "
+            f"body[:200]={resp.text[:200]!r}"
+        )
+        _record_failure(
+            url, http_status=resp.status_code,
+            error_message=resp.text[:500],
+            fetcher="scrapingbee",
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"_fetch_via_scrapingbee({url}): {type(e).__name__}: {e}")
+        _record_failure(
+            url, error_class=type(e).__name__, error_message=str(e),
+            fetcher="scrapingbee",
+        )
+        return None
+
+
 def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
     """HTTP fetch with anti-bot fallback. Returns None on error.
 
-    Tries curl_cffi (Chrome 120 TLS impersonation) first when available —
-    this is what the existing scraper fleet uses (base_scraper.py) to get
-    past the 403/429 walls that plain urllib hits. Many candidate sources
-    we'd want to extract from (shotgun.live, travelportland.com,
-    Cloudflare-fronted venue sites) only respond to TLS-impersonating
-    clients; without curl_cffi they're unreachable.
+    Three-path waterfall:
+      1. curl_cffi (Chrome 120 TLS impersonation) — the existing scraper
+         fleet's tool; handles most 403/429 walls.
+      2. urllib with browser-ish headers — fallback for envs without
+         curl_cffi (dev shells, CI), and for sites that don't need TLS
+         impersonation.
+      3. ScrapingBee paid scraper — ONLY when curl_cffi returned a body
+         matching a Cloudflare managed-challenge signature. Bounded
+         cost; skipped silently if SCRAPINGBEE_API_KEY is unset.
 
-    Falls back to urllib with browser-like headers for environments
-    where curl_cffi isn't installed (dev shell variations, CI without
-    the extra). Hebrew/CJK URL paths are percent-encoded either way so
-    we don't trip the urllib ASCII serializer.
+    Every failure path writes a `FetchAttempt` row (best-effort) so the
+    "unknown unknowns" of permanently-walled domains becomes a SELECT
+    query instead of a log scrape.
     """
     parts = urlsplit(url)
     safe_path = quote(parts.path, safe="/%-._~!$&'()*+,;=:@")
@@ -212,6 +327,8 @@ def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
 
     # Path 1: curl_cffi (Chrome 120 TLS fingerprint). Same impersonation
     # value the scraper fleet uses — well-tested on real anti-bot setups.
+    saw_cf_challenge = False
+    saw_empty_response = False  # 2xx with empty body — common CF "soft block"
     try:
         from curl_cffi import requests as _cffi_requests
         try:
@@ -222,13 +339,44 @@ def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
                 },
             )
             if 200 <= resp.status_code < 300:
-                return resp.text
-            logger.info(
-                f"_fetch_html({url}): curl_cffi got {resp.status_code}, "
-                f"falling back to urllib"
-            )
+                # Even a "200" can carry a CF challenge body — or be
+                # empty (CF's "soft block" pattern, seen on metopera.org
+                # 2026-05-11 where curl_cffi got 200 + 0 bytes from my
+                # local IP). Both cases need to fall through.
+                if _is_cf_challenge(resp.text):
+                    saw_cf_challenge = True
+                    _record_failure(
+                        url, http_status=resp.status_code,
+                        error_message="CF challenge body on 2xx",
+                        is_cf_challenge=True, fetcher="curl_cffi",
+                    )
+                elif not resp.text or not resp.text.strip():
+                    saw_empty_response = True
+                    _record_failure(
+                        url, http_status=resp.status_code,
+                        error_message="empty body on 2xx",
+                        fetcher="curl_cffi",
+                    )
+                else:
+                    return resp.text
+            else:
+                cf = _is_cf_challenge(resp.text)
+                saw_cf_challenge = saw_cf_challenge or cf
+                logger.info(
+                    f"_fetch_html({url}): curl_cffi got {resp.status_code}"
+                    f"{' [CF challenge]' if cf else ''}, falling back to urllib"
+                )
+                _record_failure(
+                    url, http_status=resp.status_code,
+                    error_message=resp.text[:500] if resp.text else None,
+                    is_cf_challenge=cf, fetcher="curl_cffi",
+                )
         except Exception as e:
             logger.info(f"_fetch_html({url}): curl_cffi failed ({type(e).__name__}: {e}); falling back to urllib")
+            _record_failure(
+                url, error_class=type(e).__name__, error_message=str(e),
+                fetcher="curl_cffi",
+            )
     except ImportError:
         pass  # curl_cffi not installed in this env
 
@@ -244,10 +392,59 @@ def _fetch_html(url: str, timeout: int = 20) -> Optional[str]:
     try:
         req = urllib.request.Request(encoded, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read().decode("utf-8", errors="ignore")
+            body = r.read().decode("utf-8", errors="ignore")
+            if _is_cf_challenge(body):
+                saw_cf_challenge = True
+                _record_failure(
+                    url, http_status=r.status,
+                    error_message="CF challenge body via urllib",
+                    is_cf_challenge=True, fetcher="urllib",
+                )
+            elif not body or not body.strip():
+                saw_empty_response = True
+                _record_failure(
+                    url, http_status=r.status,
+                    error_message="empty body via urllib",
+                    fetcher="urllib",
+                )
+            else:
+                return body
+    except urllib.error.HTTPError as e:
+        # CF challenges typically arrive as 403 from urllib too.
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        cf = _is_cf_challenge(body)
+        saw_cf_challenge = saw_cf_challenge or cf
+        logger.warning(f"_fetch_html({url}): urllib HTTP {e.code}{' [CF challenge]' if cf else ''}")
+        _record_failure(
+            url, http_status=e.code, error_class="HTTPError",
+            error_message=str(e), is_cf_challenge=cf, fetcher="urllib",
+        )
     except Exception as e:
         logger.warning(f"_fetch_html({url}): both paths failed; last={type(e).__name__}: {e}")
-        return None
+        _record_failure(
+            url, error_class=type(e).__name__, error_message=str(e),
+            fetcher="urllib",
+        )
+
+    # Path 3: ScrapingBee paid fallback — only for CF signature OR
+    # all-paths-returned-empty (CF's "soft block" 200/0 pattern is
+    # indistinguishable from a JS-only SPA, and both need a real
+    # renderer to pierce). Cost gate: skipped silently when
+    # SCRAPINGBEE_API_KEY is unset, so this stays a no-op until a key
+    # is wired in .env. Even with a key, we only spend on requests
+    # that hit one of these two signals — a genuine 403/region-block
+    # won't trigger the fallback.
+    if saw_cf_challenge or saw_empty_response:
+        body = _fetch_via_scrapingbee(url)
+        if body:
+            logger.info(f"_fetch_html({url}): ScrapingBee bypass succeeded ({len(body)} bytes)")
+            return body
+
+    return None
 
 
 def _clean_html(html: str, base_url: str, max_chars: int = _MAX_CLEANED_HTML) -> str:
