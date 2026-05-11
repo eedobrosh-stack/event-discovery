@@ -58,6 +58,7 @@ from app.services.collectors.scrapers.sports.euroleague import EuroLeagueCollect
 from app.services.collectors.scrapers.sports.tennis import TennisCollector
 from app.services.collectors.scrapers.sports.diamond_league import DiamondLeagueCollector
 from app.services.collectors.scrapers.sports.world_aquatics import WorldAquaticsCollector
+from app.services.collectors.scrapers.sports.uci_worldtour import UCIWorldTourCollector
 from app.services.collectors.scrapers.choosechicago import ChooseChicagoCollector
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,8 @@ registry.register(TennisCollector())
 registry.register(DiamondLeagueCollector())
 # World Aquatics / FINA — swimming, diving, water polo, etc. (public API)
 registry.register(WorldAquaticsCollector())
+# UCI WorldTour road cycling (Wikipedia season table)
+registry.register(UCIWorldTourCollector())
 # Chicago-specific — Choose Chicago TEC REST API (no key)
 registry.register(ChooseChicagoCollector())
 
