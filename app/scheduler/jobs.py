@@ -56,6 +56,7 @@ from app.services.collectors.scrapers.sports.openf1 import OpenF1Collector
 from app.services.collectors.scrapers.sports.cricapi import CricApiCollector
 from app.services.collectors.scrapers.sports.euroleague import EuroLeagueCollector
 from app.services.collectors.scrapers.sports.tennis import TennisCollector
+from app.services.collectors.scrapers.sports.diamond_league import DiamondLeagueCollector
 from app.services.collectors.scrapers.choosechicago import ChooseChicagoCollector
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,8 @@ registry.register(CricApiCollector())
 registry.register(EuroLeagueCollector())
 # ATP + WTA tennis tournaments (ESPN scoreboard, no key)
 registry.register(TennisCollector())
+# Wanda Diamond League athletics (per-meeting subdomain pages, no key)
+registry.register(DiamondLeagueCollector())
 # Chicago-specific — Choose Chicago TEC REST API (no key)
 registry.register(ChooseChicagoCollector())
 
