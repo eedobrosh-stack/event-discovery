@@ -141,17 +141,58 @@ def resolve_genre_artist_names(db: Session, genres: Optional[str]) -> Optional[l
     if not sub_genres:
         return []
 
-    artist_norms = [
-        row[0] for row in (
+    # Cross-category secondary-tag leak guard.
+    # 2026-05-12 bug: Stand-Up comedian "שחר חסון" (primary='Stand-Up',
+    # parent=Comedy) had secondary_1='Contemporary Pop' assigned by
+    # the brave-bridge classifier. Without this gate, filter "Pop" → he
+    # surfaces because the secondary matches Contemporary Pop, even
+    # though his primary lives entirely outside Music.
+    #
+    # Rule: when the user filters by ANY Music parent, only count
+    # secondaries for artists whose primary is also under a Music
+    # parent. The set of music-side sub-genres is the union of all
+    # sub-genres parented by Rock/Pop/Jazz/etc. — computed once below
+    # and used as the gate. Non-music filters (Comedy/Theatre/...)
+    # keep the original open-secondary behavior because the asymmetry
+    # only exists going INTO Music (a comedian never gets accidentally
+    # tagged as a comedian).
+    MUSIC_PARENTS = {
+        "Rock", "Pop", "Jazz", "Hip-Hop", "Latin", "Country",
+        "Classical", "Electronic", "World",
+    }
+    requesting_music = any(g in MUSIC_PARENTS for g in genre_list)
+
+    primary_q = (
+        db.query(ArtistGenre.normalized_name)
+        .filter(ArtistGenre.primary_genre.in_(sub_genres))
+    )
+    if requesting_music:
+        # Secondaries only count when primary's parent is also Music.
+        music_subgenres_subq = (
+            db.query(GenreTaxonomy.sub_genre)
+            .filter(GenreTaxonomy.parent_genre.in_(MUSIC_PARENTS))
+            .scalar_subquery()
+        )
+        secondary_q = (
+            db.query(ArtistGenre.normalized_name)
+            .filter(
+                or_(
+                    ArtistGenre.secondary_1.in_(sub_genres),
+                    ArtistGenre.secondary_2.in_(sub_genres),
+                ),
+                ArtistGenre.primary_genre.in_(music_subgenres_subq),
+            )
+        )
+    else:
+        # Non-music parent — keep original wide secondary match.
+        secondary_q = (
             db.query(ArtistGenre.normalized_name)
             .filter(or_(
-                ArtistGenre.primary_genre.in_(sub_genres),
                 ArtistGenre.secondary_1.in_(sub_genres),
                 ArtistGenre.secondary_2.in_(sub_genres),
             ))
-            .all()
         )
-    ]
+    artist_norms = [r[0] for r in primary_q.union(secondary_q).all()]
     return artist_norms
 
 
