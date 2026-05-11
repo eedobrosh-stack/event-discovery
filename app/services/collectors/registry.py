@@ -159,6 +159,30 @@ class CollectorRegistry:
                     if raw.sport and existing.name != raw.name:
                         existing.name = raw.name
                         updated = True
+                    # Sports schedules churn — playoffs get firmed up, neutral
+                    # sites get assigned, tip-off times shift by 15-30 min as
+                    # broadcast slots settle. Without authoritative overwrites,
+                    # the stale early-season schedule sticks. Image 8 bug:
+                    # 2026-05-13 game stored as 2026-05-11 22:00 because that
+                    # was the original schedule; never re-synced. For sport
+                    # rows, force-update start_date / start_time / end_* from
+                    # the latest API row.
+                    if raw.sport:
+                        if raw.start_date and existing.start_date != raw.start_date:
+                            existing.start_date = raw.start_date
+                            updated = True
+                        if raw.start_time and existing.start_time != raw.start_time:
+                            existing.start_time = raw.start_time
+                            updated = True
+                        if raw.end_date and existing.end_date != raw.end_date:
+                            existing.end_date = raw.end_date
+                            updated = True
+                        if raw.end_time and existing.end_time != raw.end_time:
+                            existing.end_time = raw.end_time
+                            updated = True
+                        if raw.venue_name and existing.venue_name != raw.venue_name:
+                            existing.venue_name = raw.venue_name
+                            updated = True
                     # Backfill TV channels + YouTube highlights for sports
                     if raw.sport and raw.tv_channels and not existing.tv_channels:
                         existing.tv_channels = raw.tv_channels
