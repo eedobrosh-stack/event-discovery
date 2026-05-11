@@ -47,7 +47,15 @@ from app.services.collectors.base import BaseCollector, RawEvent
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30
-_HEADERS = {"User-Agent": "Mozilla/5.0"}
+# Wikipedia rejects requests with generic Mozilla UA from datacenter
+# IPs per https://meta.wikimedia.org/wiki/User-Agent_policy — they
+# require an identifying UA with contact info. Browser-spoofing UAs
+# get a 403 from Render's egress IPs. Use the policy-compliant form:
+# "<App>/<version> (<contact URL>; <library>)".
+_HEADERS = {
+    "User-Agent": "Supercaly/1.0 (https://superca.ly; contact via GitHub) python-httpx",
+    "Accept": "text/html,application/xhtml+xml",
+}
 _WIKI_URL_TEMPLATE = "https://en.wikipedia.org/wiki/{year}_UCI_World_Tour"
 
 # Hardcoded race → (host city, country). Anchored to the race's
