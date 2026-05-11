@@ -1180,6 +1180,10 @@ async function searchEvents() {
         _renderedNameKeys.clear();
         _renderedArtistKeys.clear();
     }
+    // Capture BEFORE dedup — pagination needs the API's row count, not
+    // the post-filter count. Without this, offset stops advancing and
+    // "Load More" disappears when any rows get deduped.
+    const apiReturnedCount = events.length;
     events = events.filter(ev => {
         const d = ev.start_date || "";
         const t = ev.start_time || "";
@@ -1258,7 +1262,7 @@ async function searchEvents() {
         tbody.appendChild(tr);
     });
 
-    offset += events.length;
+    offset += apiReturnedCount;
     updateStats(tbody.children.length);
 
     // ── Sparse-column hiding ──────────────────────────────────────────
@@ -1296,7 +1300,7 @@ async function searchEvents() {
     // Switch to compact mode after a fresh search (not "Load More")
     if (isFirstPage) showCompactMode();
 
-    const hasMore = events.length === LIMIT;
+    const hasMore = apiReturnedCount === LIMIT;
     const btn = document.getElementById("load-more-btn");
     btn.style.display = hasMore ? "" : "none";
     if (hasMore && totalEvents !== null) {
