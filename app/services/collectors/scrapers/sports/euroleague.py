@@ -128,14 +128,45 @@ def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent
     # Primary filter: date must be today or future.
     # Do NOT filter on g["played"] — playoff games sometimes lack this field
     # or arrive in the API before it is set correctly.
-    utc_str = g.get("utcDate") or g.get("date") or ""
-    if not utc_str:
+    #
+    # Time-zone handling: prefer `localDate` (venue-local wall-clock,
+    # naive) over `utcDate`. The iCal export stamps start_time with the
+    # venue's TZID — so the value we store MUST be the venue-local
+    # wall-clock, not UTC. Storing UTC caused 2026-05-12 image 8 bug:
+    # Valencia game @ utcDate=19:00Z (= 21:00 Valencia local CEST)
+    # was stored as "19:00", iCal stamped TZID=Europe/Madrid → 19:00
+    # Madrid = 17:00 UTC → user saw 20:00 IDT (8pm IL) instead of the
+    # correct 22:00 IDT (10pm IL).
+    #
+    # `utcDate` only kept as a fallback for the rare game where the API
+    # omits localDate. In that path we compute the local equivalent
+    # using the API's `localTimeZone` integer offset (hours from UTC).
+    local_str = g.get("localDate") or g.get("date")
+    utc_str = g.get("utcDate") or ""
+    if local_str:
+        try:
+            local_dt = datetime.fromisoformat(local_str.replace("Z", "+00:00"))
+            # Strip tz info if any — semantically these are wall-clock,
+            # not UTC, regardless of how the API formats them.
+            local_dt = local_dt.replace(tzinfo=None)
+        except (ValueError, AttributeError):
+            return None
+    elif utc_str:
+        try:
+            utc_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+        offset_h = g.get("localTimeZone")
+        if isinstance(offset_h, (int, float)):
+            from datetime import timedelta as _td
+            local_dt = (utc_dt + _td(hours=offset_h)).replace(tzinfo=None)
+        else:
+            # No offset hint — degrade to UTC values; iCal will misalign
+            # but at least the date is right and the row is present.
+            local_dt = utc_dt.replace(tzinfo=None)
+    else:
         return None
-    try:
-        utc_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-    if utc_dt.date() < date.today():
+    if local_dt.date() < date.today():
         return None  # already past — skip regardless of played flag
 
     # Venue + city filtering
@@ -183,9 +214,9 @@ def _parse_game(g: dict, city_name: str, country_code: str) -> Optional[RawEvent
 
     return RawEvent(
         name=f"{comp_label} - {home_name} vs {away_name}",
-        start_date=utc_dt.date(),
-        start_time=utc_dt.strftime("%H:%M"),
-        end_date=utc_dt.date(),
+        start_date=local_dt.date(),
+        start_time=local_dt.strftime("%H:%M"),
+        end_date=local_dt.date(),
         end_time=None,
         artist_name=None,
         home_team=home_name,

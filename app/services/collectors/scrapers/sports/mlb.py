@@ -56,6 +56,15 @@ def _parse_game(game: dict) -> Optional[RawEvent]:
     location    = venue_block.get("location") or {}
     venue_city  = location.get("city", "")
 
+    # Convert UTC gameDate to venue-local wall-clock. The iCal export
+    # stamps start_time with the venue's TZID; storing the UTC value
+    # under that TZID would skew the displayed time by the offset.
+    # Same bug as image 8's EuroLeague off-by-1 — fixed centrally on
+    # 2026-05-12 by reusing the ESPN _utc_to_local helper.
+    from app.services.collectors.scrapers.sports.espn import _utc_to_local
+    local_dt, _tz_str = _utc_to_local(utc_dt, venue_city)
+    local_dt = local_dt.replace(tzinfo=None)
+
     # TV broadcasts — regional channels included
     tv_channels: list[dict] = []
     seen: set[str] = set()
@@ -77,9 +86,9 @@ def _parse_game(game: dict) -> Optional[RawEvent]:
 
     return RawEvent(
         name=f"MLB - {home_team} vs {away_team}",
-        start_date=utc_dt.date(),
-        start_time=utc_dt.strftime("%H:%M"),
-        end_date=utc_dt.date(),
+        start_date=local_dt.date(),
+        start_time=local_dt.strftime("%H:%M"),
+        end_date=local_dt.date(),
         end_time=None,
         artist_name=None,
         home_team=home_team,
