@@ -1041,6 +1041,11 @@ function getFilters() {
 
 let totalEvents = null; // total matching count from /api/events/count
 
+// Cross-page dedup registry — see renderResults below. Reset on every
+// first-page render, accumulates as Load More appends pages.
+const _renderedNameKeys = new Set();
+const _renderedArtistKeys = new Set();
+
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
     const { typeSearch, artistExact, genres, cityId, startDate, endDate, search } = getFilters();
@@ -1161,6 +1166,31 @@ async function searchEvents() {
             return;
         }
     }
+
+    // ── Same-name + same-moment dedup ─────────────────────────────────
+    // Backend dedup keys on (start_date, venue_id, identifier). If the
+    // same physical venue exists as two rows (Hebrew + English name,
+    // address normalization split, etc.), the venue_id differs so the
+    // backend bucket misses and the event renders twice. Frontend rule:
+    // collapse rows that share (name OR artist_name) + start_date +
+    // start_time, picking the first occurrence (already ranked by the
+    // API). Registry is cleared on first-page render and carries
+    // across Load More so pagination can't re-introduce a dup.
+    if (isFirstPage) {
+        _renderedNameKeys.clear();
+        _renderedArtistKeys.clear();
+    }
+    events = events.filter(ev => {
+        const d = ev.start_date || "";
+        const t = ev.start_time || "";
+        const nKey = ev.name ? `n|${ev.name.toLowerCase().trim()}|${d}|${t}` : null;
+        const aKey = ev.artist_name ? `a|${ev.artist_name.toLowerCase().trim()}|${d}|${t}` : null;
+        if (nKey && _renderedNameKeys.has(nKey)) return false;
+        if (aKey && _renderedArtistKeys.has(aKey)) return false;
+        if (nKey) _renderedNameKeys.add(nKey);
+        if (aKey) _renderedArtistKeys.add(aKey);
+        return true;
+    });
 
     const tbody = document.getElementById("events-body");
     events.forEach(ev => {
