@@ -26,6 +26,19 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+class SpotifyRateLimited(Exception):
+    """Spotify returned a long Retry-After (penalty-box, not transient).
+
+    Raised by `lookup_spotify_artist` when Retry-After exceeds 30s so
+    the caller can stop iterating instead of grinding through every
+    queued artist while all of them hit the same 429 wall. Exposes
+    `retry_after_seconds` so the caller can log/persist the wait.
+    """
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"penalty box, retry_after={retry_after_seconds}s")
+
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 _token: Optional[str] = None
@@ -182,6 +195,20 @@ async def lookup_spotify_artist(
         )
         if resp.status_code == 429:
             retry_after = int(resp.headers.get("Retry-After", 5))
+            # Two regimes:
+            #   short window  (≤ 30s) — transient burst throttle. Sleep
+            #                            in-place and return None so the
+            #                            caller skips this artist.
+            #   long window  (> 30s)  — punitive penalty box (Spotify's
+            #                            hidden rolling-quota cap). The
+            #                            caller MUST stop iterating; if
+            #                            we just slept-and-skipped 500
+            #                            artists in a row, every single
+            #                            one would re-hit the same 429.
+            #                            Raise so the job bails the run.
+            if retry_after > 30:
+                logger.warning(f"Spotify rate-limited — penalty box, retry_after={retry_after}s. Aborting job.")
+                raise SpotifyRateLimited(retry_after)
             logger.warning(f"Spotify rate-limited — sleeping {retry_after}s")
             await asyncio.sleep(retry_after)
             return None

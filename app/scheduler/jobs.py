@@ -1145,16 +1145,21 @@ async def collect_techconf_job():
         db.close()
 
 
-async def enrich_spotify_job(batch: int = 500):
+async def enrich_spotify_job(batch: int = 250):
     """
     Enrich Performer records with Spotify data: genres, image, popularity, URL.
     Prioritises performers with no spotify_id yet, ordered by event count.
     Runs nightly after enrich_performers_job so MusicBrainz stubs exist first.
+
+    Batch reduced from 500 → 250 on 2026-05-11 after Spotify hit us with
+    a 19.5h punitive rate-limit (Retry-After ≈ 70K seconds). The d49882f
+    bump to ~1000/day overshot Spotify's rolling quota; 250 × 2 jobs/day
+    = ~500/day is the safe ceiling.
     """
     import json as _json
     import httpx as _httpx
     from app.models import Performer
-    from app.services.spotify_lookup import lookup_spotify_artist
+    from app.services.spotify_lookup import lookup_spotify_artist, SpotifyRateLimited
 
     if not settings.SPOTIFY_CLIENT_ID or not settings.SPOTIFY_CLIENT_SECRET:
         logger.info("enrich_spotify_job: SPOTIFY_CLIENT_ID not set — skipping")
@@ -1284,6 +1289,30 @@ async def enrich_spotify_job(batch: int = 500):
                         else:
                             skipped += 1
                         await asyncio.sleep(0.2)   # ~5 req/s — well within Spotify limits
+
+                    except SpotifyRateLimited as e:
+                        # Spotify's penalty-box response — every further
+                        # artist would hit the same 429. Bail the whole
+                        # run, log the wait, let the next scheduled tick
+                        # try again after the window expires.
+                        logger.warning(
+                            f"enrich_spotify_job: bailing after Spotify "
+                            f"penalty-box (retry_after={e.retry_after_seconds}s). "
+                            f"Enriched {enriched}/{len(rows)} before halt."
+                        )
+                        await asyncio.to_thread(db.rollback)
+                        log.notes = (
+                            f"halted=spotify_penalty_box "
+                            f"retry_after_s={e.retry_after_seconds} "
+                            f"enriched={enriched} processed={enriched + skipped + 1}/{len(rows)}"
+                        )
+                        log.status = "failed"
+                        log.events_found = len(rows)
+                        log.events_saved = enriched
+                        log.finished_at = datetime.utcnow()
+                        db.commit()
+                        db.close()
+                        return
 
                     except Exception as e:
                         logger.warning(f"enrich_spotify: error for {name!r}: {e}")
