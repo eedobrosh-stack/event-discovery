@@ -298,6 +298,29 @@ th {
     background: linear-gradient(90deg, #efeaff 0%, #e4dcff 100%);
 }
 
+/* Sparse-column hiding (app.js: applySparseColumnHiding). When fewer
+   than 10% of rows carry real data in a column, that column gets
+   .col-hidden on both <th> and <td>. The table is width:100% so the
+   remaining columns expand into the freed space — overall table
+   width is unchanged. */
+#events-table th.col-hidden,
+#events-table td.col-hidden {
+    display: none;
+}
+
+/* When at least one column is hidden, give the remaining cells more
+   breathing room: allow long content (URLs, multi-word artist names,
+   long venue names) to wrap aggressively instead of forcing horizontal
+   scroll. Browser default for <td> is already white-space:normal, so
+   the key bit is overflow-wrap:anywhere which breaks any long token. */
+#events-table.has-hidden-cols td,
+#events-table.has-hidden-cols th {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    line-height: 1.45;
+}
+
 a { color: #0f3460; text-decoration: none; }
 a:hover { text-decoration: underline; }
 

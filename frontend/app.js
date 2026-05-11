@@ -1199,8 +1199,8 @@ async function searchEvents() {
             : "";
         tr.innerHTML = `
             <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>${esc(ev.name)}</a>` : esc(ev.name)}</td>
-            <td>${artistHtml}</td>
-            <td>${ytHtml}</td>
+            <td data-col="artist">${artistHtml}</td>
+            <td data-col="youtube">${ytHtml}</td>
             <td>${ev.start_date || "-"}</td>
             <td colspan="2" class="time-cell">
               <div class="time-row">
@@ -1218,18 +1218,30 @@ async function searchEvents() {
                 ? `<div class="venue-location">${esc([ev.venue_city, ev.venue_country].filter(Boolean).join(", "))}</div>`
                 : ""}
             </td>
-            <td>${formatPrice(ev.price, ev.price_currency)}</td>
-            <td>${(ev.categories || []).join(", ") || "-"}</td>
-            <td>${(ev.event_types || []).join(", ") || "-"}</td>
-            <td>${ev.artist_genre ? esc(ev.artist_genre) : "-"}</td>
-            <td>${tvHtml}</td>
-            <td>${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>` : "-"}</td>
+            <td data-col="price">${formatPrice(ev.price, ev.price_currency)}</td>
+            <td data-col="category">${(ev.categories || []).join(", ") || "-"}</td>
+            <td data-col="format">${(ev.event_types || []).join(", ") || "-"}</td>
+            <td data-col="genre">${ev.artist_genre ? esc(ev.artist_genre) : "-"}</td>
+            <td data-col="tv">${tvHtml}</td>
+            <td data-col="link">${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>` : "-"}</td>
         `;
         tbody.appendChild(tr);
     });
 
     offset += events.length;
     updateStats(tbody.children.length);
+
+    // ── Sparse-column hiding ──────────────────────────────────────────
+    // For columns marked [data-col]: if fewer than 10% of rows carry
+    // real data (anything other than empty/"-"), drop the column. The
+    // table's outer width is unaffected (#events-table has width:100%)
+    // — remaining columns get more breathing room automatically. We
+    // evaluate ONLY on the first page so the visibility decision is
+    // stable as the user clicks Load More; otherwise columns could
+    // flip back in mid-scroll, which is jarring.
+    if (isFirstPage) {
+        applySparseColumnHiding();
+    }
 
     // ── search_submitted analytics event ─────────────────────────────
     // Fired only on the first page so pagination doesn't double-count.
@@ -1263,6 +1275,58 @@ async function searchEvents() {
     } else {
         btn.textContent = "Load More";
     }
+}
+
+// Sparse-column threshold: a column is hidden when fewer than 10% of
+// rows carry real data. 10% chosen empirically — leaves room for the
+// "one or two outliers" case (e.g. one of 50 events has a price) while
+// confidently hiding columns that the search context just doesn't fill.
+const SPARSE_COL_THRESHOLD = 0.10;
+
+function applySparseColumnHiding() {
+    // Idempotent: reset any previous hiding first so re-renders of the
+    // same page (or a fresh search after a different one) don't carry
+    // stale .col-hidden classes onto the new dataset.
+    const table = document.getElementById("events-table");
+    if (!table) return;
+    table.querySelectorAll(".col-hidden").forEach(el => el.classList.remove("col-hidden"));
+    table.classList.remove("has-hidden-cols");
+
+    const tbody = document.getElementById("events-body");
+    const rows = tbody ? tbody.children : [];
+    if (!rows.length) return;
+
+    // Count present cells per column. "Present" = cell has any text
+    // other than empty or "-". That matches the convention used when
+    // we build the row above (every empty-data path renders "-").
+    const presentByCol = {};
+    for (const row of rows) {
+        for (const cell of row.querySelectorAll("td[data-col]")) {
+            const col = cell.dataset.col;
+            const txt = (cell.textContent || "").trim();
+            if (txt && txt !== "-") {
+                presentByCol[col] = (presentByCol[col] || 0) + 1;
+            } else if (!(col in presentByCol)) {
+                presentByCol[col] = 0;
+            }
+        }
+    }
+
+    const total = rows.length;
+    const toHide = Object.entries(presentByCol)
+        .filter(([, n]) => (n / total) < SPARSE_COL_THRESHOLD)
+        .map(([col]) => col);
+    if (!toHide.length) return;
+
+    const hideSet = new Set(toHide);
+    // Mark both header and body cells so display:none on the column
+    // is consistent. Includes the .col-hidden class on the <th>; CSS
+    // handles the actual hiding so we don't have to walk on every
+    // scroll/repaint.
+    table.querySelectorAll("[data-col]").forEach(el => {
+        if (hideSet.has(el.dataset.col)) el.classList.add("col-hidden");
+    });
+    table.classList.add("has-hidden-cols");
 }
 
 function updateStats(shown) {
