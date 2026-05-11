@@ -823,17 +823,56 @@ async def collect_bandsintown_job(batch: int = 150):
     found = saved = 0
 
     try:
-        # Top performers by event count — most-booked artists first
+        # Pool rotation: the top-150 by event count saturate on dedupe
+        # once Bandsintown has been seen — every event returned for an
+        # already-popular artist is one we already have. When the save
+        # rate drops below 1% for 3 consecutive runs, slide the OFFSET
+        # forward by `batch` to expose mid-tier artists. The offset is
+        # persisted in the previous successful run's `notes` string
+        # ("offset=N") — no new state table needed.
+        import re as _re
+        prev_logs = (
+            db.query(ScanLog)
+            .filter(ScanLog.job_name == "bandsintown", ScanLog.status == "success")
+            .order_by(ScanLog.id.desc())
+            .limit(3)
+            .all()
+        )
+        prev_offset = 0
+        if prev_logs:
+            m = _re.search(r"offset=(\d+)", prev_logs[0].notes or "")
+            if m:
+                prev_offset = int(m.group(1))
+        should_rotate = (
+            len(prev_logs) >= 3
+            and all(
+                (l.events_saved or 0) / max(l.events_found or 1, 1) < 0.01
+                for l in prev_logs
+            )
+        )
+        total_perf = db.query(Performer).count()
+        offset = (
+            (prev_offset + batch) % max(total_perf, 1)
+            if should_rotate else prev_offset
+        )
+        if should_rotate:
+            logger.info(
+                f"collect_bandsintown_job: pool saturated (last 3 runs <1% save) "
+                f"— rotating offset {prev_offset} -> {offset}"
+            )
+
+        # Performers by event count, starting at the rotation offset
         rows = (
             db.query(Performer.name, func.count(Event.id).label("n"))
             .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
             .group_by(Performer.id, Performer.name)
             .order_by(func.count(Event.id).desc())
+            .offset(offset)
             .limit(batch)
             .all()
         )
         artist_names = [r[0] for r in rows]
-        logger.info(f"collect_bandsintown_job: scanning {len(artist_names)} artists")
+        logger.info(f"collect_bandsintown_job: scanning {len(artist_names)} artists (offset={offset})")
 
         client = BandsintownClient()
         today = _date.today()
@@ -922,8 +961,8 @@ async def collect_bandsintown_job(batch: int = 150):
         log.status = "success"
         log.events_found = found
         log.events_saved = saved
-        log.notes = f"artists={len(artist_names)} found={found} saved={saved}"
-        logger.info(f"collect_bandsintown_job done: found={found} saved={saved}")
+        log.notes = f"artists={len(artist_names)} found={found} saved={saved} offset={offset}"
+        logger.info(f"collect_bandsintown_job done: found={found} saved={saved} offset={offset}")
     except Exception as e:
         log.status = "failed"
         log.notes = str(e)
@@ -1221,14 +1260,24 @@ async def enrich_spotify_job(batch: int = 500):
             rows = await asyncio.to_thread(_select_pending)
             logger.info(f"enrich_spotify_job: {len(rows)} performers to enrich")
 
-            async with _httpx.AsyncClient(timeout=10) as http:
+            # Granular httpx timeout — `timeout=10` is a total budget
+            # that doesn't always cover pool/connect phases. A wedged
+            # TLS handshake left this job running for 4h47m on 2026-05-11
+            # before being killed by hand; the per-phase split + an
+            # asyncio.wait_for ceiling per artist guarantees forward
+            # progress.
+            _SPOTIFY_TIMEOUT = _httpx.Timeout(connect=5, read=10, write=5, pool=5)
+            async with _httpx.AsyncClient(timeout=_SPOTIFY_TIMEOUT) as http:
                 for perf_id, name, _n in rows:
                     try:
-                        result = await lookup_spotify_artist(
-                            name,
-                            settings.SPOTIFY_CLIENT_ID,
-                            settings.SPOTIFY_CLIENT_SECRET,
-                            http,
+                        result = await asyncio.wait_for(
+                            lookup_spotify_artist(
+                                name,
+                                settings.SPOTIFY_CLIENT_ID,
+                                settings.SPOTIFY_CLIENT_SECRET,
+                                http,
+                            ),
+                            timeout=20,
                         )
                         if await asyncio.to_thread(_persist, perf_id, name, result):
                             enriched += 1

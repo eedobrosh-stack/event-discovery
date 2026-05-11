@@ -1,18 +1,30 @@
-"""Brave-search fallback for artist YouTube channel URLs.
+"""Brave-search fallback for artist YouTube URLs.
 
 Companion to app.scheduler.jobs.enrich_youtube_job (which uses the
 YouTube Data API). When the YouTube API misses an artist (no exact
 channel match, throttled, or quota'd), this script tries a generic
-Brave web search constrained to youtube.com and accepts the first
-result that:
+Brave web search constrained to youtube.com.
 
-  • points at a real channel URL (youtube.com/@HANDLE,
-    /channel/UC..., /c/CUSTOM, or /user/NAME — NOT a video or
-    playlist URL); AND
-  • whose handle or page title contains the artist's name (as a
-    normalized substring) — defends against the search engine
-    ranking a wrong artist with a similar name above the right
-    one.
+Selection rule (relaxed 2026-05-11):
+  1. Prefer a real channel URL (youtube.com/@HANDLE, /channel/UC...,
+     /c/CUSTOM, or /user/NAME) whose handle or title contains the
+     artist's normalized name.
+  2. Fall back to ANY youtube.com URL (video, /shorts, /watch) whose
+     title contains the artist's normalized name.
+  3. Drop everything that doesn't mention the artist in the title —
+     this still defends against a wrong artist with a similar name
+     ranking at position 1.
+
+The earlier strict channel-only rule was costing ~64% no_match. The
+frontend renders this column as a generic "Watch" / "Highlights" link
+(frontend/app.js:1184), so a video URL is just as useful as a channel
+URL.
+
+Cache (scripts/_brave_youtube_cache.jsonl) stores the Brave result
+snapshot for every artist. Cache hits re-run the picker against the
+stored results — so when the picker logic changes (like this one),
+old "None"-cached artists get re-evaluated for free without burning
+Brave quota.
 
 On a hit, writes ``Event.artist_youtube_channel`` for every event
 with that artist (case-insensitive). On a miss, leaves the column
@@ -169,25 +181,50 @@ def _artist_match(artist: str, handle: str | None, title: str | None) -> bool:
     return False
 
 
-# ── Brave search + channel pick ───────────────────────────────────────
+# ── Brave search + result pick ────────────────────────────────────────
 def find_channel_for_artist(artist: str) -> tuple[str | None, list[dict]]:
-    """Brave-search for the artist's YouTube channel. Returns
-    (channel_url_or_None, results_for_audit). Empty results list means
-    Brave failed (rate limit, transient error)."""
+    """Brave-search for a YouTube URL representing the artist. Returns
+    (url_or_None, results_for_audit). Empty results list means Brave
+    failed (rate limit, transient error).
+
+    Selection rule (relaxed 2026-05-11): prefer a real channel URL
+    whose handle/title matches the artist; fall back to ANY youtube.com
+    URL (video, /shorts, /watch) whose title contains the artist's
+    normalized name. The frontend renders this as a "Watch" link, so a
+    video URL is just as useful as a channel URL — earlier hit rate of
+    ~36% (channel-only) was held back by the strict shape filter, not
+    by Brave miss-rate. With this change, channel hits stay first, but
+    we no longer throw away a perfectly good "Artist X - Live at Y"
+    video that ranked at position 1."""
     query = f'"{artist}" site:youtube.com'
     hits = brave_search(query, n=10)
     results = [
         {"url": h.url, "title": h.title, "snippet": h.snippet}
         for h in hits
     ]
-    for h in results:
+    return _pick_url_from_results(artist, results), results
+
+
+def _pick_url_from_results(artist: str, results: list[dict]) -> str | None:
+    """Run the selection rule against an arbitrary `results` list.
+    Factored out so cache-hits re-pick under the current logic — when
+    the picker is relaxed (e.g. video URLs accepted), old cached
+    artists are re-evaluated for free."""
+    a_norm = _normalize(artist)
+    if len(a_norm) < 3:
+        return None
+    fallback: str | None = None
+    for h in results or []:
         url = h.get("url") or ""
-        handle = _channel_handle(url)
-        if not handle:
+        title = h.get("title") or ""
+        if "youtube.com" not in url and "youtu.be" not in url:
             continue
-        if _artist_match(artist, handle, h.get("title")):
-            return url, results
-    return None, results
+        handle = _channel_handle(url)
+        if handle and _artist_match(artist, handle, title):
+            return url  # preferred: matching channel URL
+        if fallback is None and a_norm in _normalize(title):
+            fallback = url  # first video/other URL with artist in title
+    return fallback
 
 
 # ── Targeting ─────────────────────────────────────────────────────────
@@ -246,12 +283,15 @@ def run(*, apply: bool = False, limit: int = 200) -> dict:
 
             cached = cache.get(key)
             if cached is not None:
-                # Cache hit — use whatever channel_url was determined
-                # last time. None means "we tried and Brave didn't
-                # surface a match" — don't re-Brave on re-run within
-                # the same backlog window.
+                # Cache hit — re-pick from the cached Brave results
+                # under the CURRENT picker logic, rather than trusting
+                # the previously-stored channel_url. This lets logic
+                # changes (e.g. accepting video URLs) backfill old
+                # cached artists for free without re-spending Brave
+                # quota. None still means "Brave returned nothing
+                # usable for this artist" under the new rules too.
                 stats["cache_hits"] += 1
-                channel_url = cached.get("channel_url")
+                channel_url = _pick_url_from_results(name, cached.get("results") or [])
             else:
                 channel_url, results = find_channel_for_artist(name)
                 stats["brave_calls"] += 1
