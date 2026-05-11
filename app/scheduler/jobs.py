@@ -59,6 +59,7 @@ from app.services.collectors.scrapers.sports.tennis import TennisCollector
 from app.services.collectors.scrapers.sports.diamond_league import DiamondLeagueCollector
 from app.services.collectors.scrapers.sports.world_aquatics import WorldAquaticsCollector
 from app.services.collectors.scrapers.sports.uci_worldtour import UCIWorldTourCollector
+from app.services.collectors.scrapers.sports.bsl_winner import BSLWinnerLeagueCollector
 from app.services.collectors.scrapers.choosechicago import ChooseChicagoCollector
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,8 @@ registry.register(DiamondLeagueCollector())
 registry.register(WorldAquaticsCollector())
 # UCI WorldTour road cycling (Wikipedia season table)
 registry.register(UCIWorldTourCollector())
+# Israeli Basketball Premier League (ליגת Winner / BSL) — basket.co.il
+registry.register(BSLWinnerLeagueCollector())
 # Chicago-specific — Choose Chicago TEC REST API (no key)
 registry.register(ChooseChicagoCollector())
 
