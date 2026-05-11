@@ -1,4 +1,5 @@
 from __future__ import annotations
+import html
 import logging
 from difflib import SequenceMatcher
 
@@ -10,6 +11,19 @@ from app.services.collectors.base import BaseCollector, RawEvent, default_end_ti
 from app.services.youtube_lookup import lookup_youtube_video
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_entities(s):
+    """Decode HTML entities in a text field. Safe on None and empty
+    strings. Idempotent — html.unescape on already-decoded text is a
+    no-op. Defensive against scrapers that pulled DOM attribute or
+    JSON-LD values without decoding (image 5 / 2026-05-12 bug: event
+    names like 'QUEENTA - ג&#039;יין בורדו' landed in DB with the
+    apostrophe entity intact, then re-encoded by frontend esc() to
+    display literally)."""
+    if not s:
+        return s
+    return html.unescape(s)
 
 
 class CollectorRegistry:
@@ -63,6 +77,17 @@ class CollectorRegistry:
         saved = 0
         for i, raw in enumerate(raw_events):
             try:
+                # Decode any HTML entities that slipped through the scraper
+                # without unescaping. Applied as the first step so downstream
+                # normalization (the " @ " splits, dedup matching, venue
+                # resolution) runs on the human-readable text, not entity-
+                # encoded gibberish.
+                raw.name = _decode_entities(raw.name)
+                raw.artist_name = _decode_entities(raw.artist_name)
+                raw.venue_name = _decode_entities(raw.venue_name)
+                if hasattr(raw, "description"):
+                    raw.description = _decode_entities(raw.description)
+
                 # Normalize: split "Event Title @ Venue Name" patterns
                 # Case 1: @ in event name  → "Concert Title @ Venue" → split
                 if raw.name and " @ " in raw.name:

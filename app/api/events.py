@@ -284,7 +284,46 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                     name_match_ilike(Event.name, term),
                 )
             else:
-                query = query.filter(name_match_ilike(Event.name, term))
+                # Broad search: OR across every column the UI displays.
+                # Pre-2026-05-12 this was just `name_match_ilike(Event.name, term)`,
+                # which led to user-visible mismatches like searching "Concert"
+                # finding 0 events even when Format=Concert was rendered in the
+                # table, or "Psychedelic Rock" finding 0 even when Genre=
+                # Psychedelic Rock was rendered. The display surface and the
+                # search surface must be the same set of columns — otherwise
+                # the UI is lying about what's findable.
+                from app.models.genre import ArtistGenre as _AG
+                # Artists whose primary_genre matches the term — lowercase
+                # the artist's normalized_name so we can join Event.artist_name
+                # via func.lower() the same way the genre filter does.
+                artist_by_genre_subq = (
+                    db.query(_AG.normalized_name)
+                    .filter(name_match_ilike(_AG.primary_genre, term))
+                    .scalar_subquery()
+                )
+                # Events whose attached EventType name or category matches.
+                et_subq = (
+                    db.query(event_event_types.c.event_id)
+                    .join(EventType, EventType.id == event_event_types.c.event_type_id)
+                    .filter(or_(
+                        name_match_ilike(EventType.name, term),
+                        name_match_ilike(EventType.category, term),
+                    ))
+                    .scalar_subquery()
+                )
+                # Venues whose name matches → match all events at those venues.
+                venue_subq = (
+                    db.query(Venue.id)
+                    .filter(name_match_ilike(Venue.name, term))
+                    .scalar_subquery()
+                )
+                query = query.filter(or_(
+                    name_match_ilike(Event.name, term),
+                    name_match_ilike(Event.artist_name, term),
+                    func.lower(Event.artist_name).in_(artist_by_genre_subq),
+                    Event.id.in_(et_subq),
+                    Event.venue_id.in_(venue_subq),
+                ))
 
     return query
 
