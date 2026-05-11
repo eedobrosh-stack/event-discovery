@@ -299,7 +299,7 @@ th {
 }
 
 /* Sparse-column hiding (app.js: applySparseColumnHiding). When fewer
-   than 10% of rows carry real data in a column, that column gets
+   than 25% of rows carry real data in a column, that column gets
    .col-hidden on both <th> and <td>. The table is width:100% so the
    remaining columns expand into the freed space — overall table
    width is unchanged. */

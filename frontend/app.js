@@ -1262,7 +1262,7 @@ async function searchEvents() {
     updateStats(tbody.children.length);
 
     // ── Sparse-column hiding ──────────────────────────────────────────
-    // For columns marked [data-col]: if fewer than 10% of rows carry
+    // For columns marked [data-col]: if fewer than 25% of rows carry
     // real data (anything other than empty/"-"), drop the column. The
     // table's outer width is unaffected (#events-table has width:100%)
     // — remaining columns get more breathing room automatically. We
@@ -1307,11 +1307,12 @@ async function searchEvents() {
     }
 }
 
-// Sparse-column threshold: a column is hidden when fewer than 10% of
-// rows carry real data. 10% chosen empirically — leaves room for the
-// "one or two outliers" case (e.g. one of 50 events has a price) while
-// confidently hiding columns that the search context just doesn't fill.
-const SPARSE_COL_THRESHOLD = 0.10;
+// Sparse-column threshold: a column is hidden when fewer than 25% of
+// rows carry real data (equivalently: more than 75% of rows are empty
+// or "-"). Raised from 10% on 2026-05-11 — the 10% threshold kept too
+// many sparse columns visible, e.g. an Artist column populated for
+// 18% of NYC results survived even though it was mostly "-".
+const SPARSE_COL_THRESHOLD = 0.25;
 
 function applySparseColumnHiding() {
     // Idempotent: reset any previous hiding first so re-renders of the
