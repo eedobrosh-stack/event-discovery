@@ -2475,6 +2475,64 @@ async def recompute_popularity_job():
             db.close()
 
 
+async def categorize_new_events_job(hours_back: int = 48):
+    """Incremental, non-destructive event_type assignment for fresh rows.
+
+    Why this exists
+    ---------------
+    Several ingestion paths write `Event` rows without populating the
+    `event_event_types` m2m association:
+      * `llm_extract_recurring_job` (Cadence A) — RawEvent → Event
+        skips type resolution.
+      * Manual one-off inserts (e.g. metopera_oneoff on 2026-05-11).
+      * A few hand-coded collectors that don't run through
+        `CollectorRegistry._resolve_event_type`.
+
+    Those events render under `category=null` and are invisible to
+    the `category=Music` filter — even when the artist (e.g. Sting)
+    is in `performers` with `category=Music`.
+
+    `scripts/categorize_events.py` already has the classifier logic
+    (performer lookup + keyword fallback). This job calls its
+    `run_incremental` entry point which:
+      * Only touches events created in the last `hours_back` hours.
+      * Only touches events with ZERO existing event_type assignments.
+      * Never overwrites a non-empty assignment — making this safe to
+        run hourly without thrashing manual overrides.
+
+    Cadence: hourly, ~5 min after the top of the hour so collect_events
+    (heavy lock) typically isn't running. No heavy_job_lock acquisition
+    needed — this is read-heavy + a small write batch, completes in
+    seconds against the ~daily-ingestion-rate window.
+    """
+    db = SessionLocal()
+    log = ScanLog(job_name="categorize_new_events", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    try:
+        from scripts.categorize_events import run_incremental
+        stats = await asyncio.to_thread(run_incremental, hours_back=hours_back, dry_run=False)
+        log.status = "success"
+        log.events_found = stats.get("scanned", 0)
+        log.events_saved = stats.get("applied", 0)
+        log.notes = (
+            f"scanned={stats.get('scanned',0)} applied={stats.get('applied',0)} "
+            f"perf={stats.get('performer_hit',0)} music_default={stats.get('music_default',0)} "
+            f"keyword={stats.get('keyword_hit',0)} no_match={stats.get('no_match',0)} "
+            f"hours_back={hours_back}"
+        )
+        logger.info(f"categorize_new_events_job: {log.notes}")
+    except Exception as e:
+        log.status = "failed"
+        log.notes = str(e)
+        logger.error(f"categorize_new_events_job error: {e}")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
 def _city_last_discovered_at(db, city_name: str, country: str):
     """Most-recent LLMSource.created_at for (city, country), or None.
 

@@ -116,74 +116,130 @@ def keyword_match(text: str):
     return None
 
 
-def run(dry_run: bool = False):
+def _classify(event, performer_map, et_by_name):
+    """Pick the best EventType for `event`. Returns (et_or_None, stats_key).
+
+    Two-pass, identical to the original `run()` body — factored out so
+    both the manual full-table script AND the nightly incremental cron
+    use the exact same classifier.
+    """
+    # ── Pass 1: performer lookup ──────────────────────────────────
+    if event.artist_name and event.artist_name.strip():
+        norm = normalize(event.artist_name.strip())
+        if norm in performer_map:
+            _, type_name = performer_map[norm]
+            et = et_by_name.get(type_name)
+            if et:
+                return et, "performer_hit"
+        # Artist exists but not in the performers map → safe Music default.
+        et = et_by_name.get("Concert") or et_by_name.get("Pop Concert")
+        if et:
+            return et, "music_default"
+
+    # ── Pass 2: keyword matching on event-side text ───────────────
+    search_text = " ".join(filter(None, [
+        event.name or "",
+        event.venue_name or "",
+        event.description or "",
+    ]))
+    type_name = keyword_match(search_text)
+    if type_name:
+        et = et_by_name.get(type_name)
+        if et:
+            return et, "keyword_hit"
+
+    return None, "no_match"
+
+
+def run_incremental(*, hours_back: int = 48, dry_run: bool = False) -> dict:
+    """Non-destructive cron version: only fill gaps on recently-created
+    events that have NO event_types assignment yet.
+
+    Why this exists separately from `run()`
+    ---------------------------------------
+    The full-table `run()` does `event.event_types = [assigned_type]`,
+    which wipes any pre-existing assignment (manual fixes, collector
+    overrides, etc.). That's fine as a one-off but lethal as a cron.
+
+    This entry point:
+      * Filters to events created in the last `hours_back` (default 48h
+        — enough buffer that a missed schedule tick on a Render restart
+        doesn't leave events orphaned).
+      * Skips any event that already has ≥1 event_type association.
+      * Only writes when the classifier returns a non-None EventType,
+        so "no_match" events stay genuinely empty (for keyword-hit
+        retries on a future run after richer data lands).
+
+    Designed to be called from app.scheduler.jobs at hourly cadence.
+    Returns the stats dict so the caller can log into ScanLog.notes.
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import not_, exists, select
+    from app.models import event_event_types as _eet
+
     db = SessionLocal()
     try:
-        # Pre-load EventType map: name → EventType object
-        et_by_name: dict[str, EventType] = {
-            et.name: et for et in db.query(EventType).all()
-        }
-
-        # Pre-load performers: normalized_name → (category, event_type_name)
+        et_by_name = {et.name: et for et in db.query(EventType).all()}
         performer_map = {
             p.normalized_name: (p.category, p.event_type_name)
             for p in db.query(Performer).all()
             if p.event_type_name
         }
 
+        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        # Events with NO event_type association, created within the window.
+        # NOT EXISTS over the m2m is cleaner than outerjoin + NULL filter
+        # for SQLite + avoids dragging duplicate rows into Python.
+        no_et = ~exists(select(1).where(_eet.c.event_id == Event.id))
+        pending = (
+            db.query(Event)
+            .filter(Event.created_at > cutoff, no_et)
+            .all()
+        )
+
+        stats = {"performer_hit": 0, "music_default": 0, "keyword_hit": 0, "no_match": 0}
+        applied = 0
+        for ev in pending:
+            assigned, key = _classify(ev, performer_map, et_by_name)
+            stats[key] += 1
+            if assigned and not dry_run:
+                ev.event_types = [assigned]
+                applied += 1
+
+        if not dry_run:
+            db.commit()
+        stats["scanned"] = len(pending)
+        stats["applied"] = applied
+        return stats
+    finally:
+        db.close()
+
+
+def run(dry_run: bool = False):
+    """Manual full-table re-categorize. Destructive (overwrites existing
+    event_types on every event). Kept for the one-off CLI workflow —
+    use `run_incremental` from any automated path."""
+    db = SessionLocal()
+    try:
+        et_by_name: dict[str, EventType] = {
+            et.name: et for et in db.query(EventType).all()
+        }
+        performer_map = {
+            p.normalized_name: (p.category, p.event_type_name)
+            for p in db.query(Performer).all()
+            if p.event_type_name
+        }
         print(f"Loaded {len(et_by_name)} event types, {len(performer_map)} performers")
 
         events = db.query(Event).all()
-
-        stats = {
-            "performer_hit":     0,
-            "keyword_hit":       0,
-            "music_default":     0,  # has artist but no performer data → safe "Music" default
-            "no_match":          0,
-        }
+        stats = {"performer_hit": 0, "keyword_hit": 0, "music_default": 0, "no_match": 0}
 
         for event in events:
-            assigned_type = None
-
-            # ── Pass 1: performer lookup ──────────────────────────────────
-            if event.artist_name and event.artist_name.strip():
-                norm = normalize(event.artist_name.strip())
-                if norm in performer_map:
-                    _, type_name = performer_map[norm]
-                    et = et_by_name.get(type_name)
-                    if et:
-                        assigned_type = et
-                        stats["performer_hit"] += 1
-
-                if assigned_type is None:
-                    # Artist exists but not yet in performers table.
-                    # Default to "Concert" (generic Music) — infinitely better than "Art".
-                    et = et_by_name.get("Concert") or et_by_name.get("Pop Concert")
-                    if et:
-                        assigned_type = et
-                        stats["music_default"] += 1
-
-            # ── Pass 2: keyword matching ─────────────────────────────────
-            if assigned_type is None:
-                search_text = " ".join(filter(None, [
-                    event.name or "",
-                    event.venue_name or "",
-                    event.description or "",
-                ]))
-                type_name = keyword_match(search_text)
-                if type_name:
-                    et = et_by_name.get(type_name)
-                    if et:
-                        assigned_type = et
-                        stats["keyword_hit"] += 1
-
-            # ── Apply ────────────────────────────────────────────────────
-            if assigned_type:
-                if not dry_run:
-                    event.event_types = [assigned_type]
-            else:
-                stats["no_match"] += 1
-                # Leave existing assignment untouched rather than wiping to Art
+            assigned, key = _classify(event, performer_map, et_by_name)
+            stats[key] += 1
+            if assigned and not dry_run:
+                event.event_types = [assigned]
+            # no_match: leave existing assignment untouched
 
         if not dry_run:
             db.commit()
@@ -197,7 +253,6 @@ def run(dry_run: bool = False):
         print(f"  Total events:                 {total:>6,}")
         if dry_run:
             print("\n  [DRY RUN — nothing committed]")
-
     finally:
         db.close()
 
@@ -206,5 +261,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true",
                         help="Show statistics without writing to the database")
+    parser.add_argument("--incremental", type=int, metavar="HOURS",
+                        help="Run incremental mode: only events created in the "
+                             "last N hours that have no event_types yet. "
+                             "Non-destructive — never overwrites existing "
+                             "assignments. Use this from automation.")
     args = parser.parse_args()
-    run(dry_run=args.dry_run)
+    if args.incremental is not None:
+        stats = run_incremental(hours_back=args.incremental, dry_run=args.dry_run)
+        print(f"incremental({args.incremental}h): {stats}")
+    else:
+        run(dry_run=args.dry_run)

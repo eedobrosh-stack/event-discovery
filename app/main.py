@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job
 
 scheduler = AsyncIOScheduler()
 
@@ -931,6 +931,17 @@ async def lifespan(app: FastAPI):
         collect_mevalim_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=6)),
         id="collect_mevalim",
+        replace_existing=True,
+    )
+    # categorize_new_events — non-destructive, fills missing event_types
+    # for rows ingested in the last 48h (LLM extractor output, manual
+    # one-offs, some hand-coded collectors). Hourly cadence with a 48h
+    # window so a missed tick on Render restart still gets caught next
+    # run. Holds no heavy lock — read-heavy + tiny write batch.
+    scheduler.add_job(
+        categorize_new_events_job,
+        IntervalTrigger(hours=1, start_date=_t + _td(minutes=18)),
+        id="categorize_new_events",
         replace_existing=True,
     )
     scheduler.start()
