@@ -309,16 +309,20 @@ th {
 }
 
 /* When at least one column is hidden, give the remaining cells more
-   breathing room: allow long content (URLs, multi-word artist names,
-   long venue names) to wrap aggressively instead of forcing horizontal
-   scroll. Browser default for <td> is already white-space:normal, so
-   the key bit is overflow-wrap:anywhere which breaks any long token. */
-#events-table.has-hidden-cols td,
-#events-table.has-hidden-cols th {
+   breathing room. Use overflow-wrap:break-word (NOT `anywhere`) — the
+   former only kicks in for tokens that would overflow, while the
+   latter lets the browser treat min-content as 1 char and squeezes
+   every column down until short headers ("Buy", "Watch", "Link")
+   break mid-word. Header row preserves nowrap so labels stay on one
+   line; body uses break-word for the long-URL / long-name case. */
+#events-table.has-hidden-cols td {
     white-space: normal;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
     word-break: normal;
     line-height: 1.45;
+}
+#events-table.has-hidden-cols th {
+    white-space: nowrap;
 }
 
 a { color: #0f3460; text-decoration: none; }
