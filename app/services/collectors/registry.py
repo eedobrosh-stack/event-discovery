@@ -13,17 +13,31 @@ from app.services.youtube_lookup import lookup_youtube_video
 logger = logging.getLogger(__name__)
 
 
-def _decode_entities(s):
-    """Decode HTML entities in a text field. Safe on None and empty
-    strings. Idempotent — html.unescape on already-decoded text is a
-    no-op. Defensive against scrapers that pulled DOM attribute or
-    JSON-LD values without decoding (image 5 / 2026-05-12 bug: event
-    names like 'QUEENTA - ג&#039;יין בורדו' landed in DB with the
-    apostrophe entity intact, then re-encoded by frontend esc() to
-    display literally)."""
+def _decode_entities(s, max_iters: int = 5):
+    """Decode HTML entities in a text field. Safe on None/empty.
+    Fixed-point: keeps decoding until stable, so double-encoded inputs
+    (e.g. '&amp;amp;' → '&amp;' → '&') are fully resolved in one call.
+    Capped at 5 iterations as a safety belt.
+
+    Idempotent: the loop exits as soon as a pass changes nothing, so
+    on already-clean text the cost is one extra equality check.
+
+    Defensive against scrapers that pulled DOM attribute or JSON-LD
+    values without decoding (image 5 / 2026-05-12 bug: event names
+    like 'QUEENTA - ג&#039;יין בורדו' landed in DB with the apostrophe
+    entity intact, then re-encoded by frontend esc() to display
+    literally). Some sources double-encode (e.g. '&amp;amp;' in
+    festival lineups) — the fixed-point loop handles those without
+    needing a second backfill pass."""
     if not s:
         return s
-    return html.unescape(s)
+    prev = s
+    for _ in range(max_iters):
+        nxt = html.unescape(prev)
+        if nxt == prev:
+            return nxt
+        prev = nxt
+    return prev
 
 
 class CollectorRegistry:

@@ -31,10 +31,25 @@ from app.models import Event, Venue, Performer
 ENTITY_LIKES = ["%&#%", "%&amp;%", "%&quot;%", "%&apos;%", "%&lt;%", "%&gt;%"]
 
 
+def _fixed_point_decode(s, max_iters: int = 5):
+    """html.unescape repeatedly until output stabilizes. Handles double-
+    encoded text like '&amp;amp;' → '&amp;' → '&'. Capped at 5 iterations
+    as a safety belt against degenerate inputs."""
+    if not s:
+        return s
+    prev = s
+    for _ in range(max_iters):
+        nxt = html.unescape(prev)
+        if nxt == prev:
+            return nxt
+        prev = nxt
+    return prev
+
+
 def _needs_decode(s):
     if not s:
         return False
-    return html.unescape(s) != s
+    return _fixed_point_decode(s) != s
 
 
 def _candidates(query, col):
@@ -59,7 +74,7 @@ def run(*, apply: bool = False) -> dict:
             for ev in rows:
                 v = getattr(ev, col_attr)
                 if _needs_decode(v):
-                    new_v = html.unescape(v)
+                    new_v = _fixed_point_decode(v)
                     if apply:
                         setattr(ev, col_attr, new_v)
                     stats[stat_key] += 1
@@ -77,7 +92,7 @@ def run(*, apply: bool = False) -> dict:
         p_rows = _candidates(db.query(Performer), Performer.name).all()
         for p in p_rows:
             if _needs_decode(p.name):
-                new_v = html.unescape(p.name)
+                new_v = _fixed_point_decode(p.name)
                 if apply:
                     p.name = new_v
                 stats["performers"] += 1
