@@ -1045,6 +1045,11 @@ let totalEvents = null; // total matching count from /api/events/count
 // first-page render, accumulates as Load More appends pages.
 const _renderedNameKeys = new Set();
 const _renderedArtistKeys = new Set();
+// Running count of rows filtered out by the dedup pass. Subtracted
+// from the server-reported total in updateStats so the displayed
+// total reflects what the user can actually see — otherwise the
+// gap (e.g. "Showing 40 of 44") looks like a pagination bug.
+let _dedupedDropped = 0;
 
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
@@ -1179,6 +1184,7 @@ async function searchEvents() {
     if (isFirstPage) {
         _renderedNameKeys.clear();
         _renderedArtistKeys.clear();
+        _dedupedDropped = 0;
     }
     // Capture BEFORE dedup — pagination needs the API's row count, not
     // the post-filter count. Without this, offset stops advancing and
@@ -1195,6 +1201,7 @@ async function searchEvents() {
         if (aKey) _renderedArtistKeys.add(aKey);
         return true;
     });
+    _dedupedDropped += apiReturnedCount - events.length;
 
     const tbody = document.getElementById("events-body");
     events.forEach(ev => {
@@ -1365,7 +1372,16 @@ function applySparseColumnHiding() {
 }
 
 function updateStats(shown) {
-    const total = totalEvents;
+    // Reduce the displayed total by the running dedup-drop count.
+    // The /api/events/count endpoint is a raw COUNT(*) on the matched
+    // events table — it doesn't know about the frontend's name+moment
+    // collapse, so without this adjustment the user sees a confusing
+    // gap (e.g. "Showing 40 of 44" with no Load More button) that
+    // looks like a pagination bug. Floor at `shown` so we never claim
+    // a total smaller than what's rendered.
+    const total = totalEvents !== null
+        ? Math.max(shown, totalEvents - _dedupedDropped)
+        : null;
     if (total !== null) {
         document.getElementById("stats").textContent =
             `Showing ${shown} of ${total.toLocaleString()} events`;
