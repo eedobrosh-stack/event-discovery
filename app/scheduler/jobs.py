@@ -57,6 +57,7 @@ from app.services.collectors.scrapers.sports.cricapi import CricApiCollector
 from app.services.collectors.scrapers.sports.euroleague import EuroLeagueCollector
 from app.services.collectors.scrapers.sports.tennis import TennisCollector
 from app.services.collectors.scrapers.sports.diamond_league import DiamondLeagueCollector
+from app.services.collectors.scrapers.sports.world_aquatics import WorldAquaticsCollector
 from app.services.collectors.scrapers.choosechicago import ChooseChicagoCollector
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,8 @@ registry.register(EuroLeagueCollector())
 registry.register(TennisCollector())
 # Wanda Diamond League athletics (per-meeting subdomain pages, no key)
 registry.register(DiamondLeagueCollector())
+# World Aquatics / FINA — swimming, diving, water polo, etc. (public API)
+registry.register(WorldAquaticsCollector())
 # Chicago-specific — Choose Chicago TEC REST API (no key)
 registry.register(ChooseChicagoCollector())
 
