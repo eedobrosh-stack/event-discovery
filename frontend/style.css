@@ -309,15 +309,21 @@ th {
 }
 
 /* When at least one column is hidden, give the remaining cells more
-   breathing room. Use overflow-wrap:break-word (NOT `anywhere`) — the
-   former only kicks in for tokens that would overflow, while the
-   latter lets the browser treat min-content as 1 char and squeezes
-   every column down until short headers ("Buy", "Watch", "Link")
-   break mid-word. Header row preserves nowrap so labels stay on one
-   line; body uses break-word for the long-URL / long-name case. */
+   breathing room. Default overflow-wrap (`normal`) — only break at
+   whitespace, never within a single word. The user explicitly asked
+   for this on 2026-05-12: it's OK to line-break multi-word event /
+   venue names, but a single word like "Fusion" or "Watch" must
+   never be broken across lines. The browser's natural table layout
+   (`auto` + `width:100%`) distributes the viewport budget so each
+   column fits at least its min-content width (= widest unbreakable
+   word + padding), then redistributes leftover space proportionally
+   to max-content desires. No JS-driven width locking — that path
+   was creating horizontal scrollbars when the measured natural
+   widths summed beyond viewport. Header row keeps nowrap so column
+   labels never wrap. */
 #events-table.has-hidden-cols td {
     white-space: normal;
-    overflow-wrap: break-word;
+    overflow-wrap: normal;
     word-break: normal;
     line-height: 1.45;
 }

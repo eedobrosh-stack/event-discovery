@@ -1453,15 +1453,6 @@ async function searchEvents() {
         _renderedNameKeys.clear();
         _renderedArtistKeys.clear();
         _dedupedDropped = 0;
-        // Unlock column widths so the fresh search re-measures with
-        // its own representative content. Without this, a previous
-        // search's column widths would persist forever.
-        const _table = document.getElementById("events-table");
-        if (_table) {
-            _table.style.tableLayout = "";
-            _table.dataset.widthsLocked = "";
-            _table.querySelectorAll("thead th").forEach(th => { th.style.width = ""; });
-        }
     }
     // Capture BEFORE dedup — pagination needs the API's row count, not
     // the post-filter count. Without this, offset stops advancing and
@@ -1663,11 +1654,7 @@ function applySparseColumnHiding() {
             .filter(([, n]) => (n / total) < SPARSE_COL_THRESHOLD)
             .map(([col]) => col);
     }
-    if (!toHide.length) {
-        // No columns hidden — still lock widths so Load More can't shift them.
-        _lockColumnWidths();
-        return;
-    }
+    if (!toHide.length) return;
 
     const hideSet = new Set(toHide);
     // Mark both header and body cells so display:none on the column
@@ -1678,70 +1665,26 @@ function applySparseColumnHiding() {
         if (hideSet.has(el.dataset.col)) el.classList.add("col-hidden");
     });
     table.classList.add("has-hidden-cols");
-    _lockColumnWidths();
 }
 
+// _lockColumnWidths intentionally retired (2026-05-12). It was trying
+// to freeze column widths so Load More wouldn't shift the layout,
+// but every approach we tried caused worse problems:
+//   - Natural-width lock → table summed wider than viewport → horizontal
+//     scroll (user explicitly rejected this in image-17).
+//   - Budget-distributed lock → columns squeezed below min-content,
+//     `overflow-wrap: break-word` then broke single words mid-letter
+//     ("Fusion" → "Fusio / n").
+// The browser's native table-layout:auto + width:100% + overflow-wrap:
+// normal does the right thing: distributes the viewport budget so
+// each column fits at least its min-content (widest unbreakable
+// word) and grows toward max-content with leftover space. Multi-word
+// content wraps at whitespace; single words stay whole. Per-Load-More
+// width drift is acceptable in exchange for never breaking words.
+//
+// Stub kept below so any stray callers still resolve (defensive).
 function _lockColumnWidths() {
-    // Freeze column widths so Load More can't shift the layout.
-    //
-    // Critical timing: lock only once authoritative server presence
-    // arrives. Empty {} and null both route to "not ready, don't lock"
-    // because the hide-set is still tentative and could flip when
-    // real data lands. Locking under a tentative hide-set leaves
-    // later-unhidden columns with no explicit width (image-13 bug).
-    if (!_serverColumnPresence
-        || Object.keys(_serverColumnPresence).length === 0) return;
-    const table = document.getElementById("events-table");
-    if (!table || table.dataset.widthsLocked === "1") return;
-    const headers = table.querySelectorAll("thead th:not(.col-hidden)");
-    if (!headers.length) return;
-
-    // Measure each column at its MAX-CONTENT width — the width the
-    // browser would give it if unconstrained. We need this because
-    // table-layout:auto + table{width:100%} squeezes columns under
-    // budget pressure and wraps body content (image-15: "Fusion"
-    // wrapping to "Fusio / n" in a 65px Genre column).
-    //
-    // Force the unconstrained measurement by:
-    //  1. Setting white-space:nowrap on all body cells (browser must
-    //     fit each cell's content on one line),
-    //  2. Setting table.width = auto (no budget cap),
-    //  3. Setting table-layout: auto (column widths from content).
-    // Then each <th>'s rect.width is the natural max-content for the
-    // column. Math.ceil + small cushion handles sub-pixel rounding
-    // (65.4 → 65 would otherwise let `overflow-wrap: break-word` fire
-    // when the body text needs the full 65.4 to render).
-    const tbody = document.getElementById("events-body");
-    const bodyCells = tbody ? tbody.querySelectorAll("td:not(.col-hidden)") : [];
-    const prevCellWS = [];
-    bodyCells.forEach(td => {
-        prevCellWS.push(td.style.whiteSpace);
-        td.style.whiteSpace = "nowrap";
-    });
-    const prevWidth = table.style.width;
-    const prevLayout = table.style.tableLayout;
-    table.style.width = "auto";
-    table.style.tableLayout = "auto";
-    // Force layout flush before measurement.
-    // eslint-disable-next-line no-unused-expressions
-    table.offsetWidth;
-    const widths = [];
-    headers.forEach(th => {
-        // Ceil + 4px cushion: getBoundingClientRect returns sub-pixel
-        // values; ceil rounds up, +4 prevents `overflow-wrap` from
-        // triggering on cells whose content exactly equals the
-        // measured natural width (which happens when the header is
-        // shorter than the widest body cell — measurement is taken
-        // from the <th> but the wider <td> content needs the full
-        // span plus padding+border budget).
-        widths.push(Math.ceil(th.getBoundingClientRect().width) + 4);
-    });
-    bodyCells.forEach((td, i) => { td.style.whiteSpace = prevCellWS[i] || ""; });
-    table.style.width = prevWidth;
-    table.style.tableLayout = prevLayout;
-    headers.forEach((th, i) => { th.style.width = widths[i] + "px"; });
-    table.style.tableLayout = "fixed";
-    table.dataset.widthsLocked = "1";
+    // No-op (retired). See comment above the function declaration.
 }
 
 function updateStats(shown) {
