@@ -1684,28 +1684,42 @@ function applySparseColumnHiding() {
 function _lockColumnWidths() {
     // Freeze column widths so Load More can't shift the layout.
     //
-    // Critical timing: we ONLY lock once we have authoritative
-    // server-side column presence with actual ratios. Two transient
-    // states must NOT lock:
-    //   - _serverColumnPresence === null  (count fetch still pending)
-    //   - _serverColumnPresence === {}    (count returned total=0,
-    //                                       no ratios computable)
-    // In both cases we're operating on a DOM-scan fallback over a
-    // partial sample and the hide set may flip when authoritative
-    // data lands. Locking widths under a transient hide-set leaves
-    // later-unhidden columns with no explicit width — they get
-    // squeezed to ~0px and content wraps per-character, looking like
-    // it's leaking into the next column (2026-05-12 image-13 bug:
-    // Artist visible at locked-narrow width because the first lock
-    // happened while Artist was still flagged for hide).
+    // Critical timing: lock only once authoritative server presence
+    // arrives. Empty {} and null both route to "not ready, don't lock"
+    // because the hide-set is still tentative and could flip when
+    // real data lands. Locking under a tentative hide-set leaves
+    // later-unhidden columns with no explicit width (image-13 bug).
     if (!_serverColumnPresence
         || Object.keys(_serverColumnPresence).length === 0) return;
     const table = document.getElementById("events-table");
     if (!table || table.dataset.widthsLocked === "1") return;
     const headers = table.querySelectorAll("thead th:not(.col-hidden)");
     if (!headers.length) return;
+
+    // Measure each column at its MAX-CONTENT width, not the current
+    // width-100%-squeezed width.
+    //
+    // The default table-layout:auto + table{width:100%} distributes
+    // a fixed budget across columns; when the sum of max-content
+    // widths exceeds the viewport, the browser shrinks columns and
+    // wraps body content to fit. Then we'd lock at the squeezed
+    // width, preserving the wrap forever (image-15 bug: "Fusion"
+    // wrapping to "Fusio / n" in a 65px-wide Genre column).
+    //
+    // Fix: temporarily switch the table to natural-width layout
+    // (width:auto), force reflow, measure each <th>'s post-reflow
+    // width — those are the max-content widths. Restore width:100%
+    // and lock with those values. The table may now be wider than
+    // viewport (.table-scroll has overflow:auto so the user gets a
+    // horizontal scroll), which is better than mid-cell text wraps.
+    const prevWidth = table.style.width;
+    table.style.width = "auto";
+    // Force layout flush before measurement.
+    // eslint-disable-next-line no-unused-expressions
+    table.offsetWidth;
     const widths = [];
     headers.forEach(th => widths.push(Math.round(th.getBoundingClientRect().width)));
+    table.style.width = prevWidth;
     headers.forEach((th, i) => { th.style.width = widths[i] + "px"; });
     table.style.tableLayout = "fixed";
     table.dataset.widthsLocked = "1";
