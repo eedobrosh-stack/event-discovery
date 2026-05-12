@@ -1696,30 +1696,49 @@ function _lockColumnWidths() {
     const headers = table.querySelectorAll("thead th:not(.col-hidden)");
     if (!headers.length) return;
 
-    // Measure each column at its MAX-CONTENT width, not the current
-    // width-100%-squeezed width.
+    // Measure each column at its MAX-CONTENT width — the width the
+    // browser would give it if unconstrained. We need this because
+    // table-layout:auto + table{width:100%} squeezes columns under
+    // budget pressure and wraps body content (image-15: "Fusion"
+    // wrapping to "Fusio / n" in a 65px Genre column).
     //
-    // The default table-layout:auto + table{width:100%} distributes
-    // a fixed budget across columns; when the sum of max-content
-    // widths exceeds the viewport, the browser shrinks columns and
-    // wraps body content to fit. Then we'd lock at the squeezed
-    // width, preserving the wrap forever (image-15 bug: "Fusion"
-    // wrapping to "Fusio / n" in a 65px-wide Genre column).
-    //
-    // Fix: temporarily switch the table to natural-width layout
-    // (width:auto), force reflow, measure each <th>'s post-reflow
-    // width — those are the max-content widths. Restore width:100%
-    // and lock with those values. The table may now be wider than
-    // viewport (.table-scroll has overflow:auto so the user gets a
-    // horizontal scroll), which is better than mid-cell text wraps.
+    // Force the unconstrained measurement by:
+    //  1. Setting white-space:nowrap on all body cells (browser must
+    //     fit each cell's content on one line),
+    //  2. Setting table.width = auto (no budget cap),
+    //  3. Setting table-layout: auto (column widths from content).
+    // Then each <th>'s rect.width is the natural max-content for the
+    // column. Math.ceil + small cushion handles sub-pixel rounding
+    // (65.4 → 65 would otherwise let `overflow-wrap: break-word` fire
+    // when the body text needs the full 65.4 to render).
+    const tbody = document.getElementById("events-body");
+    const bodyCells = tbody ? tbody.querySelectorAll("td:not(.col-hidden)") : [];
+    const prevCellWS = [];
+    bodyCells.forEach(td => {
+        prevCellWS.push(td.style.whiteSpace);
+        td.style.whiteSpace = "nowrap";
+    });
     const prevWidth = table.style.width;
+    const prevLayout = table.style.tableLayout;
     table.style.width = "auto";
+    table.style.tableLayout = "auto";
     // Force layout flush before measurement.
     // eslint-disable-next-line no-unused-expressions
     table.offsetWidth;
     const widths = [];
-    headers.forEach(th => widths.push(Math.round(th.getBoundingClientRect().width)));
+    headers.forEach(th => {
+        // Ceil + 4px cushion: getBoundingClientRect returns sub-pixel
+        // values; ceil rounds up, +4 prevents `overflow-wrap` from
+        // triggering on cells whose content exactly equals the
+        // measured natural width (which happens when the header is
+        // shorter than the widest body cell — measurement is taken
+        // from the <th> but the wider <td> content needs the full
+        // span plus padding+border budget).
+        widths.push(Math.ceil(th.getBoundingClientRect().width) + 4);
+    });
+    bodyCells.forEach((td, i) => { td.style.whiteSpace = prevCellWS[i] || ""; });
     table.style.width = prevWidth;
+    table.style.tableLayout = prevLayout;
     headers.forEach((th, i) => { th.style.width = widths[i] + "px"; });
     table.style.tableLayout = "fixed";
     table.dataset.widthsLocked = "1";
