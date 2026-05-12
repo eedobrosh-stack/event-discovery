@@ -366,8 +366,21 @@ def count_events(
     )
     base = db.query(
         func.count(Event.id.distinct()).label("total"),
+        # `artist` presence must match the frontend's render rule:
+        # artistHtml is "-" when artist_name == name (case-insensitive)
+        # because rendering the same string twice is noise. Backend
+        # used to count any non-null artist_name as present, so events
+        # like "Brian Jackson" (name=artist_name) showed up as 100%
+        # artist-present even though the UI rendered "-" in the
+        # column. The threshold logic then kept the column visible.
+        # 2026-05-12 image-13 bug.
         func.sum(_case(
-            (Event.artist_name.isnot(None) & (Event.artist_name != ""), 1),
+            (
+                Event.artist_name.isnot(None)
+                & (Event.artist_name != "")
+                & (func.lower(Event.artist_name) != func.lower(Event.name)),
+                1,
+            ),
             else_=0,
         )).label("artist"),
         func.sum(_case(
