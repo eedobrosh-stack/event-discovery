@@ -1040,6 +1040,11 @@ function getFilters() {
 }
 
 let totalEvents = null; // total matching count from /api/events/count
+// Per-column presence ratios for the FULL filtered set (not just first
+// 50 rendered rows). Returned by /api/events/count; populated async
+// after the first page renders. Used by applySparseColumnHiding so
+// the decision matches the search context as a whole.
+let _serverColumnPresence = null;
 
 // Cross-page dedup registry — see renderResults below. Reset on every
 // first-page render, accumulates as Load More appends pages.
@@ -1079,14 +1084,23 @@ async function searchEvents() {
     // Clear any prior empty/extended notice — fresh search starts neutral.
     if (isFirstPage) clearSearchNotice();
 
-    // Fetch total count on the first page
+    // Fetch total count on the first page. The count endpoint also
+    // returns per-column presence ratios for the FULL filtered set —
+    // used to drive sparse-column hiding instead of evaluating just
+    // the first 50 rendered rows (which used to make the hidden-column
+    // set depend on which 50 events ranked highest, not the search
+    // context as a whole).
     if (isFirstPage) {
         totalEvents = null;
+        _serverColumnPresence = null;
         fetch(`/api/events/count?${params}`)
             .then(r => r.json())
-            .then(({ total }) => {
+            .then(({ total, column_presence }) => {
                 totalEvents = total;
+                _serverColumnPresence = column_presence || null;
                 updateStats(document.getElementById("events-body").children.length);
+                // Re-apply hide decision now that we have full-set truth.
+                applySparseColumnHiding();
             })
             .catch(() => {});
     }
@@ -1185,6 +1199,15 @@ async function searchEvents() {
         _renderedNameKeys.clear();
         _renderedArtistKeys.clear();
         _dedupedDropped = 0;
+        // Unlock column widths so the fresh search re-measures with
+        // its own representative content. Without this, a previous
+        // search's column widths would persist forever.
+        const _table = document.getElementById("events-table");
+        if (_table) {
+            _table.style.tableLayout = "";
+            _table.dataset.widthsLocked = "";
+            _table.querySelectorAll("thead th").forEach(th => { th.style.width = ""; });
+        }
     }
     // Capture BEFORE dedup — pagination needs the API's row count, not
     // the post-filter count. Without this, offset stops advancing and
@@ -1334,31 +1357,46 @@ function applySparseColumnHiding() {
     table.querySelectorAll(".col-hidden").forEach(el => el.classList.remove("col-hidden"));
     table.classList.remove("has-hidden-cols");
 
-    const tbody = document.getElementById("events-body");
-    const rows = tbody ? tbody.children : [];
-    if (!rows.length) return;
-
-    // Count present cells per column. "Present" = cell has any text
-    // other than empty or "-". That matches the convention used when
-    // we build the row above (every empty-data path renders "-").
-    const presentByCol = {};
-    for (const row of rows) {
-        for (const cell of row.querySelectorAll("td[data-col]")) {
-            const col = cell.dataset.col;
-            const txt = (cell.textContent || "").trim();
-            if (txt && txt !== "-") {
-                presentByCol[col] = (presentByCol[col] || 0) + 1;
-            } else if (!(col in presentByCol)) {
-                presentByCol[col] = 0;
+    let toHide;
+    if (_serverColumnPresence) {
+        // Authoritative path: full-set presence ratios from
+        // /api/events/count. The frontend just thresholds them; no
+        // page-size sampling bias. This is what the user actually
+        // wants — the decision reflects the whole 9,550-event
+        // result, not whichever 50 events ranked highest.
+        toHide = Object.entries(_serverColumnPresence)
+            .filter(([, ratio]) => ratio < SPARSE_COL_THRESHOLD)
+            .map(([col]) => col);
+    } else {
+        // Fallback (count endpoint still in-flight or failed): scan
+        // the rendered DOM. Mirrors the original behavior so the
+        // table renders with reasonable defaults during the brief
+        // window before the count response lands.
+        const tbody = document.getElementById("events-body");
+        const rows = tbody ? tbody.children : [];
+        if (!rows.length) return;
+        const presentByCol = {};
+        for (const row of rows) {
+            for (const cell of row.querySelectorAll("td[data-col]")) {
+                const col = cell.dataset.col;
+                const txt = (cell.textContent || "").trim();
+                if (txt && txt !== "-") {
+                    presentByCol[col] = (presentByCol[col] || 0) + 1;
+                } else if (!(col in presentByCol)) {
+                    presentByCol[col] = 0;
+                }
             }
         }
+        const total = rows.length;
+        toHide = Object.entries(presentByCol)
+            .filter(([, n]) => (n / total) < SPARSE_COL_THRESHOLD)
+            .map(([col]) => col);
     }
-
-    const total = rows.length;
-    const toHide = Object.entries(presentByCol)
-        .filter(([, n]) => (n / total) < SPARSE_COL_THRESHOLD)
-        .map(([col]) => col);
-    if (!toHide.length) return;
+    if (!toHide.length) {
+        // No columns hidden — still lock widths so Load More can't shift them.
+        _lockColumnWidths();
+        return;
+    }
 
     const hideSet = new Set(toHide);
     // Mark both header and body cells so display:none on the column
@@ -1369,6 +1407,26 @@ function applySparseColumnHiding() {
         if (hideSet.has(el.dataset.col)) el.classList.add("col-hidden");
     });
     table.classList.add("has-hidden-cols");
+    _lockColumnWidths();
+}
+
+function _lockColumnWidths() {
+    // Freeze column widths so Load More can't shift the layout.
+    // Default table-layout:auto recomputes column widths every time
+    // a row is appended — a long "Symphony Orchestral Performances"
+    // in page 2 can push the table wider than the viewport and
+    // visibly shift columns. We snapshot each visible <th>'s width
+    // once (after sparse-column hiding has settled) and switch the
+    // table to fixed layout so future rows respect the snapshot.
+    const table = document.getElementById("events-table");
+    if (!table || table.dataset.widthsLocked === "1") return;
+    const headers = table.querySelectorAll("thead th:not(.col-hidden)");
+    if (!headers.length) return;
+    const widths = [];
+    headers.forEach(th => widths.push(Math.round(th.getBoundingClientRect().width)));
+    headers.forEach((th, i) => { th.style.width = widths[i] + "px"; });
+    table.style.tableLayout = "fixed";
+    table.dataset.widthsLocked = "1";
 }
 
 function updateStats(shown) {

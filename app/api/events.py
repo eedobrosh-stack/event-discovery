@@ -341,13 +341,72 @@ def count_events(
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names (Rock, Electronic, …); expanded to all sub-genres' artists."),
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy import func
+    from sqlalchemy import func, case as _case, exists, select
+    from app.models.genre import ArtistGenre as _AG
+
+    # Single multi-aggregate over the FILTERED event set. The frontend
+    # uses these per-column presence ratios to decide which columns to
+    # hide (sparse-column logic) — pulling the truth from the full
+    # result set instead of evaluating just the first 50 rendered rows
+    # (which caused the visible column set to depend on page-order
+    # rather than the search context).
+    has_event_type = exists(
+        select(1)
+        .select_from(event_event_types)
+        .where(event_event_types.c.event_id == Event.id)
+    )
+    artist_genre_known = exists(
+        select(1)
+        .select_from(_AG)
+        .where(
+            func.lower(Event.artist_name) == _AG.normalized_name,
+            _AG.primary_genre.isnot(None),
+            _AG.primary_genre != "UNKNOWN",
+        )
+    )
+    base = db.query(
+        func.count(Event.id.distinct()).label("total"),
+        func.sum(_case(
+            (Event.artist_name.isnot(None) & (Event.artist_name != ""), 1),
+            else_=0,
+        )).label("artist"),
+        func.sum(_case(
+            (Event.artist_youtube_channel.isnot(None) & (Event.artist_youtube_channel != ""), 1),
+            else_=0,
+        )).label("youtube"),
+        func.sum(_case((Event.price.isnot(None), 1), else_=0)).label("price"),
+        func.sum(_case((Event.tv_channels.isnot(None), 1), else_=0)).label("tv"),
+        func.sum(_case(
+            (Event.purchase_link.isnot(None) & (Event.purchase_link != ""), 1),
+            else_=0,
+        )).label("link"),
+        func.sum(_case((has_event_type, 1), else_=0)).label("format_and_category"),
+        func.sum(_case((artist_genre_known, 1), else_=0)).label("genre"),
+    )
     query = _build_filter_query(
-        db, db.query(func.count(Event.id.distinct())),
+        db, base,
         categories, type_search, city_ids, start_date, end_date, search, country,
         artist_exact=artist_exact, genres=genres,
     )
-    return {"total": query.scalar() or 0}
+    row = query.first()
+    if not row or not row.total:
+        return {"total": 0, "column_presence": {}}
+
+    total = row.total
+    presence = {
+        "artist":   (row.artist or 0) / total,
+        "youtube":  (row.youtube or 0) / total,
+        "price":    (row.price or 0) / total,
+        "tv":       (row.tv or 0) / total,
+        "link":     (row.link or 0) / total,
+        # Format and category are populated from the same event_types
+        # m2m — when at least one EventType row is attached, both
+        # category and format render. Use one ratio for both columns.
+        "category": (row.format_and_category or 0) / total,
+        "format":   (row.format_and_category or 0) / total,
+        "genre":    (row.genre or 0) / total,
+    }
+    return {"total": total, "column_presence": presence}
 
 
 @router.get("", response_model=List[EventOut])
