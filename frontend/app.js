@@ -1412,12 +1412,18 @@ function applySparseColumnHiding() {
 
 function _lockColumnWidths() {
     // Freeze column widths so Load More can't shift the layout.
-    // Default table-layout:auto recomputes column widths every time
-    // a row is appended — a long "Symphony Orchestral Performances"
-    // in page 2 can push the table wider than the viewport and
-    // visibly shift columns. We snapshot each visible <th>'s width
-    // once (after sparse-column hiding has settled) and switch the
-    // table to fixed layout so future rows respect the snapshot.
+    //
+    // Critical timing: we ONLY lock once we have authoritative
+    // server-side column presence. The DOM-scan fallback (used during
+    // the brief window before /api/events/count responds) is based on
+    // just the first-page sample and may hide a column that the full
+    // result set wouldn't. If we locked widths during that transient
+    // state, then unhid the column later, the un-hidden column would
+    // have no explicit width under `table-layout:fixed` and get
+    // squeezed to ~0px — text wraps per-character into what looks
+    // like the next column. That was the 2026-05-12 "vertical
+    // PublicImageLtd in the YouTube column" bug.
+    if (!_serverColumnPresence) return;
     const table = document.getElementById("events-table");
     if (!table || table.dataset.widthsLocked === "1") return;
     const headers = table.querySelectorAll("thead th:not(.col-hidden)");
