@@ -75,11 +75,17 @@ def get_suggestions(
 
     See app.api._suggestions_index for the candidate-source-of-truth.
     """
-    cached = _cache_get(q)
+    # Lowercase BEFORE the cache lookup too — the index entries are
+    # pre-lowercased (`text_lower` in _suggestions_index), so uppercase
+    # queries previously returned [] across the board (no chips, no
+    # artists, no venues). 2026-05-12 user report: typing "Psychedelic
+    # Rock" returned no chip even though the sub-genre + 92 tagged
+    # artists exist. Caching the lowercase form also dedupes
+    # case-variant requests (jazz vs Jazz vs JAZZ → one cache entry).
+    q_stripped = q.strip().lower()
+    cached = _cache_get(q_stripped)
     if cached is not None:
         return cached[:limit]
-
-    q_stripped = q.strip()
     PER_TYPE = 3
     idx = idx_mod.get_index(db)
 
@@ -89,7 +95,7 @@ def get_suggestions(
     )
     if league_chips:
         results = league_chips[:limit]
-        _cache_set(q, results)
+        _cache_set(q_stripped, results)
         return results
 
     # ── Categories / Formats / Sport-teams ──────────────────────
@@ -135,5 +141,5 @@ def get_suggestions(
         + event_results           # 7
     )[:limit]
 
-    _cache_set(q, results)
+    _cache_set(q_stripped, results)
     return results
