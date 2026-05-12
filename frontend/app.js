@@ -402,6 +402,8 @@ let allCities = [];
 let allMetroAreas = [];
 let allCountries = [];
 let allStates = [];
+let allContinents = [];
+let allSubContinents = [];
 
 // US state names — kept in lockstep with app/api/_us_states.py.US_STATE_NAMES.
 // Used to disambiguate cities whose name overlaps a state name (e.g. the
@@ -440,11 +442,13 @@ function formatCityLabel(c) {
 }
 
 async function loadCities() {
-    const [citiesResp, metroResp, countriesResp, statesResp] = await Promise.all([
+    const [citiesResp, metroResp, countriesResp, statesResp, continentsResp, subContinentsResp] = await Promise.all([
         fetch("/api/cities"),
         fetch("/api/metro-areas"),
         fetch("/api/cities/countries"),
         fetch("/api/cities/states"),
+        fetch("/api/cities/continents"),
+        fetch("/api/cities/sub-continents"),
     ]);
     allCities = await citiesResp.json();
     allMetroAreas = (await metroResp.json()).map(m => ({
@@ -479,8 +483,230 @@ async function loadCities() {
         label: `🏛 ${s.name} State (${s.city_count} cities)`,
     }));
 
+    // Continents + sub-continents — selection is multi-city-ids, same
+    // plumbing as states/metros. To map continent/sub_continent → city
+    // ids, we'd need the country-membership table, but we don't ship
+    // it to the client; instead the client walks the loaded cities and
+    // groups them by country, and the country→region mapping is
+    // duplicated below. Keep this table small (just the countries that
+    // appear in our cities list) — see app/api/_continents.py for the
+    // authoritative version.
+    const COUNTRY_TO_REGION = _buildCountryRegionMap();
+    const byContinent = {};
+    const bySubContinent = {};
+    for (const city of allCities) {
+        const rec = COUNTRY_TO_REGION[city.country];
+        if (!rec) continue;
+        const [cont, sub] = rec;
+        if (cont) (byContinent[cont] ||= []).push(city.id);
+        if (sub) (bySubContinent[sub] ||= []).push(city.id);
+    }
+    allContinents = (await continentsResp.json()).map(c => ({
+        ...c,
+        _isContinent: true,
+        _isMeta: true,
+        city_ids: (byContinent[c.name] || []).join(","),
+        label: `🌎 ${c.name} (${c.country_count} countries)`,
+    }));
+    allSubContinents = (await subContinentsResp.json()).map(s => ({
+        ...s,
+        _isSubContinent: true,
+        _isMeta: true,
+        city_ids: (bySubContinent[s.name] || []).join(","),
+        label: `🌐 ${s.name} (${s.country_count} countries)`,
+    }));
+
     setupCityAutocomplete();
     detectUserCity();
+}
+
+function _buildCountryRegionMap() {
+    // Mirrors app/api/_continents.py — see that file for naming intent
+    // and how to add new countries. Kept inline here so the client
+    // doesn't need a separate roundtrip.
+    return {
+        "United Kingdom": ["Europe", "Northern Europe"],
+        "Ireland": ["Europe", "Northern Europe"],
+        "Iceland": ["Europe", "Northern Europe"],
+        "Denmark": ["Europe", "Northern Europe"],
+        "Sweden": ["Europe", "Northern Europe"],
+        "Norway": ["Europe", "Northern Europe"],
+        "Finland": ["Europe", "Northern Europe"],
+        "Estonia": ["Europe", "Northern Europe"],
+        "Latvia": ["Europe", "Northern Europe"],
+        "Lithuania": ["Europe", "Northern Europe"],
+
+        "France": ["Europe", "Western Europe"],
+        "Germany": ["Europe", "Western Europe"],
+        "Belgium": ["Europe", "Western Europe"],
+        "Netherlands": ["Europe", "Western Europe"],
+        "Luxembourg": ["Europe", "Western Europe"],
+        "Switzerland": ["Europe", "Western Europe"],
+        "Austria": ["Europe", "Western Europe"],
+        "Liechtenstein": ["Europe", "Western Europe"],
+        "Monaco": ["Europe", "Western Europe"],
+
+        "Spain": ["Europe", "Southern Europe"],
+        "Portugal": ["Europe", "Southern Europe"],
+        "Italy": ["Europe", "Southern Europe"],
+        "Greece": ["Europe", "Southern Europe"],
+        "Malta": ["Europe", "Southern Europe"],
+        "Cyprus": ["Europe", "Southern Europe"],
+        "San Marino": ["Europe", "Southern Europe"],
+        "Vatican City": ["Europe", "Southern Europe"],
+        "Andorra": ["Europe", "Southern Europe"],
+
+        "Poland": ["Europe", "Eastern Europe"],
+        "Czechia": ["Europe", "Eastern Europe"],
+        "Czech Republic": ["Europe", "Eastern Europe"],
+        "Slovakia": ["Europe", "Eastern Europe"],
+        "Hungary": ["Europe", "Eastern Europe"],
+        "Romania": ["Europe", "Eastern Europe"],
+        "Bulgaria": ["Europe", "Eastern Europe"],
+        "Slovenia": ["Europe", "Eastern Europe"],
+        "Croatia": ["Europe", "Eastern Europe"],
+        "Serbia": ["Europe", "Eastern Europe"],
+        "Bosnia and Herzegovina": ["Europe", "Eastern Europe"],
+        "Montenegro": ["Europe", "Eastern Europe"],
+        "Albania": ["Europe", "Eastern Europe"],
+        "North Macedonia": ["Europe", "Eastern Europe"],
+        "Moldova": ["Europe", "Eastern Europe"],
+        "Ukraine": ["Europe", "Eastern Europe"],
+        "Belarus": ["Europe", "Eastern Europe"],
+        "Russia": ["Europe", "Eastern Europe"],
+        "Russian Federation": ["Europe", "Eastern Europe"],
+        "Kosovo": ["Europe", "Eastern Europe"],
+
+        "China": ["Asia", "East Asia"],
+        "Japan": ["Asia", "East Asia"],
+        "日本": ["Asia", "East Asia"],
+        "South Korea": ["Asia", "East Asia"],
+        "North Korea": ["Asia", "East Asia"],
+        "Korea, Republic of": ["Asia", "East Asia"],
+        "Republic of Korea": ["Asia", "East Asia"],
+        "Mongolia": ["Asia", "East Asia"],
+        "Taiwan": ["Asia", "East Asia"],
+        "Hong Kong": ["Asia", "East Asia"],
+        "Macau": ["Asia", "East Asia"],
+
+        "Vietnam": ["Asia", "Southeast Asia"],
+        "Thailand": ["Asia", "Southeast Asia"],
+        "Indonesia": ["Asia", "Southeast Asia"],
+        "Philippines": ["Asia", "Southeast Asia"],
+        "Malaysia": ["Asia", "Southeast Asia"],
+        "Singapore": ["Asia", "Southeast Asia"],
+        "Cambodia": ["Asia", "Southeast Asia"],
+        "Laos": ["Asia", "Southeast Asia"],
+        "Myanmar": ["Asia", "Southeast Asia"],
+        "Brunei": ["Asia", "Southeast Asia"],
+        "Timor-Leste": ["Asia", "Southeast Asia"],
+
+        "India": ["Asia", "South Asia"],
+        "Pakistan": ["Asia", "South Asia"],
+        "Bangladesh": ["Asia", "South Asia"],
+        "Sri Lanka": ["Asia", "South Asia"],
+        "Nepal": ["Asia", "South Asia"],
+        "Bhutan": ["Asia", "South Asia"],
+        "Maldives": ["Asia", "South Asia"],
+        "Afghanistan": ["Asia", "South Asia"],
+
+        "Kazakhstan": ["Asia", "Central Asia"],
+        "Uzbekistan": ["Asia", "Central Asia"],
+        "Kyrgyzstan": ["Asia", "Central Asia"],
+        "Tajikistan": ["Asia", "Central Asia"],
+        "Turkmenistan": ["Asia", "Central Asia"],
+
+        "Turkey": ["Asia", "Western Asia"],
+        "Türkiye": ["Asia", "Western Asia"],
+        "Israel": ["Asia", "Western Asia"],
+        "United Arab Emirates": ["Asia", "Western Asia"],
+        "Saudi Arabia": ["Asia", "Western Asia"],
+        "Qatar": ["Asia", "Western Asia"],
+        "Bahrain": ["Asia", "Western Asia"],
+        "Kuwait": ["Asia", "Western Asia"],
+        "Oman": ["Asia", "Western Asia"],
+        "Yemen": ["Asia", "Western Asia"],
+        "Iran": ["Asia", "Western Asia"],
+        "Iraq": ["Asia", "Western Asia"],
+        "Syria": ["Asia", "Western Asia"],
+        "Lebanon": ["Asia", "Western Asia"],
+        "Jordan": ["Asia", "Western Asia"],
+        "Palestine": ["Asia", "Western Asia"],
+        "Armenia": ["Asia", "Western Asia"],
+        "Azerbaijan": ["Asia", "Western Asia"],
+        "Georgia": ["Asia", "Western Asia"],
+
+        "Egypt": ["Africa", "Northern Africa"],
+        "Morocco": ["Africa", "Northern Africa"],
+        "Tunisia": ["Africa", "Northern Africa"],
+        "Algeria": ["Africa", "Northern Africa"],
+        "Libya": ["Africa", "Northern Africa"],
+        "Sudan": ["Africa", "Northern Africa"],
+        "South Africa": ["Africa", "Southern Africa"],
+        "Namibia": ["Africa", "Southern Africa"],
+        "Botswana": ["Africa", "Southern Africa"],
+        "Zimbabwe": ["Africa", "Southern Africa"],
+        "Lesotho": ["Africa", "Southern Africa"],
+        "Eswatini": ["Africa", "Southern Africa"],
+        "Nigeria": ["Africa", "Western Africa"],
+        "Ghana": ["Africa", "Western Africa"],
+        "Senegal": ["Africa", "Western Africa"],
+        "Côte d'Ivoire": ["Africa", "Western Africa"],
+        "Cote d'Ivoire": ["Africa", "Western Africa"],
+        "Mali": ["Africa", "Western Africa"],
+        "Burkina Faso": ["Africa", "Western Africa"],
+        "Cameroon": ["Africa", "Western Africa"],
+        "Kenya": ["Africa", "Eastern Africa"],
+        "Ethiopia": ["Africa", "Eastern Africa"],
+        "Tanzania": ["Africa", "Eastern Africa"],
+        "Uganda": ["Africa", "Eastern Africa"],
+        "Rwanda": ["Africa", "Eastern Africa"],
+        "Madagascar": ["Africa", "Eastern Africa"],
+
+        "United States": ["North America", "Northern America"],
+        "United States of America": ["North America", "Northern America"],
+        "Canada": ["North America", "Northern America"],
+        "Bermuda": ["North America", "Northern America"],
+        "Mexico": ["North America", "Central America"],
+        "Guatemala": ["North America", "Central America"],
+        "Honduras": ["North America", "Central America"],
+        "El Salvador": ["North America", "Central America"],
+        "Nicaragua": ["North America", "Central America"],
+        "Costa Rica": ["North America", "Central America"],
+        "Panama": ["North America", "Central America"],
+        "Belize": ["North America", "Central America"],
+        "Cuba": ["North America", "Caribbean"],
+        "Dominican Republic": ["North America", "Caribbean"],
+        "Haiti": ["North America", "Caribbean"],
+        "Jamaica": ["North America", "Caribbean"],
+        "Puerto Rico": ["North America", "Caribbean"],
+        "Trinidad and Tobago": ["North America", "Caribbean"],
+        "Barbados": ["North America", "Caribbean"],
+        "Bahamas": ["North America", "Caribbean"],
+
+        "Brazil": ["South America", "South America"],
+        "Argentina": ["South America", "South America"],
+        "Chile": ["South America", "South America"],
+        "Peru": ["South America", "South America"],
+        "Colombia": ["South America", "South America"],
+        "Ecuador": ["South America", "South America"],
+        "Venezuela": ["South America", "South America"],
+        "Bolivia": ["South America", "South America"],
+        "Paraguay": ["South America", "South America"],
+        "Uruguay": ["South America", "South America"],
+        "Guyana": ["South America", "South America"],
+        "Suriname": ["South America", "South America"],
+        "French Guiana": ["South America", "South America"],
+
+        "Australia": ["Oceania", "Australia and New Zealand"],
+        "New Zealand": ["Oceania", "Australia and New Zealand"],
+        "Fiji": ["Oceania", "Melanesia"],
+        "Papua New Guinea": ["Oceania", "Melanesia"],
+        "Solomon Islands": ["Oceania", "Melanesia"],
+        "Vanuatu": ["Oceania", "Melanesia"],
+        "Samoa": ["Oceania", "Polynesia"],
+        "Tonga": ["Oceania", "Polynesia"],
+    };
 }
 
 async function detectUserCity() {
@@ -646,6 +872,16 @@ function setupCityAutocomplete() {
             return n.includes(q) || `${n} state`.includes(q);
         }).slice(0, 3);
 
+        // Continents + sub-continents — broadest layer of the location
+        // cascade. Match by name (word-start or substring). These
+        // ride the multi-city-id selection plumbing same as states.
+        const continentMatches = allContinents.filter(c =>
+            c.name.toLowerCase().includes(q)
+        ).slice(0, 2);
+        const subContinentMatches = allSubContinents.filter(s =>
+            s.name.toLowerCase().includes(q)
+        ).slice(0, 3);
+
         // Cities: match against the user-facing label (so "New York City"
         // matches the disambiguated form, and "California State" doesn't
         // accidentally match a city's qualifier). We then split into
@@ -669,13 +905,17 @@ function setupCityAutocomplete() {
 
         // Order:
         //   Global → Direct City Hits → Metros → Countries → States →
-        //   Other Cities.
-        // The direct-hit slot keeps the explicit city the user typed
-        // visible at the top while preserving the cascade for all the
-        // less-specific matches below.
+        //   Sub-continents → Continents → Other Cities.
+        // Sub-continents sit between States and Continents so a user
+        // typing "south europe" lands on the sub-continent before
+        // having to scroll past a thinner continent match. Continents
+        // come last among the geo aggregates because they're the
+        // broadest and least specific.
         const matches = [GLOBAL_CITY, ...cityMatchesExact,
                          ...metroMatches, ...countryMatches,
-                         ...stateMatches, ...cityMatchesOther];
+                         ...stateMatches,
+                         ...subContinentMatches, ...continentMatches,
+                         ...cityMatchesOther];
 
         renderCityList(matches);
     });
@@ -806,7 +1046,12 @@ function resolveCityLabel(cityId) {
         const m = allMetroAreas.find(x => x.city_ids === cityId);
         if (m?.label) return m.label;
         const s = allStates.find(x => x.city_ids === cityId);
-        return s?.label || cityId;
+        if (s?.label) return s.label;
+        const sc = allSubContinents.find(x => x.city_ids === cityId);
+        if (sc?.label) return sc.label;
+        const ct = allContinents.find(x => x.city_ids === cityId);
+        if (ct?.label) return ct.label;
+        return cityId;
     }
     const id = parseInt(cityId, 10);
     if (!Number.isFinite(id)) return cityId;
