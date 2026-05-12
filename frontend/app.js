@@ -1300,12 +1300,16 @@ async function searchEvents() {
     // real data (anything other than empty/"-"), drop the column. The
     // table's outer width is unaffected (#events-table has width:100%)
     // — remaining columns get more breathing room automatically. We
-    // evaluate ONLY on the first page so the visibility decision is
-    // stable as the user clicks Load More; otherwise columns could
-    // flip back in mid-scroll, which is jarring.
-    if (isFirstPage) {
-        applySparseColumnHiding();
-    }
+    // re-run on every page render (first + Load More) so newly-
+    // appended <td> cells get col-hidden applied; without this, page-2
+    // rows had visible cells in columns whose <th> was display:none,
+    // which under table-layout:fixed shifted those rows' cells
+    // leftward and misaligned them from the first-batch rows. The
+    // hide decision itself is stable — _serverColumnPresence is set
+    // once on first page and applySparseColumnHiding just re-projects
+    // it onto the now-larger row set. _lockColumnWidths is gated by
+    // dataset.widthsLocked so it only measures once.
+    applySparseColumnHiding();
 
     // ── search_submitted analytics event ─────────────────────────────
     // Fired only on the first page so pagination doesn't double-count.
