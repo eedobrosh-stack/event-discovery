@@ -1384,11 +1384,20 @@ async function searchEvents() {
             if (startDate)          adoptedParams.set("start_date", startDate);
             adoptedParams.set("end_date", extendedTo);
             if (search)             adoptedParams.set("search", search);
+            // Re-fetch BOTH total + column_presence for the adopted
+            // (lookahead-extended) window. The non-lookahead path
+            // already does this — without it here, _serverColumnPresence
+            // stays null after a lookahead, applySparseColumnHiding
+            // falls back to DOM scan on the (often tiny) lookahead
+            // result set, and tiny samples can keep clearly-empty
+            // columns visible.
             fetch(`/api/events/count?${adoptedParams}`)
                 .then(r => r.json())
-                .then(({ total }) => {
+                .then(({ total, column_presence }) => {
                     totalEvents = total;
+                    _serverColumnPresence = column_presence || null;
                     updateStats(document.getElementById("events-body").children.length);
+                    applySparseColumnHiding();
                 })
                 .catch(() => {});
             history.replaceState(null, "", `?${adoptedParams.toString()}`);
@@ -1607,12 +1616,25 @@ function applySparseColumnHiding() {
     table.classList.remove("has-hidden-cols");
 
     let toHide;
-    if (_serverColumnPresence) {
+    const hasServerPresence = _serverColumnPresence
+        && Object.keys(_serverColumnPresence).length > 0;
+    if (hasServerPresence) {
         // Authoritative path: full-set presence ratios from
         // /api/events/count. The frontend just thresholds them; no
         // page-size sampling bias. This is what the user actually
         // wants — the decision reflects the whole 9,550-event
         // result, not whichever 50 events ranked highest.
+        //
+        // We check `Object.keys().length > 0` rather than just
+        // truthiness because the count endpoint returns
+        // `column_presence: {}` when total=0 — and that empty dict
+        // is truthy in JS, which previously routed us into the
+        // server path with an empty toHide list and skipped the
+        // DOM-scan fallback entirely. That's the 2026-05-12 image-12
+        // bug: a tiny lookahead-adopted result kept Price/TV columns
+        // visible despite 0% data, because the initial total=0 count
+        // response set _serverColumnPresence to {} and we never
+        // fell back to DOM scan.
         toHide = Object.entries(_serverColumnPresence)
             .filter(([, ratio]) => ratio < SPARSE_COL_THRESHOLD)
             .map(([col]) => col);
