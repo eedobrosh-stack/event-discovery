@@ -248,6 +248,15 @@ async def lookup_spotify_artist(
         _cache[name_key] = result
         return result
 
+    except SpotifyRateLimited:
+        # Penalty-box signal MUST propagate to the caller so the job
+        # can bail. The generic except below would swallow it and
+        # return None, making the caller think it was just a per-
+        # artist miss — the loop would grind through 500 artists,
+        # each hitting the same 429 wall and logging once per try
+        # (image-14 bug). Re-raise so enrich_spotify_job's
+        # SpotifyRateLimited handler catches it and stops the loop.
+        raise
     except Exception as e:
         logger.warning(f"Spotify lookup error for {artist_name!r}: {e}")
         _cache[name_key] = None
