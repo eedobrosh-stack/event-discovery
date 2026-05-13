@@ -42,7 +42,11 @@
   .route.to .tag { background: rgba(245,158,11,0.15); color: var(--tournament); }
   .route h2 { font-size: 1.3rem; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   .route .blurb { color: var(--muted); font-size: 0.95rem; margin-top: 0.25rem; margin-bottom: 1.2rem; }
-  .diagram { background: #0b1220; border-radius: 8px; padding: 1rem; overflow-x: auto; border: 1px solid var(--rule); }
+  .diagram { background: #f8fafc; border-radius: 8px; padding: 1.25rem; overflow-x: auto; border: 1px solid var(--rule); }
+  /* Mermaid renders dark text on white inside .diagram by default theme — override the
+     SVG label color explicitly so any inherited body color (light) doesn't bleed in. */
+  .diagram svg text { fill: #0f172a !important; }
+  .diagram .cluster rect { fill: #e2e8f0 !important; stroke: #94a3b8 !important; }
   .mermaid { display: block; }
   .grid2 { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 1.5rem; align-items: start; }
   @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
@@ -240,16 +244,20 @@ flowchart LR
 <script>
   mermaid.initialize({
     startOnLoad: true,
-    theme: "dark",
+    theme: "default",
     flowchart: { curve: "basis", htmlLabels: true, padding: 14 },
     themeVariables: {
-      background: "#0b1220",
-      primaryColor: "#1e293b",
-      primaryTextColor: "#e2e8f0",
-      primaryBorderColor: "#334155",
-      lineColor: "#64748b",
-      secondaryColor: "#0f172a",
-      tertiaryColor: "#0b1220",
+      // Light diagram on a dark page — high contrast for the actual
+      // information; the page chrome stays dark for atmosphere.
+      background: "#f8fafc",
+      primaryColor: "#ffffff",
+      primaryTextColor: "#0f172a",
+      primaryBorderColor: "#64748b",
+      lineColor: "#475569",
+      secondaryColor: "#e2e8f0",
+      tertiaryColor: "#cbd5e1",
+      clusterBkg: "#e2e8f0",
+      clusterBorder: "#94a3b8",
     },
   });
 </script>
