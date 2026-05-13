@@ -433,6 +433,7 @@ def list_events(
     search: Optional[str] = None,
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names; expanded to all sub-genres' artists."),
+    anchor_artist: Optional[str] = Query(None, description="When set, events whose artist differs from this name are flagged is_peer_added=true. Used by the 'Include artists like X' UI to visually distinguish peer-expanded rows."),
     limit: int = Query(50, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -474,6 +475,10 @@ def list_events(
             if g and g != "UNKNOWN"
         }
 
+    # Normalise anchor for is_peer_added tagging below. Empty/whitespace
+    # anchor is treated the same as no anchor (flag stays False on every row).
+    anchor_lower = (anchor_artist or "").strip().lower() or None
+
     results = []
     for e in events:
         out = EventOut.model_validate(e)
@@ -482,6 +487,19 @@ def list_events(
         out.event_types = [et.name for et in types if et.name]
         if e.artist_name:
             out.artist_genre = artist_genre_map.get(e.artist_name.lower())
+
+        # is_peer_added: true when the row came in via peer expansion,
+        # not the anchor itself. Match against artist_name first; fall
+        # back to event.name for mevalim-style rows where the performer
+        # lives in `name` because the source left artist_name empty
+        # (`d66b55b`). When neither has a value the row can't be the
+        # anchor — leave the flag False (sport events: anchor_artist
+        # shouldn't be supplied alongside sport filters anyway).
+        if anchor_lower:
+            artist_key = (e.artist_name or "").strip().lower()
+            if not artist_key:
+                artist_key = (e.name or "").strip().lower()
+            out.is_peer_added = bool(artist_key) and artist_key != anchor_lower
         if e.venue and e.venue.timezone:
             out.venue_timezone = e.venue.timezone
         if e.venue and e.venue.website_url:

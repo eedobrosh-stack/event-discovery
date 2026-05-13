@@ -7,9 +7,9 @@ from app.models.pending_venue import PendingVenue
 from app.models.scan_log import ScanLog
 from app.models.platform_venue import PlatformVenue
 from app.models.job_state import JobState
-from app.models.genre import GenreTaxonomy, ArtistGenre
+from app.models.genre import GenreTaxonomy, ArtistGenre, ArtistRelated
 from app.models.zero_result_search import ZeroResultSearch
 from app.models.llm_source import LLMSource, LLM_SOURCE_STATES
 from app.models.fetch_attempt import FetchAttempt
 
-__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ZeroResultSearch", "LLMSource", "LLM_SOURCE_STATES", "FetchAttempt"]
+__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ArtistRelated", "ZeroResultSearch", "LLMSource", "LLM_SOURCE_STATES", "FetchAttempt"]

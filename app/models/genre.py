@@ -20,7 +20,7 @@ Why a separate table from `performers`:
   Mixing the two would conflate "what an external service said about this artist" with
   "where this artist sits in our user-facing taxonomy".
 """
-from sqlalchemy import Column, Integer, String, DateTime, Index, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, Index, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -126,3 +126,52 @@ class GenrePopularityThresholds(Base):
     n_performers = Column(Integer, nullable=False)
 
     computed_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ArtistRelated(Base):
+    """Pre-computed top-N peer artists for each classified anchor artist.
+
+    Populated by ``scripts/compute_artist_related.py`` from the full
+    ``artist_genre`` set: each anchor's "bag" of {primary, secondary_1,
+    secondary_2} is scored against every other artist via weighted-overlap
+    plus a tightness penalty. Ties at the top score tier are broken by
+    ``Performer.derived_popularity`` (DESC, NULLS LAST), with row id as
+    final deterministic fallback. Top 20 per anchor are kept.
+
+    Denormalised on purpose: ``peer_artist_name`` is stored directly so
+    the read-time API (``GET /api/artists/related?name=X``) is a single
+    indexed lookup with no join back to ``artist_genre``. Cost is a
+    rename hazard (~free in practice — artists don't get renamed) in
+    exchange for cheap reads.
+
+    Recompute pattern is delete-by-anchor then bulk insert; the (anchor,
+    rank) unique constraint guards against accidental duplicates.
+    """
+    __tablename__ = "artist_related"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Both join keys to artist_genre.normalized_name (no hard FK so the row
+    # survives a classifier rename of either side; recompute fixes drift).
+    anchor_normalized_name = Column(String(500), nullable=False)
+    peer_normalized_name   = Column(String(500), nullable=False)
+
+    # Denormalised display name (mirrors artist_genre.artist_name at the
+    # peer side at compute time).
+    peer_artist_name = Column(String(500), nullable=False)
+
+    rank  = Column(Integer, nullable=False)   # 1..20, lower is better
+    score = Column(Float,   nullable=False)   # weighted-overlap score after tightness penalty
+
+    # Snapshot of Performer.derived_popularity at compute time; serves
+    # both as the tie-break key (kept here for audit) and as a hint the
+    # frontend can use (e.g. show top-5 stars on peer rows). NULL when
+    # the peer has no Performer row or no derived score yet.
+    peer_popularity = Column(Integer, nullable=True)
+
+    computed_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_artist_related_anchor", "anchor_normalized_name"),
+        UniqueConstraint("anchor_normalized_name", "rank", name="uq_anchor_rank"),
+    )

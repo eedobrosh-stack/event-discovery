@@ -1,6 +1,20 @@
 // Selected type/performer filters: [{kind, value, badge}]
 let selectedTypeFilters = [];
 
+// ── "Include artists like X?" peer expansion ──────────────────────────
+// Shown only when the active filter is exactly one performer chip with
+// no genre/free-text chips alongside it. Clicking the link OR-s the
+// top-20 peers from /api/artists/related into the artist_exact filter
+// and passes anchor_artist so the backend tags peer rows with
+// is_peer_added=true (rendered italic + lighter grey).
+//
+// State resets when the anchor changes (chip removed, swapped, or
+// extra chips added) so a user can't accidentally carry over "show
+// peers" from a previous anchor.
+let _peerExpansionActive = false;
+let _peerExpansionAnchor = null;     // last anchor that armed the toggle
+const _peerCache = new Map();        // anchor (lowercase) → [peer artist names]
+
 function formatPrice(amount, currency) {
     if (!amount) return "-";
     const code = (currency || "USD").toUpperCase();
@@ -1301,12 +1315,83 @@ const _renderedArtistKeys = new Set();
 // gap (e.g. "Showing 40 of 44") looks like a pagination bug.
 let _dedupedDropped = 0;
 
+function _shouldOfferPeerExpansion({ typeSearch, artistExact, genres }) {
+    // Only when exactly one performer chip is the entire active filter set.
+    // Adding a genre or free-text chip suppresses the link (intent ambiguous).
+    return artistExact.length === 1 && genres.length === 0 && typeSearch.length === 0;
+}
+
+async function _getPeerArtists(name) {
+    const key = (name || "").toLowerCase();
+    if (!key) return [];
+    if (_peerCache.has(key)) return _peerCache.get(key);
+    try {
+        const r = await fetch(`/api/artists/related?name=${encodeURIComponent(name)}`);
+        if (!r.ok) return [];
+        const body = await r.json();
+        const peers = (body.peers || []).map(p => p.artist_name).filter(Boolean);
+        _peerCache.set(key, peers);
+        return peers;
+    } catch (_) {
+        return [];
+    }
+}
+
+function _renderPeerBar(anchor) {
+    const bar = document.getElementById("peer-expansion-bar");
+    if (!bar) return;
+    if (!anchor) { bar.hidden = true; bar.innerHTML = ""; return; }
+    bar.hidden = false;
+    bar.innerHTML = _peerExpansionActive
+        ? `<a href="#" id="peer-toggle">Showing artists like ${esc(anchor)}</a> &middot; click to hide`
+        : `<a href="#" id="peer-toggle">Include artists like ${esc(anchor)}?</a>`;
+    document.getElementById("peer-toggle").addEventListener("click", e => {
+        e.preventDefault();
+        _peerExpansionActive = !_peerExpansionActive;
+        offset = 0;
+        document.getElementById("events-body").innerHTML = "";
+        _renderedNameKeys.clear();
+        _renderedArtistKeys.clear();
+        _dedupedDropped = 0;
+        searchEvents();
+    });
+}
+
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
     const { typeSearch, artistExact, genres, cityId, startDate, endDate, search } = getFilters();
+
+    // Peer-expansion state: arm/disarm based on current filter shape.
+    // Reset _peerExpansionActive whenever the anchor changes — a fresh
+    // anchor starts in the "off" state ("Include artists like X?"), not
+    // silently inheriting a previous chip's expansion.
+    const offerPeers = _shouldOfferPeerExpansion({ typeSearch, artistExact, genres });
+    const currentAnchor = offerPeers ? artistExact[0] : null;
+    if (currentAnchor !== _peerExpansionAnchor) {
+        _peerExpansionAnchor = currentAnchor;
+        _peerExpansionActive = false;
+    }
+    _renderPeerBar(currentAnchor);
+
+    // If the toggle is on, OR in the cached peers and pass anchor_artist
+    // so the backend can flag peer rows. We mutate a local copy of
+    // artistExact rather than the result of getFilters() — peer expansion
+    // is a per-query thing and shouldn't mutate the chip state itself.
+    let effectiveArtistExact = artistExact;
+    let anchorParam = null;
+    if (offerPeers && _peerExpansionActive) {
+        const peers = await _getPeerArtists(artistExact[0]);
+        if (peers.length) {
+            effectiveArtistExact = [artistExact[0], ...peers];
+            anchorParam = artistExact[0];
+        }
+    }
     const country = getSelectedCountry();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
+    // Un-expanded artist_exact first — this is what goes into the URL bar.
+    // Peer expansion swaps in the expanded list AFTER URL sync below so a
+    // refresh/shared link doesn't get rehydrated as N individual chips.
     if (artistExact.length) params.set("artist_exact", artistExact.join(","));
     if (genres.length) params.set("genres", genres.join(","));
     if (cityId) params.set("city_ids", cityId);
@@ -1320,10 +1405,18 @@ async function searchEvents() {
     // be a no-op). replaceState (not push) keeps the back button going home,
     // not stepping through every chip change.
     // IMPORTANT: write before adding limit/offset, which don't belong in the
-    // shareable URL.
+    // shareable URL. ALSO before peer-expansion overwrites artist_exact —
+    // see comment above.
     if (isFirstPage) {
         const qs = params.toString();
         history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+    }
+
+    // Post-URL-sync: now overwrite artist_exact with the expanded list
+    // and set anchor_artist so the backend can flag is_peer_added.
+    if (anchorParam) {
+        params.set("artist_exact", effectiveArtistExact.join(","));
+        params.set("anchor_artist", anchorParam);
     }
 
     // Clear any prior empty/extended notice — fresh search starts neutral.
@@ -1474,6 +1567,11 @@ async function searchEvents() {
     const tbody = document.getElementById("events-body");
     events.forEach(ev => {
         const tr = document.createElement("tr");
+        // Tag rows that came in via the "Include artists like X" peer
+        // expansion. CSS in style.css applies italic + lighter grey to
+        // .peer-row td so peer-added events are visually distinct from
+        // the anchor's own events.
+        if (ev.is_peer_added) tr.classList.add("peer-row");
         // TV channels: show distinct channel names for sports events
         const tvHtml = (() => {
             const chs = ev.tv_channels;

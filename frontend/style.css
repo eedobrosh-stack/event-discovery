@@ -517,6 +517,33 @@ a:hover { text-decoration: underline; }
 #search-notice.notice--empty { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; }
 #search-notice .notice__strong { font-weight: 600; }
 
+/* "Include artists like X?" toggle bar — sits between the search-notice
+   and the results table. Italic to telegraph that this is a suggestion,
+   not a hard filter. The toggle remains visually identical in both
+   states (off / on); the wording switches and an extra "click to hide"
+   hint appears once peers are showing. */
+.peer-bar {
+    margin: 0.25rem 0 0.5rem 0;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.9rem;
+    font-style: italic;
+    color: #4b5563;
+}
+.peer-bar a {
+    color: #4338ca;
+    font-style: italic;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.peer-bar a:hover { color: #312e81; }
+
+/* Rows added via peer expansion — italic + lighter grey so the eye
+   can tell at a glance "this only came in because I asked for
+   similar artists". Applied as a row-level class on <tr>; cell
+   contents inherit naturally. */
+#events-body tr.peer-row td { font-style: italic; color: #6b7280; }
+#events-body tr.peer-row .artist-link { color: #6b7280; }
+
 .type-chip__badge {
     font-size: 0.65rem;
     opacity: 0.7;

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import Base, engine
-from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions
+from app.api import auth, cities, event_types, events, export, admin, venues, stats, suggestions, artists
 from app.api import platform_venues as platform_venues_api
 from app.api import metro_areas
 from app.api import version as version_api
@@ -1114,6 +1114,7 @@ app.include_router(admin.router)
 app.include_router(venues.router)
 app.include_router(stats.router)
 app.include_router(suggestions.router)
+app.include_router(artists.router)
 app.include_router(platform_venues_api.router)
 app.include_router(metro_areas.router)
 app.include_router(version_api.router)

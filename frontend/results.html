@@ -110,6 +110,9 @@
             <!-- Hidden by default; populated when the search auto-extends
                  the end_date or when nothing matches at all. -->
             <div id="search-notice" hidden></div>
+            <!-- "Include artists like X?" toggle. Populated by app.js when
+                 exactly one artist chip is active. -->
+            <div id="peer-expansion-bar" class="peer-bar" hidden></div>
             <div class="table-scroll">
                 <table id="events-table">
                     <thead>
@@ -165,7 +168,7 @@
     </div>
 
     <div id="build-badge" class="build-badge" aria-hidden="true"></div>
-    <script src="/app.js?v=39"></script>
+    <script src="/app.js?v=40"></script>
     <script src="/build-badge.js?v=1"></script>
 </body>
 </html>

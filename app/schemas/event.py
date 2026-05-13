@@ -40,6 +40,13 @@ class EventOut(BaseModel):
     # is null (sports events) or no classification exists.
     artist_genre: Optional[str] = None
 
+    # True when the row came in via the "Include artists like X" peer
+    # expansion (i.e. its artist matches a peer of the anchor, not the
+    # anchor itself). Set by /api/events when ``anchor_artist`` is
+    # provided; defaults to False so non-peer-aware callers see the
+    # field as a stable no-op.
+    is_peer_added: bool = False
+
     model_config = {"from_attributes": True, "arbitrary_types_allowed": True}
 
     @classmethod
