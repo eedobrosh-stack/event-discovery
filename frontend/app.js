@@ -43,6 +43,48 @@ let _peerExpansionActive = false;
 let _peerExpansionAnchor = null;     // last anchor that armed the toggle
 const _peerCache = new Map();        // anchor (lowercase) → [peer artist names]
 
+// ── Wall-clock-in-venue-TZ → user-local-TZ conversion ────────────────
+// Tournament rows show kick-off in the *viewer's* timezone so a fan
+// in Israel sees their local watch time, not the stadium-local time.
+// Approach: treat the wall-clock as a UTC "guess", format it back in
+// the venue TZ to discover that TZ's offset at that moment, and apply
+// the offset inversely to recover the true UTC instant. Then format
+// that UTC in the browser's default locale (which uses the system TZ).
+function _convertVenueTimeToLocal(dateStr, timeStr, venueTz) {
+    if (!dateStr || !timeStr || !venueTz) return null;
+    const dateParts = dateStr.split("-").map(Number);
+    const timeParts = timeStr.split(":").map(Number);
+    if (dateParts.length < 3 || timeParts.length < 2) return null;
+    const [y, mo, d] = dateParts;
+    const [h, mn] = timeParts;
+    if (!Number.isFinite(y) || !Number.isFinite(h)) return null;
+
+    const guessUtc = new Date(Date.UTC(y, mo - 1, d, h, mn));
+    const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone: venueTz,
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+    const parts = {};
+    for (const p of fmt.formatToParts(guessUtc)) parts[p.type] = p.value;
+    const hourPart = Number(parts.hour);
+    const guessAsTz = Date.UTC(
+        Number(parts.year),
+        Number(parts.month) - 1,
+        Number(parts.day),
+        hourPart === 24 ? 0 : hourPart,
+        Number(parts.minute),
+    );
+    if (!Number.isFinite(guessAsTz)) return null;
+    const offsetMs = guessAsTz - guessUtc.getTime();
+    const trueUtc = new Date(guessUtc.getTime() - offsetMs);
+    if (isNaN(trueUtc.getTime())) return null;
+
+    return new Intl.DateTimeFormat([], {
+        hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(trueUtc);
+}
+
 function formatPrice(amount, currency) {
     if (!amount) return "-";
     const code = (currency || "USD").toUpperCase();
@@ -1792,14 +1834,35 @@ async function searchEvents() {
             <td data-col="artist">${artistHtml}</td>
             <td data-col="youtube">${ytHtml}</td>
             <td>${ev.start_date || "-"}</td>
-            <td colspan="2" class="time-cell">
-              <div class="time-row">
-                <span class="time-val">${ev.start_time || "-"}</span>
-                <span class="time-sep">${ev.start_time && ev.end_time ? "–" : ""}</span>
-                <span class="time-val">${ev.end_time || ""}</span>
+            <td colspan="2" class="time-cell">${(() => {
+                // Tournament rows: convert kick-off + end-time from
+                // venue local into the viewer's local TZ so a fan in
+                // Israel sees their watch time, not the stadium-local
+                // hour. Drops the venue-TZ label below the time (it
+                // becomes irrelevant once the displayed time is local).
+                // Non-tournament rows render exactly as before so
+                // concert times stay venue-local (most common
+                // interpretation for "when is this concert at 9pm").
+                let startStr = ev.start_time || "-";
+                let endStr = ev.end_time || "";
+                let tzLabel = ev.venue_timezone || "";
+                if (isTournament && ev.venue_timezone) {
+                    const ls = _convertVenueTimeToLocal(ev.start_date, ev.start_time, ev.venue_timezone);
+                    const le = _convertVenueTimeToLocal(ev.end_date || ev.start_date, ev.end_time, ev.venue_timezone);
+                    if (ls) startStr = ls;
+                    if (le) endStr = le;
+                    // Replace the venue-TZ tag with a "local time"
+                    // hint so the user knows the conversion happened.
+                    tzLabel = "your local time";
+                }
+                const sep = (startStr && startStr !== "-" && endStr) ? "–" : "";
+                return `<div class="time-row">
+                <span class="time-val">${startStr}</span>
+                <span class="time-sep">${sep}</span>
+                <span class="time-val">${endStr}</span>
               </div>
-              ${ev.venue_timezone ? `<div class="tz">${ev.venue_timezone}</div>` : ""}
-            </td>
+              ${tzLabel ? `<div class="tz">${esc(tzLabel)}</div>` : ""}`;
+            })()}</td>
             <td>
               ${ev.venue_website_url
                 ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>`
