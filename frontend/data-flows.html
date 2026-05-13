@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Supercaly · Data extraction flows</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='24'%3E📊%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --route2: #34d399;
+    --route1: #a78bfa;
+    --enrich: #fbbf24;
+    --tournament: #f59e0b;
+    --rule: rgba(255,255,255,0.08);
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif; }
+  body { padding: 2rem clamp(1rem, 3vw, 3rem); max-width: 1400px; margin: 0 auto; line-height: 1.5; }
+  header { margin-bottom: 2rem; }
+  header h1 { font-size: clamp(1.6rem, 4vw, 2.4rem); margin: 0 0 0.4rem; font-weight: 700; letter-spacing: -0.02em; }
+  header .sub { color: var(--muted); font-size: 1.05rem; }
+  header .meta { color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem; }
+  .stats-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.85rem; margin-bottom: 2.5rem; }
+  .stat { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 0.9rem 1.1rem; }
+  .stat .v { font-size: 1.6rem; font-weight: 700; line-height: 1; }
+  .stat .l { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.35rem; }
+  .stat.r2 .v { color: var(--route2); }
+  .stat.r1 .v { color: var(--route1); }
+  .stat.en .v { color: var(--enrich); }
+  .stat.to .v { color: var(--tournament); }
+
+  .route { background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 1.5rem 1.75rem; margin-bottom: 2rem; }
+  .route .head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.4rem; }
+  .route .tag { font-size: 0.7rem; font-weight: 700; padding: 0.18rem 0.5rem; border-radius: 4px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .route.r2 .tag { background: rgba(52,211,153,0.15); color: var(--route2); }
+  .route.r1 .tag { background: rgba(167,139,250,0.15); color: var(--route1); }
+  .route.en .tag { background: rgba(251,191,36,0.15); color: var(--enrich); }
+  .route.to .tag { background: rgba(245,158,11,0.15); color: var(--tournament); }
+  .route h2 { font-size: 1.3rem; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  .route .blurb { color: var(--muted); font-size: 0.95rem; margin-top: 0.25rem; margin-bottom: 1.2rem; }
+  .diagram { background: #0b1220; border-radius: 8px; padding: 1rem; overflow-x: auto; border: 1px solid var(--rule); }
+  .mermaid { display: block; }
+  .grid2 { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 1.5rem; align-items: start; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  .sources { background: #0b1220; border-radius: 8px; padding: 1rem 1.2rem; border: 1px solid var(--rule); }
+  .sources h3 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.6rem; }
+  .src-row { display: flex; justify-content: space-between; padding: 0.32rem 0; font-size: 0.92rem; border-bottom: 1px dashed var(--rule); }
+  .src-row:last-child { border-bottom: 0; }
+  .src-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .insight { margin-top: 1rem; padding: 0.9rem 1.1rem; border-left: 3px solid var(--route1); background: rgba(167,139,250,0.06); border-radius: 0 6px 6px 0; font-size: 0.92rem; }
+  .insight.warn { border-left-color: var(--tournament); background: rgba(245,158,11,0.06); }
+  .insight strong { color: var(--text); }
+  footer { color: var(--muted); font-size: 0.82rem; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
+  footer code { color: var(--text); background: var(--panel); padding: 1px 6px; border-radius: 4px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📊 Supercaly · Data extraction flows</h1>
+  <div class="sub">Every path from the wild internet to <code style="background:transparent;color:inherit;padding:0;">events.db</code>.</div>
+  <div class="meta">Snapshot: 2026-05-13 · 145,378 events on prod across two routes + enrichment + tournament TV.</div>
+</header>
+
+<section class="stats-strip">
+  <div class="stat r2"><div class="v">~140k</div><div class="l">Route 2 events (hand-coded)</div></div>
+  <div class="stat r1"><div class="v">1.86k</div><div class="l">Route 1 events (LLM)</div></div>
+  <div class="stat r1"><div class="v">230</div><div class="l">LLM sources (115 recurring · 114 trial · 1 blocked)</div></div>
+  <div class="stat en"><div class="v">13.6k</div><div class="l">Performers (Spotify / MusicBrainz)</div></div>
+  <div class="stat en"><div class="v">17.3k</div><div class="l">Artists classified (Gemini)</div></div>
+  <div class="stat to"><div class="v">114</div><div class="l">Tournament events tagged</div></div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="route r2">
+  <div class="head"><span class="tag">Route 2</span><h2>Hand-coded collectors</h2></div>
+  <div class="blurb">~140k events — the bulk. Each source has a dedicated <code>BaseCollector</code> subclass that knows the site's HTML/API shape. Cheap, deterministic, no LLM in the loop.</div>
+
+  <div class="grid2">
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+    A[APScheduler<br/>collect_all_events] --> B{per priority<br/>city}
+    B --> C1[Bandsintown]
+    B --> C2[Ticketmaster]
+    B --> C3[ResidentAdvisor]
+    B --> C4[Songkick / Skiddle / Dice]
+    B --> C5[Eventbrite scraper]
+    B --> C6[Venue-specific<br/>30+ scrapers]
+    B --> C7[Sport collectors<br/>ESPN / MLB / Tennis / etc]
+    C1 & C2 & C3 & C4 & C5 & C6 & C7 --> N[Normalize<br/>RawEvent dataclass]
+    N --> D[Dedup<br/>scrape_source + source_id]
+    D --> E[(events.db)]
+    style A fill:#34d399,stroke:#0b1220,color:#0b1220
+    style N fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style D fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style E fill:#34d399,stroke:#0b1220,color:#0b1220
+      </div>
+    </div>
+    <aside class="sources">
+      <h3>Top sources by event count</h3>
+      <div class="src-row"><span>Bandsintown</span><span class="n">65,500</span></div>
+      <div class="src-row"><span>Ticketmaster</span><span class="n">52,519</span></div>
+      <div class="src-row"><span>Resident Advisor</span><span class="n">7,059</span></div>
+      <div class="src-row"><span>Mevalim (Hebrew comedy)</span><span class="n">3,463</span></div>
+      <div class="src-row"><span>Songkick</span><span class="n">2,817</span></div>
+      <div class="src-row"><span>AllEvents</span><span class="n">2,023</span></div>
+      <div class="src-row"><span>Venue websites (mixed)</span><span class="n">1,942</span></div>
+      <div class="src-row"><span>Eventbrite (scraped)</span><span class="n">1,581</span></div>
+      <div class="src-row"><span>Meetup</span><span class="n">1,321</span></div>
+      <div class="src-row"><span>Skiddle</span><span class="n">1,306</span></div>
+      <div class="src-row"><span>Sport (MLB/ESPN/F1/…)</span><span class="n">1,200+</span></div>
+    </aside>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="route r1">
+  <div class="head"><span class="tag">Route 1</span><h2>LLM-driven long-tail</h2></div>
+  <div class="blurb">Two cadences — discovery finds <em>new</em> event-listing pages, extraction pulls events from them. The proprietary angle: anything not on Ticketmaster/Bandsintown.</div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart LR
+    subgraph B["Cadence B · Discovery (+210 min)"]
+      direction LR
+      B1[Brave Search<br/>themed per-city queries] --> B2[Gemini classifier<br/>'is this an event page?']
+      B2 --> B3{passes?}
+      B3 -- yes --> B4[LLMSource<br/>state=trial]
+      B3 -- no --> BX[drop]
+    end
+    subgraph A["Cadence A · Extraction (+240 min)"]
+      direction LR
+      A1[Pick 50 sources<br/>oldest last_run_at] --> A2[curl_cffi fetch]
+      A2 -- CF blocked --> A2b[ScrapingBee fallback]
+      A2 --> A3[JSON-LD first]
+      A3 -- has JSON-LD --> A4[Schema.org parse]
+      A3 -- no JSON-LD --> A5[Gemini structured extraction]
+      A4 & A5 --> A6[Normalize → RawEvent]
+      A6 --> A7{events found?}
+      A7 -- yes --> A8[consecutive_success_runs+1]
+      A7 -- no --> A9[consecutive_empty_runs+1]
+      A8 --> P{success ≥ 1?}
+      P -- yes --> A10[Auto-promote<br/>trial → recurring]
+      A9 --> Q{empty ≥ 3?}
+      Q -- yes --> A11[Auto-block]
+      A6 --> Z[(events.db)]
+    end
+    B4 -.-> A1
+    style B1 fill:#a78bfa,stroke:#0b1220,color:#0b1220
+    style A1 fill:#a78bfa,stroke:#0b1220,color:#0b1220
+    style A10 fill:#34d399,stroke:#0b1220,color:#0b1220
+    style A11 fill:#f87171,stroke:#0b1220,color:#0b1220
+    style Z fill:#a78bfa,stroke:#0b1220,color:#0b1220
+    </div>
+  </div>
+
+  <div class="insight">
+    <strong>2026-05-13 lever pulled:</strong> auto-promote threshold dropped from 3 → 1 successful run.
+    115 trial sources graduated to recurring in one shot. Examples that were stuck:
+    <code style="font-size:0.85em;">discoverlosangeles.com/events</code> (378 events extracted),
+    <code style="font-size:0.85em;">concertfix.com/vancouver</code> (92),
+    <code style="font-size:0.85em;">eventbrite.fr/paris</code> (56),
+    <code style="font-size:0.85em;">edinburghtourist.co.uk</code> (67).
+  </div>
+  <div class="insight warn">
+    <strong>Bottleneck (now):</strong> Cadence-A cap is 50 sources / 24h. 74 trial sources never run yet —
+    catchup ~2 days at current settings. Brave discovery + Gemini extraction are <em>not</em> the
+    constraints; the per-fire cap and 18h re-run cooldown are.
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="route en">
+  <div class="head"><span class="tag">Enrichment</span><h2>Post-ingestion polish</h2></div>
+  <div class="blurb">Once events land, side jobs hydrate the row with what the source didn't carry — performer images, popularity, genre, YouTube channel, derived ratings.</div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart LR
+    E[(events.db<br/>fresh rows)] --> P1[Performer lookup<br/>MusicBrainz API]
+    E --> P2[Spotify enrichment<br/>artist image / URL]
+    E --> P3[YouTube Data API<br/>channel lookup]
+    E --> G1[Gemini classifier<br/>artist_genre]
+    E --> G2[Brave + Gemini<br/>Lever C re-classify]
+    P1 & P2 & P3 --> M[(performers<br/>artist_genre)]
+    G1 & G2 --> M
+    M --> R[recompute_popularity<br/>weekly job]
+    R --> S[(Performer.derived_popularity<br/>0–100)]
+    S --> AR[compute_artist_related<br/>top-20 peer table]
+    AR --> ARDB[(artist_related<br/>203k rows)]
+    style E fill:#fbbf24,stroke:#0b1220,color:#0b1220
+    style M fill:#fbbf24,stroke:#0b1220,color:#0b1220
+    style S fill:#fbbf24,stroke:#0b1220,color:#0b1220
+    style ARDB fill:#fbbf24,stroke:#0b1220,color:#0b1220
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="route to">
+  <div class="head"><span class="tag">Tournament TV</span><h2>Per-geo broadcaster slot</h2></div>
+  <div class="blurb">Tournament-tagged events (FIFA WC, NBA, UCL, EPL, Wimbledon, Roland-Garros, US Open) get a geo-aware TV channel via a two-source merge.</div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart LR
+    T[(events<br/>tournament IS NOT NULL)] --> TX[fetch_tournament_tv.py]
+    TX --> S1[TheSportsDB<br/>per-fixture lookuptv.php]
+    TX --> S2[LLM-sourced fallback<br/>app/services/tournaments.py]
+    S1 --> Merge[Merge by<br/>channel × country]
+    S2 --> Merge
+    Merge --> TVDB[(events.tv_channels<br/>JSON array)]
+    TVDB --> UI[Results page<br/>geo filter by user city]
+    UI -.->|user in IL| KAN["📺 Kan<br/>kan.org.il"]
+    UI -.->|user in US| FOX["📺 FOX Sports"]
+    UI -.->|user in GB| BBC["📺 BBC Sport"]
+    style T fill:#f59e0b,stroke:#0b1220,color:#0b1220
+    style TVDB fill:#f59e0b,stroke:#0b1220,color:#0b1220
+    style KAN fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style FOX fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style BBC fill:#1e293b,stroke:#334155,color:#e2e8f0
+    </div>
+  </div>
+</section>
+
+<footer>
+  Files of record: collectors in <code>app/services/collectors/scrapers/</code> ·
+  jobs in <code>app/scheduler/jobs.py</code> ·
+  extractors in <code>app/extractors/</code> ·
+  tournament catalog in <code>app/services/tournaments.py</code>.
+  See repo CLAUDE.md for the long-form architecture.
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    flowchart: { curve: "basis", htmlLabels: true, padding: 14 },
+    themeVariables: {
+      background: "#0b1220",
+      primaryColor: "#1e293b",
+      primaryTextColor: "#e2e8f0",
+      primaryBorderColor: "#334155",
+      lineColor: "#64748b",
+      secondaryColor: "#0f172a",
+      tertiaryColor: "#0b1220",
+    },
+  });
+</script>
+
+</body>
+</html>
