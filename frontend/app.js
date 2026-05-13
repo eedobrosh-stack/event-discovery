@@ -1337,10 +1337,27 @@ async function _getPeerArtists(name) {
     }
 }
 
-function _renderPeerBar(anchor) {
+async function _renderPeerBar(anchor) {
     const bar = document.getElementById("peer-expansion-bar");
     if (!bar) return;
-    if (!anchor) { bar.hidden = true; bar.innerHTML = ""; return; }
+    // Always start hidden so the bar can't "flash on" before we know
+    // whether peers exist for this anchor.
+    bar.hidden = true;
+    bar.innerHTML = "";
+    if (!anchor) return;
+
+    // Pre-check: skip the bar entirely when the anchor has no peers.
+    // Showing "Include artists like X?" for an artist with an empty
+    // peer list would land the user on a no-op click. The cache makes
+    // repeated renders for the same anchor cheap.
+    const peers = await _getPeerArtists(anchor);
+
+    // Staleness guard: a newer search may have advanced the anchor
+    // while we were awaiting. Don't paint a bar for an anchor that's
+    // no longer current.
+    if (anchor !== _peerExpansionAnchor) return;
+    if (peers.length === 0) return;
+
     bar.hidden = false;
     bar.innerHTML = _peerExpansionActive
         ? `<a href="#" id="peer-toggle">Showing artists like ${esc(anchor)}</a> &middot; click to hide`
