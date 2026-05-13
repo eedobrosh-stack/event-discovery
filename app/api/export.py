@@ -214,14 +214,13 @@ def _get_filtered_events_from_params(
     return query.order_by(Event.start_date, Event.start_time).all()
 
 
-# Tournament-specific display labels for calendar names. The bare
-# tournament value ("FIFA World Cup") is fine for filter equality but
-# reads thin as a calendar title — users want the year-tagged form
-# they recognize. Add entries here as tournaments join the
-# allowlist; missing entries fall back to the bare tournament value.
-_TOURNAMENT_DISPLAY_LABEL: dict[str, str] = {
-    "FIFA World Cup": "FIFA World Cup 2026",
-}
+# Tournament-specific display labels for calendar names come from the
+# unified tournament catalog. The bare tournament value
+# ("FIFA World Cup") is fine for filter equality but reads thin as a
+# calendar title — users want the year-tagged form ("FIFA World Cup
+# 2026"). The catalog provides a display_label() helper that falls
+# back to the bare key for tournaments not in the catalog.
+from app.services.tournaments import display_label as _tournament_display_label
 
 
 def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db: Session, artist_exact: Optional[str] = None, genres: Optional[str] = None, tournaments: Optional[str] = None) -> str:
@@ -233,7 +232,7 @@ def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db:
         # Cup 2026 – Supercaly" reads cleanly.
         ts = [t.strip() for t in tournaments.split(",") if t.strip()]
         if ts:
-            parts.append(", ".join(_TOURNAMENT_DISPLAY_LABEL.get(t, t) for t in ts))
+            parts.append(", ".join(_tournament_display_label(t) for t in ts))
     if artist_exact:
         # Artist names already canonical-cased — don't .title() (e.g. "AC/DC")
         names = [n.strip() for n in artist_exact.split(",") if n.strip()]

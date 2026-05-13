@@ -47,13 +47,11 @@ INDEX_TTL_SECONDS = 1800
 
 # Allowlist for the Tournament chip kind. The `events.tournament` column
 # is populated broadly by the sport collectors + the backfill script,
-# but only labels in this set become AC suggestions. v1 ships with just
-# the FIFA World Cup so the surface starts narrow; add more here
-# (e.g. "NBA", "Wimbledon", "Roland Garros", "US Open", "Premier League"…)
-# to widen — no recompute needed, the index rebuild picks it up.
-TOURNAMENT_ALLOWLIST: frozenset[str] = frozenset({
-    "FIFA World Cup",
-})
+# but only labels in this set become AC suggestions. Source of truth
+# lives in app/services/tournaments.py — that module is also where
+# scripts read broadcaster maps + TheSportsDB ids from, so adding a
+# tournament is a single-file change.
+from app.services.tournaments import TOURNAMENT_ALLOWLIST  # noqa: E402, F401
 
 # Threshold below which we require a strict whole-word match (matches
 # _search_filters._WHOLE_WORD_BELOW exactly).
