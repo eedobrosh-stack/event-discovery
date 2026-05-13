@@ -548,6 +548,33 @@ a:hover { text-decoration: underline; }
 #events-body tr.peer-row td { font-style: italic; color: #6b7280; }
 #events-body tr.peer-row .artist-link { color: #6b7280; }
 
+/* Tournament rows (sport-tournament events with `tournament` set).
+   .tournament-teams renders the two team names ("Mexico South Africa")
+   in the Artist column slot. .tv-watch styles the per-geo TV channel
+   chip that replaces the Buy button — its --pending variant softens
+   the "TV info pending" placeholder while the aggregator integration
+   is still on the follow-up queue. */
+#events-body .tournament-teams {
+    font-weight: 500;
+    color: #1f2937;
+}
+#events-body .tv-watch {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 0.85em;
+    text-decoration: none;
+}
+#events-body .tv-watch:hover { background: #fde68a; }
+#events-body .tv-watch--pending {
+    background: transparent;
+    color: #9ca3af;
+    font-style: italic;
+    font-size: 0.8em;
+}
+
 .type-chip__badge {
     font-size: 0.65rem;
     opacity: 0.7;

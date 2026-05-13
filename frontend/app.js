@@ -1,6 +1,34 @@
 // Selected type/performer filters: [{kind, value, badge}]
 let selectedTypeFilters = [];
 
+// ── Country-name → ISO-2 map ─────────────────────────────────────────
+// Used by tournament rows to filter `tv_channels` (which carry ISO-2
+// codes — "US", "IL", "GB" …) against the user's selected city's
+// country (full name — "United States", "Israel", "United Kingdom").
+// Backend source of truth is COUNTRY_NAME_TO_ISO2 in
+// app/services/collectors/scrapers/sports/leagues.py; this is the FE
+// mirror, kept small and updated when broadcast data for new
+// countries lands.
+const _COUNTRY_NAME_TO_ISO2 = {
+    "United States": "US", "USA": "US",
+    "United Kingdom": "GB",
+    "Germany": "DE", "Spain": "ES", "France": "FR", "Italy": "IT",
+    "Australia": "AU", "Canada": "CA", "Israel": "IL", "Brazil": "BR",
+    "Netherlands": "NL", "Portugal": "PT", "Turkey": "TR", "Belgium": "BE",
+    "Greece": "GR", "Lithuania": "LT", "Serbia": "RS", "Monaco": "MC",
+    "Mexico": "MX", "Argentina": "AR", "Japan": "JP", "South Korea": "KR",
+    "Korea Republic": "KR", "Switzerland": "CH", "Austria": "AT",
+    "Saudi Arabia": "SA", "Qatar": "QA", "Iran": "IR", "Iraq": "IQ",
+    "Jordan": "JO", "Uzbekistan": "UZ", "Morocco": "MA", "Algeria": "DZ",
+    "Tunisia": "TN", "Egypt": "EG", "Senegal": "SN", "Ghana": "GH",
+    "Ivory Coast": "CI", "Cape Verde": "CV", "Congo DR": "CD",
+    "South Africa": "ZA", "New Zealand": "NZ", "Norway": "NO",
+    "Sweden": "SE", "Scotland": "GB", "England": "GB",
+    "Czechia": "CZ", "Croatia": "HR", "Paraguay": "PY", "Uruguay": "UY",
+    "Ecuador": "EC", "Colombia": "CO", "Panama": "PA", "Curacao": "CW",
+    "Haiti": "HT", "Bosnia-Herzegovina": "BA", "Türkiye": "TR",
+};
+
 // ── "Include artists like X?" peer expansion ──────────────────────────
 // Shown only when the active filter is exactly one performer chip with
 // no genre/free-text chips alongside it. Clicking the link OR-s the
@@ -1633,6 +1661,21 @@ async function searchEvents() {
     });
     _dedupedDropped += apiReturnedCount - events.length;
 
+    // Compute the user's ISO-2 country once per render pass — it's
+    // derived from the City filter and shouldn't change row-to-row.
+    // Used by tournament rows to pick the matching `tv_channels` entry.
+    const userCountryIso2 = (() => {
+        const cityId = getSelectedCityId();
+        if (!cityId) return null;
+        if (typeof cityId === "string" && cityId.startsWith("COUNTRY:")) {
+            return _COUNTRY_NAME_TO_ISO2[cityId.slice(8)] || null;
+        }
+        const id = parseInt(cityId, 10);
+        if (!Number.isFinite(id)) return null;
+        const city = allCities.find(c => c.id === id);
+        return city ? (_COUNTRY_NAME_TO_ISO2[city.country] || null) : null;
+    })();
+
     const tbody = document.getElementById("events-body");
     events.forEach(ev => {
         const tr = document.createElement("tr");
@@ -1641,24 +1684,53 @@ async function searchEvents() {
         // .peer-row td so peer-added events are visually distinct from
         // the anchor's own events.
         if (ev.is_peer_added) tr.classList.add("peer-row");
-        // TV channels: show distinct channel names for sports events
+
+        // Tournament row: events with a tournament label render with
+        // sport-specific affordances (Teams col instead of Artist,
+        // "Pre-game" YouTube link, TV channel filtered by user geo in
+        // the Buy column). See `event.tournament` for the source.
+        const isTournament = !!ev.tournament;
+        if (isTournament) tr.classList.add("tournament-row");
+
+        // TV channels: show distinct channel names for sports events.
+        // For tournament rows, prefer the channel(s) that match the
+        // user's selected-city country so a viewer in Israel sees the
+        // Israeli channel ahead of the US one.
         const tvHtml = (() => {
             const chs = ev.tv_channels;
             if (!chs || !chs.length) return "-";
-            const names = [...new Set(chs.map(c => c.channel))].slice(0, 3);
+            const matching = isTournament && userCountryIso2
+                ? chs.filter(c => (c.country || "").toUpperCase() === userCountryIso2)
+                : null;
+            const picked = (matching && matching.length) ? matching : chs;
+            const names = [...new Set(picked.map(c => c.channel))].slice(0, 3);
             return `<span class="tv-channels">${names.map(n => esc(n)).join(", ")}</span>`;
         })();
 
-        // Artist column: hide for sports (artist_name is null), show for music
+        // Artist column. Default: hide for sports (artist_name is
+        // null), show for music. Tournament rows override: show the
+        // two teams space-separated ("Mexico South Africa") so the
+        // column reads as the matchup. Falls back to home or away
+        // alone when only one slot is filled (placeholder brackets
+        // before knockout draws complete).
         const artistHtml = (() => {
+            if (isTournament) {
+                const h = (ev.home_team || "").trim();
+                const a = (ev.away_team || "").trim();
+                const both = [h, a].filter(Boolean).join(" ");
+                return both ? `<span class="tournament-teams">${esc(both)}</span>` : "-";
+            }
             const a = ev.artist_name && ev.artist_name.toLowerCase() !== ev.name.toLowerCase() ? ev.artist_name : null;
             return a ? `<span class="artist-link" data-artist="${esc(a)}">${esc(a)}</span>` : "-";
         })();
 
         // YouTube column: "Watch" for music (performer channel),
-        // "Highlights" for sports (YouTube search for the matchup).
+        // "Highlights" for sports (YouTube search for the matchup),
+        // "Pre-game" for tournament rows (pre-match coverage is more
+        // useful than match highlights for a future-fixture calendar).
+        const ytLabel = isTournament ? "Pre-game" : (ev.sport ? "Highlights" : "Watch");
         const ytHtml = ev.artist_youtube_channel
-            ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">${ev.sport ? "Highlights" : "Watch"}</a>`
+            ? `<a href="${esc(ev.artist_youtube_channel)}" target="_blank">${ytLabel}</a>`
             : "-";
 
         // data-* attrs on Buy/title links so the delegated click handler
@@ -1699,7 +1771,32 @@ async function searchEvents() {
             <td data-col="format">${(ev.event_types || []).join(", ") || "-"}</td>
             <td data-col="genre">${ev.artist_genre ? esc(ev.artist_genre) : "-"}</td>
             <td data-col="tv">${tvHtml}</td>
-            <td data-col="link">${ev.purchase_link ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>` : "-"}</td>
+            <td data-col="link">${(() => {
+                // Tournament rows: replace the Buy button with TV
+                // broadcaster info. When tv_channels carries a match
+                // for the user's selected-city country, surface that
+                // channel name (clickable if a URL was scraped along
+                // with it). Otherwise "TV info pending" telegraphs
+                // that the broadcaster lookup hasn't landed yet for
+                // this geo (data is populated by the sports-data
+                // aggregator follow-up).
+                if (isTournament) {
+                    const chs = ev.tv_channels || [];
+                    const matched = userCountryIso2
+                        ? chs.filter(c => (c.country || "").toUpperCase() === userCountryIso2)
+                        : [];
+                    if (matched.length) {
+                        const c = matched[0];
+                        return c.url
+                            ? `<a href="${esc(c.url)}" target="_blank" class="tv-watch">${esc(c.channel)}</a>`
+                            : `<span class="tv-watch">${esc(c.channel)}</span>`;
+                    }
+                    return `<span class="tv-watch tv-watch--pending">TV info pending</span>`;
+                }
+                return ev.purchase_link
+                    ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>`
+                    : "-";
+            })()}</td>
         `;
         tbody.appendChild(tr);
     });
