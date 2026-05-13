@@ -4,7 +4,7 @@ The `tournament` column is set at write time by sport collectors going
 forward (espn.py, tennis.py). This script populates the column for rows
 that pre-date the collector change.
 
-Heuristics — both are derived from existing data, no external lookup:
+Heuristics — all derived from existing data, no external lookup:
 
   - **ESPN team sports** (`scrape_source = 'espn_sports'`): the event
     name is constructed as ``"{cfg.label} - {home} vs {away}"`` (see
@@ -16,6 +16,14 @@ Heuristics — both are derived from existing data, no external lookup:
     ``"{ATP|WTA} - {tournament name}"``. Tournament is the part after
     the prefix — Grand Slam events should group ATP and WTA draws
     under a single tournament label (the bare name).
+  - **Ticketmaster World Cup** (`scrape_source = 'ticketmaster'`): TM
+    ingests the 2026 FIFA World Cup fixture list as Sports events
+    with names like ``"World Cup: Match 1 Group A - Mexico vs South
+    Africa - 2026 World Cup"`` and ``"World Cup Round of 32: 1A
+    vs. TBD (Match 79) - 2026 World Cup"``. Both are tagged with
+    ``"FIFA World Cup"`` so they group under the same Tournament chip
+    as ESPN's fifa.world rows. Other Ticketmaster sport rows
+    (concerts, generic listings) are left untouched.
 
 Other sport collectors (Euroleague, MLB, OpenF1, Diamond League, BSL,
 cricapi, world_aquatics, uci_worldtour) are intentionally not handled
@@ -64,7 +72,19 @@ from app.models import Event  # noqa: E402
 
 ESPN_SOURCE = "espn_sports"
 TENNIS_SOURCE = "tennis_espn"
+TICKETMASTER_SOURCE = "ticketmaster"
 TENNIS_PREFIXES = ("ATP - ", "WTA - ")
+
+# Ticketmaster's World Cup 2026 fixture naming pattern. They publish
+# the full schedule as Sports events with names like
+# "World Cup: Match 1 Group A - Mexico vs South Africa - 2026 World Cup"
+# and "World Cup Round of 32: 1A vs. TBD (Match 79) - 2026 World Cup".
+# The label embedded in the name varies, so we match the prefix shape
+# rather than the trailing year-tag (which is more inconsistent).
+_TICKETMASTER_WC_PREFIXES = (
+    "World Cup: Match",
+    "World Cup Round of",
+)
 
 
 def derive_tournament(name: str, source: str) -> str | None:
@@ -83,6 +103,15 @@ def derive_tournament(name: str, source: str) -> str | None:
             if name.startswith(prefix):
                 return name[len(prefix):].strip() or None
         return None
+    if source == TICKETMASTER_SOURCE:
+        # Ticketmaster ingests the World Cup 2026 fixture list as Sports
+        # events. We tag them with "FIFA World Cup" so they group under
+        # the same Tournament chip as ESPN's fifa.world rows once both
+        # sources are populated.
+        for prefix in _TICKETMASTER_WC_PREFIXES:
+            if name.startswith(prefix):
+                return "FIFA World Cup"
+        return None
     return None
 
 
@@ -95,18 +124,20 @@ def main() -> int:
     db = SessionLocal()
     try:
         # Pull only the rows we might touch — tournament NULL and source
-        # in the two we support. ESPN sport rows that already have a
-        # tournament value (set at write time by the new collector) are
+        # in the set we support. Rows that already have a tournament
+        # value (set at write time by the new collector code) are
         # skipped automatically.
+        candidate_sources = [ESPN_SOURCE, TENNIS_SOURCE, TICKETMASTER_SOURCE]
         rows = (
             db.query(Event.id, Event.name, Event.scrape_source)
             .filter(
                 Event.tournament.is_(None),
-                Event.scrape_source.in_([ESPN_SOURCE, TENNIS_SOURCE]),
+                Event.scrape_source.in_(candidate_sources),
             )
             .all()
         )
-        log.info("Candidate rows (tournament NULL, source in {espn_sports, tennis_espn}): %d", len(rows))
+        log.info("Candidate rows (tournament NULL, source in %s): %d",
+                 candidate_sources, len(rows))
 
         updates: list[tuple[int, str]] = []
         skipped = 0
