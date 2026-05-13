@@ -1892,6 +1892,17 @@ function applySparseColumnHiding() {
     table.querySelectorAll(".col-hidden").forEach(el => el.classList.remove("col-hidden"));
     table.classList.remove("has-hidden-cols");
 
+    // Force-hide list: columns that should disappear regardless of
+    // data-presence ratios, based on filter intent. When a Tournament
+    // chip is active the entire result set is tournament rows; those
+    // rows always render `data-col="link"` as "-" (TV broadcaster
+    // lives in the TV column instead, no Buy button), so the column
+    // carries no information even though the server's column_presence
+    // still reports purchase_link populated at the DB level.
+    const forceHide = new Set();
+    const hasTournamentChip = selectedTypeFilters.some(f => f.kind === "tournament");
+    if (hasTournamentChip) forceHide.add("link");
+
     let toHide;
     const hasServerPresence = _serverColumnPresence
         && Object.keys(_serverColumnPresence).length > 0;
@@ -1940,9 +1951,14 @@ function applySparseColumnHiding() {
             .filter(([, n]) => (n / total) < SPARSE_COL_THRESHOLD)
             .map(([col]) => col);
     }
-    if (!toHide.length) return;
-
     const hideSet = new Set(toHide);
+    // Union the force-hide list onto whatever the presence-ratio
+    // pass produced. Order matters here so any column the user-intent
+    // path wants gone gets gone even when its column_presence ratio
+    // is above the threshold.
+    forceHide.forEach(c => hideSet.add(c));
+    if (!hideSet.size) return;
+
     // Mark both header and body cells so display:none on the column
     // is consistent. Includes the .col-hidden class on the <th>; CSS
     // handles the actual hiding so we don't have to walk on every
