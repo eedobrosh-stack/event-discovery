@@ -1661,19 +1661,43 @@ async function searchEvents() {
     });
     _dedupedDropped += apiReturnedCount - events.length;
 
-    // Compute the user's ISO-2 country once per render pass — it's
-    // derived from the City filter and shouldn't change row-to-row.
-    // Used by tournament rows to pick the matching `tv_channels` entry.
+    // Compute the user's ISO-2 country once per render pass.
+    // Priority:
+    //   1. Selected City filter → its country.
+    //   2. navigator.language (e.g. "he-IL", "en-US") → trailing
+    //      country code. Lets a viewer browsing Global still see
+    //      their local broadcaster ("Kan" for users with he-IL).
+    //   3. null → render falls back to showing all channels.
     const userCountryIso2 = (() => {
         const cityId = getSelectedCityId();
-        if (!cityId) return null;
-        if (typeof cityId === "string" && cityId.startsWith("COUNTRY:")) {
-            return _COUNTRY_NAME_TO_ISO2[cityId.slice(8)] || null;
+        if (cityId) {
+            if (typeof cityId === "string" && cityId.startsWith("COUNTRY:")) {
+                return _COUNTRY_NAME_TO_ISO2[cityId.slice(8)] || null;
+            }
+            const id = parseInt(cityId, 10);
+            if (Number.isFinite(id)) {
+                const city = allCities.find(c => c.id === id);
+                if (city) {
+                    const iso2 = _COUNTRY_NAME_TO_ISO2[city.country];
+                    if (iso2) return iso2;
+                }
+            }
         }
-        const id = parseInt(cityId, 10);
-        if (!Number.isFinite(id)) return null;
-        const city = allCities.find(c => c.id === id);
-        return city ? (_COUNTRY_NAME_TO_ISO2[city.country] || null) : null;
+        // No city → fall back to the browser's locale-derived country.
+        // navigator.languages is ranked by preference; the first entry
+        // wins. Locale shape is "he-IL" / "en-US" / "pt-BR" — split on
+        // "-" and uppercase the tail.
+        const langs = (navigator.languages && navigator.languages.length)
+            ? navigator.languages
+            : (navigator.language ? [navigator.language] : []);
+        for (const l of langs) {
+            const parts = String(l || "").split("-");
+            if (parts.length >= 2) {
+                const tail = parts[parts.length - 1].toUpperCase();
+                if (tail.length === 2) return tail;
+            }
+        }
+        return null;
     })();
 
     const tbody = document.getElementById("events-body");
@@ -1692,18 +1716,36 @@ async function searchEvents() {
         const isTournament = !!ev.tournament;
         if (isTournament) tr.classList.add("tournament-row");
 
-        // TV channels: show distinct channel names for sports events.
-        // For tournament rows, prefer the channel(s) that match the
-        // user's selected-city country so a viewer in Israel sees the
-        // Israeli channel ahead of the US one.
+        // TV channels.
+        //   * Tournament row: render the user's local broadcaster as
+        //     a clickable link ("Kan" → https://www.kan.org.il/).
+        //     Falls back to "TV info pending" when no entry matches
+        //     the user's country (geo unknown or country not in our
+        //     broadcaster map yet).
+        //   * Non-tournament sport row: show up to 3 distinct
+        //     channel names (US/UK matchups etc., per existing
+        //     behaviour — no geo filtering since the audience is
+        //     usually the home market).
         const tvHtml = (() => {
             const chs = ev.tv_channels;
-            if (!chs || !chs.length) return "-";
-            const matching = isTournament && userCountryIso2
-                ? chs.filter(c => (c.country || "").toUpperCase() === userCountryIso2)
-                : null;
-            const picked = (matching && matching.length) ? matching : chs;
-            const names = [...new Set(picked.map(c => c.channel))].slice(0, 3);
+            if (!chs || !chs.length) {
+                return isTournament
+                    ? `<span class="tv-watch tv-watch--pending">TV info pending</span>`
+                    : "-";
+            }
+            if (isTournament) {
+                const matching = userCountryIso2
+                    ? chs.filter(c => (c.country || "").toUpperCase() === userCountryIso2)
+                    : [];
+                if (!matching.length) {
+                    return `<span class="tv-watch tv-watch--pending">TV info pending</span>`;
+                }
+                const c = matching[0];
+                return c.url
+                    ? `<a href="${esc(c.url)}" target="_blank" class="tv-watch">${esc(c.channel)}</a>`
+                    : `<span class="tv-watch">${esc(c.channel)}</span>`;
+            }
+            const names = [...new Set(chs.map(c => c.channel))].slice(0, 3);
             return `<span class="tv-channels">${names.map(n => esc(n)).join(", ")}</span>`;
         })();
 
@@ -1771,32 +1813,11 @@ async function searchEvents() {
             <td data-col="format">${(ev.event_types || []).join(", ") || "-"}</td>
             <td data-col="genre">${ev.artist_genre ? esc(ev.artist_genre) : "-"}</td>
             <td data-col="tv">${tvHtml}</td>
-            <td data-col="link">${(() => {
-                // Tournament rows: replace the Buy button with TV
-                // broadcaster info. When tv_channels carries a match
-                // for the user's selected-city country, surface that
-                // channel name (clickable if a URL was scraped along
-                // with it). Otherwise "TV info pending" telegraphs
-                // that the broadcaster lookup hasn't landed yet for
-                // this geo (data is populated by the sports-data
-                // aggregator follow-up).
-                if (isTournament) {
-                    const chs = ev.tv_channels || [];
-                    const matched = userCountryIso2
-                        ? chs.filter(c => (c.country || "").toUpperCase() === userCountryIso2)
-                        : [];
-                    if (matched.length) {
-                        const c = matched[0];
-                        return c.url
-                            ? `<a href="${esc(c.url)}" target="_blank" class="tv-watch">${esc(c.channel)}</a>`
-                            : `<span class="tv-watch">${esc(c.channel)}</span>`;
-                    }
-                    return `<span class="tv-watch tv-watch--pending">TV info pending</span>`;
-                }
-                return ev.purchase_link
+            <td data-col="link">${isTournament
+                ? "-"
+                : (ev.purchase_link
                     ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>`
-                    : "-";
-            })()}</td>
+                    : "-")}</td>
         `;
         tbody.appendChild(tr);
     });
