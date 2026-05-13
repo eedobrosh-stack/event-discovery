@@ -143,12 +143,22 @@ def _get_filtered_events_from_params(
     end_date: Optional[date] = None,
     artist_exact: Optional[str] = None,
     genres: Optional[str] = None,
+    tournaments: Optional[str] = None,
 ) -> List[Event]:
     """Shared filter logic for GET-based subscription endpoint."""
     query = db.query(Event).options(
         joinedload(Event.venue).joinedload(Venue.city),
         selectinload(Event.event_types),
     )
+
+    # Tournament filter — strict equality on events.tournament.
+    # Mirrors the same filter on /api/events so a calendar subscription
+    # link with ?tournaments=FIFA+World+Cup gives the same fixture set
+    # the user sees in the chip-filtered search.
+    if tournaments:
+        labels = [t.strip() for t in tournaments.split(",") if t.strip()]
+        if labels:
+            query = query.filter(Event.tournament.in_(labels))
 
     if artist_exact:
         names = [n.strip() for n in artist_exact.split(",") if n.strip()]
@@ -204,9 +214,26 @@ def _get_filtered_events_from_params(
     return query.order_by(Event.start_date, Event.start_time).all()
 
 
-def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db: Session, artist_exact: Optional[str] = None, genres: Optional[str] = None) -> str:
+# Tournament-specific display labels for calendar names. The bare
+# tournament value ("FIFA World Cup") is fine for filter equality but
+# reads thin as a calendar title — users want the year-tagged form
+# they recognize. Add entries here as tournaments join the
+# allowlist; missing entries fall back to the bare tournament value.
+_TOURNAMENT_DISPLAY_LABEL: dict[str, str] = {
+    "FIFA World Cup": "FIFA World Cup 2026",
+}
+
+
+def _subscription_label(type_search: Optional[str], city_ids: Optional[str], db: Session, artist_exact: Optional[str] = None, genres: Optional[str] = None, tournaments: Optional[str] = None) -> str:
     """Build a human-readable calendar name from filter params."""
     parts = []
+    if tournaments:
+        # Tournament chips are the strongest user intent — surface
+        # them first in the label so a calendar named "FIFA World
+        # Cup 2026 – Supercaly" reads cleanly.
+        ts = [t.strip() for t in tournaments.split(",") if t.strip()]
+        if ts:
+            parts.append(", ".join(_TOURNAMENT_DISPLAY_LABEL.get(t, t) for t in ts))
     if artist_exact:
         # Artist names already canonical-cased — don't .title() (e.g. "AC/DC")
         names = [n.strip() for n in artist_exact.split(",") if n.strip()]
@@ -239,14 +266,17 @@ def subscribe_calendar(
     end_date: Optional[date] = None,
     artist_exact: Optional[str] = Query(None),
     genres: Optional[str] = Query(None),
+    tournaments: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Live calendar feed for subscriptions. Returns ICS with auto-refresh headers."""
     events = _get_filtered_events_from_params(
         db, type_search, city_ids, start_date, end_date,
-        artist_exact=artist_exact, genres=genres,
+        artist_exact=artist_exact, genres=genres, tournaments=tournaments,
     )
-    name = _subscription_label(type_search, city_ids, db, artist_exact=artist_exact, genres=genres)
+    name = _subscription_label(type_search, city_ids, db,
+                               artist_exact=artist_exact, genres=genres,
+                               tournaments=tournaments)
     ics_bytes = generate_subscription_ics(events, name=name)
     return Response(
         content=ics_bytes,
