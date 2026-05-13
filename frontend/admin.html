@@ -92,6 +92,7 @@
     <button class="tab-btn" data-tab="cities">Cities</button>
     <button class="tab-btn" data-tab="logs">Scan Logs</button>
     <button class="tab-btn" data-tab="upload">Bulk Upload</button>
+    <button class="tab-btn" data-tab="services">Services &amp; Costs</button>
 </nav>
 
 <div class="content">
@@ -374,6 +375,36 @@
         </div>
     </div>
 
+    <!-- ── Services & Costs ──────────────────────────────────── -->
+    <div class="panel" id="panel-services">
+        <div class="content-box">
+            <div class="box-header">
+                <h2>Third-party services &amp; monthly fees</h2>
+                <span id="services-summary" style="font-size:0.85rem;color:#666;"></span>
+            </div>
+            <div class="box-body">
+                <p style="margin:0 0 0.75rem 0;font-size:0.85rem;color:#666;">
+                    Static catalog from <code>app/services/service_costs.py</code> — edit that file to update.
+                    Entries with <em>TBD</em> need to be filled in from the respective billing dashboard.
+                </p>
+                <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+                    <thead style="background:#f9fafb;border-bottom:1px solid #e5e7eb;">
+                        <tr>
+                            <th style="text-align:left;padding:0.6rem 0.5rem;">Service</th>
+                            <th style="text-align:left;padding:0.6rem 0.5rem;">Category</th>
+                            <th style="text-align:left;padding:0.6rem 0.5rem;">Purpose</th>
+                            <th style="text-align:left;padding:0.6rem 0.5rem;">Tier</th>
+                            <th style="text-align:right;padding:0.6rem 0.5rem;">Monthly fee</th>
+                        </tr>
+                    </thead>
+                    <tbody id="services-table-body">
+                        <tr><td colspan="5" style="padding:1rem;color:#999;">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <script>
@@ -390,6 +421,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
         if (btn.dataset.tab === "cities") loadCitiesPreview();
         if (btn.dataset.tab === "events") loadEventsPreview();
         if (btn.dataset.tab === "platform-venues") loadPlatformVenues();
+        if (btn.dataset.tab === "services") loadServices();
     });
 });
 
@@ -783,6 +815,45 @@ document.getElementById("sv-btn").addEventListener("click", async () => {
         btn.textContent = "Scan Venue";
     }
 });
+
+// ── Services & Costs ──────────────────────────────────────────────────────────
+let _servicesLoaded = false;
+async function loadServices() {
+    if (_servicesLoaded) return;  // static catalog — fetch once per page load
+    let data;
+    try {
+        data = await fetch("/api/admin/services").then(r => r.json());
+    } catch (e) {
+        document.getElementById("services-table-body").innerHTML =
+            `<tr><td colspan="5" style="padding:1rem;color:#b91c1c;">Failed to load: ${esc(String(e))}</td></tr>`;
+        return;
+    }
+    const services = data.services || [];
+    const fmtFee = (v) => v === null || v === undefined
+        ? `<span style="color:#f59e0b;font-weight:600;">TBD</span>`
+        : v === 0
+            ? `<span style="color:#16a34a;">$0</span>`
+            : `<strong>$${Number(v).toFixed(2)}</strong>`;
+    const body = services.map(s => `
+        <tr style="border-bottom:1px solid #f3f4f6;">
+            <td style="padding:0.55rem 0.5rem;font-weight:500;">${esc(s.name)}</td>
+            <td style="padding:0.55rem 0.5rem;color:#6b7280;">${esc(s.category)}</td>
+            <td style="padding:0.55rem 0.5rem;color:#4b5563;">${esc(s.purpose)}${
+                s.notes ? `<div style="font-size:0.78rem;color:#9ca3af;margin-top:2px;">${esc(s.notes)}</div>` : ""
+            }</td>
+            <td style="padding:0.55rem 0.5rem;color:#6b7280;">${esc(s.tier)}</td>
+            <td style="padding:0.55rem 0.5rem;text-align:right;">${fmtFee(s.monthly_fee_usd)}</td>
+        </tr>
+    `).join("");
+    document.getElementById("services-table-body").innerHTML = body || `<tr><td colspan="5" style="padding:1rem;color:#999;">No services configured.</td></tr>`;
+    const known = data.total_known_monthly_fee_usd || 0;
+    const unknown = data.unknown_fee_count || 0;
+    const total = data.total_count || services.length;
+    document.getElementById("services-summary").innerHTML =
+        `${total} services · known monthly: <strong>$${known.toFixed(2)}</strong>` +
+        (unknown ? ` · <span style="color:#f59e0b;">${unknown} TBD</span>` : "");
+    _servicesLoaded = true;
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadOverview();

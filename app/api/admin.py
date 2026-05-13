@@ -19,8 +19,30 @@ from app.services.collectors.scrapers.smarticket import parse_smarticket_venue_u
 from app.seed.cities import CITIES
 from app.seed.event_types import EVENT_TYPES
 from app.config import settings
+from app.services.service_costs import (
+    SERVICES,
+    total_known_monthly_fee_usd,
+    unknown_fee_count,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@router.get("/services")
+def list_services() -> dict:
+    """Static third-party service catalog with monthly fees.
+
+    Source of truth lives in ``app/services/service_costs.py``. The
+    admin page renders the table; fees marked TBD (`monthly_fee_usd
+    is None`) need to be filled in by the operator from the
+    respective billing dashboards.
+    """
+    return {
+        "services": SERVICES,
+        "total_known_monthly_fee_usd": total_known_monthly_fee_usd(),
+        "unknown_fee_count": unknown_fee_count(),
+        "total_count": len(SERVICES),
+    }
 
 
 @router.post("/seed")
