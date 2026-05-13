@@ -1163,10 +1163,17 @@ async function copyShareableLink(btn) {
 
 const _LOOKAHEAD_YEARS = 2;
 
-async function _runLookahead({ typeSearch, artistExact, genres, cityId, country, startDate, search }) {
+async function _runLookahead({ typeSearch, artistExact, genres, cityId, country, startDate, search, anchorArtist }) {
     const lp = new URLSearchParams();
     if (typeSearch.length)  lp.set("type_search", typeSearch.join(","));
     if (artistExact.length) lp.set("artist_exact", artistExact.join(","));
+    // When peer expansion is active the caller passes the expanded
+    // artist list AND the anchor — preserve both here so the
+    // date-extended retry searches across peers too. Without this a
+    // user who turned on "Include artists like X" and got 0 results
+    // in their window would see lookahead silently fall back to just
+    // the anchor, hiding peer events that exist further out.
+    if (anchorArtist)       lp.set("anchor_artist", anchorArtist);
     if (genres.length)      lp.set("genres", genres.join(","));
     if (cityId)             lp.set("city_ids", cityId);
     if (country)            lp.set("country", country);
@@ -1236,22 +1243,32 @@ function _cleanPlaceLabel() {
         .trim() || null;
 }
 
-function renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate }) {
+function renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate, peerExpansionActive }) {
     // Describe the search in terms the user used. Pluralize the noun based
     // on the dominant chip kind so the message reads naturally:
     //   1 artist chip → "artist events"
     //   1 genre chip  → "genre events"
     //   anything else → "events"
+    // Exception: when peer expansion is active we drop "artist" and add
+    // an "or similar artists" suffix to the terms so the message reads:
+    //   "No events for X or similar artists between ..."
+    // instead of the misleading "No artist events for X ..." (which
+    // sounds like only the anchor was searched).
     const allChips = [...artistExact, ...genres, ...typeSearch];
     const free = (search || "").trim();
     const terms = allChips.length ? allChips : (free ? [free] : []);
 
     let kindWord = "events";
-    if (artistExact.length === 1 && !genres.length && !typeSearch.length) kindWord = "artist events";
-    else if (genres.length === 1 && !artistExact.length && !typeSearch.length) kindWord = `${genres[0]} events`;
+    if (!peerExpansionActive) {
+        if (artistExact.length === 1 && !genres.length && !typeSearch.length) kindWord = "artist events";
+        else if (genres.length === 1 && !artistExact.length && !typeSearch.length) kindWord = `${genres[0]} events`;
+    }
 
+    const peerSuffix = (peerExpansionActive && artistExact.length === 1)
+        ? " or similar artists"
+        : "";
     const termsHtml = terms.length
-        ? `for <span class="notice__strong">${terms.map(esc).join(", ")}</span> `
+        ? `for <span class="notice__strong">${terms.map(esc).join(", ")}</span>${peerSuffix} `
         : "";
     const dateRange = (startDate && endDate)
         ? `between <span class="notice__strong">${_fmtFriendlyDate(startDate)}</span> ` +
@@ -1473,8 +1490,16 @@ async function searchEvents() {
     let extendedTo = null;
     if (isFirstPage && events.length === 0) {
         const filterCriteria = {
-            typeSearch, artistExact, genres,
+            typeSearch,
+            // When peer expansion is on, lookahead must search across
+            // the anchor + peers in the extended window — otherwise a
+            // user who clicked "Include artists like X" sees a "no
+            // events for X" message that ignores peer events that
+            // exist just past the date window.
+            artistExact: effectiveArtistExact,
+            genres,
             cityId, country, startDate, search,
+            anchorArtist: anchorParam,
         };
         const lookahead = await _runLookahead(filterCriteria);
         if (lookahead && lookahead.events.length > 0) {
@@ -1482,18 +1507,28 @@ async function searchEvents() {
             events = lookahead.events;
             extendedTo = lookahead.events[lookahead.events.length - 1].start_date;
             document.getElementById("end-date").value = extendedTo;
-            // Rebuild params using the *actual* extended end_date (not the
-            // +2yr lookahead cap we used internally) so the URL bar and the
-            // count fetch reflect what the user actually sees.
-            const adoptedParams = new URLSearchParams();
-            if (typeSearch.length)  adoptedParams.set("type_search", typeSearch.join(","));
-            if (artistExact.length) adoptedParams.set("artist_exact", artistExact.join(","));
-            if (genres.length)      adoptedParams.set("genres", genres.join(","));
-            if (cityId)             adoptedParams.set("city_ids", cityId);
-            if (country)            adoptedParams.set("country", country);
-            if (startDate)          adoptedParams.set("start_date", startDate);
-            adoptedParams.set("end_date", extendedTo);
-            if (search)             adoptedParams.set("search", search);
+            // URL-bar params use the un-expanded artistExact so a shared
+            // link doesn't rehydrate the chip strip with N individual
+            // peer chips (same reason as the main URL sync above).
+            const adoptedUrlParams = new URLSearchParams();
+            if (typeSearch.length)  adoptedUrlParams.set("type_search", typeSearch.join(","));
+            if (artistExact.length) adoptedUrlParams.set("artist_exact", artistExact.join(","));
+            if (genres.length)      adoptedUrlParams.set("genres", genres.join(","));
+            if (cityId)             adoptedUrlParams.set("city_ids", cityId);
+            if (country)            adoptedUrlParams.set("country", country);
+            if (startDate)          adoptedUrlParams.set("start_date", startDate);
+            adoptedUrlParams.set("end_date", extendedTo);
+            if (search)             adoptedUrlParams.set("search", search);
+            // Count fetch needs the expanded artist set + anchor so the
+            // total/column_presence reflect what the user actually sees
+            // (anchor + peers). Without the split the count would only
+            // tally the anchor's events, undershooting the rendered
+            // total when peer expansion is on.
+            const adoptedCountParams = new URLSearchParams(adoptedUrlParams);
+            if (anchorParam) {
+                adoptedCountParams.set("artist_exact", effectiveArtistExact.join(","));
+                adoptedCountParams.set("anchor_artist", anchorParam);
+            }
             // Re-fetch BOTH total + column_presence for the adopted
             // (lookahead-extended) window. The non-lookahead path
             // already does this — without it here, _serverColumnPresence
@@ -1501,7 +1536,7 @@ async function searchEvents() {
             // falls back to DOM scan on the (often tiny) lookahead
             // result set, and tiny samples can keep clearly-empty
             // columns visible.
-            fetch(`/api/events/count?${adoptedParams}`)
+            fetch(`/api/events/count?${adoptedCountParams}`)
                 .then(r => r.json())
                 .then(({ total, column_presence }) => {
                     totalEvents = total;
@@ -1510,7 +1545,7 @@ async function searchEvents() {
                     applySparseColumnHiding();
                 })
                 .catch(() => {});
-            history.replaceState(null, "", `?${adoptedParams.toString()}`);
+            history.replaceState(null, "", `?${adoptedUrlParams.toString()}`);
             renderSearchNotice("info",
                 `No matches in the original window — extended through ` +
                 `<span class="notice__strong">${esc(_fmtFriendlyDate(extendedTo))}</span> ` +
@@ -1539,7 +1574,7 @@ async function searchEvents() {
                 search_city_id: cityId || null,
                 search_country: country || null,
             });
-            renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate });
+            renderEmptyStateMessage({ artistExact, genres, typeSearch, search, startDate, endDate, peerExpansionActive: !!anchorParam });
             // Reset paging UI so it doesn't dangle a "Load More" button.
             const tbody = document.getElementById("events-body");
             tbody.innerHTML = "";
