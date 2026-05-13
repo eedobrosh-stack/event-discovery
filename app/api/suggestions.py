@@ -64,6 +64,8 @@ def get_suggestions(
 ):
     """
     Returns autocomplete suggestions in priority order:
+      0. Tournament (Tournament badge) — top priority; allowlisted set
+         of named competitions (FIFA World Cup, …)
       1. Sub-genre  (Sub-genre badge)  — chip filters parent genre
       2. Genre      (Genre badge)      — typed parent name
       3. Artist     (Artist badge)
@@ -89,7 +91,27 @@ def get_suggestions(
     PER_TYPE = 3
     idx = idx_mod.get_index(db)
 
+    # ── Tournaments (top priority) ──────────────────────────────
+    # Slot 0 — slim allowlisted set (FIFA World Cup, …). Computed
+    # BEFORE the sport-league early-exit so a "world cup" query that
+    # would have early-exited into "sport" chips gets the Tournament
+    # chip prepended instead. Same data, stronger chip kind (strict
+    # equality on Event.tournament vs the legacy freetext "sport"
+    # chip which falls into the loose type_search bucket).
+    tournaments = idx_mod.filter_tournaments(idx, q_stripped, PER_TYPE)
+
     # ── Sports league early-exit ──────────────────────────────────
+    # Skipped entirely when a Tournament chip is already on the table
+    # for the same query — the Tournament chip is the better surface
+    # (single click → strict equality on the indexed tournament
+    # column, vs. the early-exit's per-match-label noise where event
+    # names like "World Cup: Match 1 - Group A - …" produce a dozen
+    # near-identical "sport" chips that all map to the same loose
+    # type_search filter).
+    if tournaments:
+        results = tournaments[:limit]
+        _cache_set(q_stripped, results)
+        return results
     league_chips = idx_mod.filter_sport_league_early_exit(
         idx, q_stripped, _MIN_SPORT_QUERY_LEN
     )
@@ -126,12 +148,14 @@ def get_suggestions(
         idx, q_stripped, PER_TYPE, artist_names_seen
     )
 
-    # ── Final ordering — sub-genre / genre / artist & team / format /
-    #    category / venue / event-name. See suggestions doc-comment for
-    #    the rationale (taxonomy chips dominate over specific artists
-    #    named after genre words).
+    # ── Final ordering — tournament / sub-genre / genre / artist &
+    #    team / format / category / venue / event-name. See doc-comment
+    #    for the rationale (Tournament is the highest-signal user
+    #    intent when present; taxonomy chips dominate over specific
+    #    artists named after genre words).
     results = (
-        sub_genres_results        # 1
+        tournaments               # 0 (top)
+        + sub_genres_results      # 1
         + genres_results          # 2
         + artists                 # 3a
         + sport_teams             # 3b

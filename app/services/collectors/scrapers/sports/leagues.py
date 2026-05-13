@@ -143,6 +143,16 @@ ESPN_LEAGUES: list[LeagueConfig] = [
                  extra_countries=_UEFA_COUNTRIES),
     LeagueConfig("soccer",              "uefa.europa",    "ES", "UEFA Europa League",       "Soccer",
                  extra_countries=_UEFA_COUNTRIES),
+
+    # ── FIFA World Cup 2026 — hosted by US/CA/MX ──────────────────────────
+    # ESPN's fifa.world endpoint returns all 104 fixtures (groups + knockouts;
+    # knockout slots show as placeholders like "R16 1 Winner" that fill in
+    # as the tournament progresses). Triggered only when collecting one of
+    # the 3 host countries — fixtures dedup on (scrape_source, source_id) so
+    # listing all 48 participating nations as extra_countries would just
+    # re-fetch the same data per nation without adding rows.
+    LeagueConfig("soccer",              "fifa.world",     "US", "FIFA World Cup",            "Soccer",
+                 extra_countries=frozenset({"CA", "MX"})),
 ]
 
 # Country codes that appear in at least one league (union of primary + extras)

@@ -33,6 +33,11 @@ class EventOut(BaseModel):
     home_team: Optional[str] = None
     away_team: Optional[str] = None
     sport: Optional[str] = None
+    # Named competition the event belongs to ("FIFA World Cup", "NBA",
+    # "Wimbledon"). Set by sport collectors; NULL for non-sport rows.
+    # Surfaced so the frontend can render a Tournament tag inline on
+    # event rows once that UX lands.
+    tournament: Optional[str] = None
     categories: List[str] = []
     event_types: List[str] = []
     # Primary sub-genre from artist_genre.primary_genre (e.g. "Indie Rock"),
@@ -67,6 +72,7 @@ class ExportRequest(BaseModel):
     end_date: Optional[date] = None
     artist_exact: Optional[str] = None  # comma-separated exact artist names
     genres: Optional[str] = None  # comma-separated parent-genre names; expanded server-side
+    tournaments: Optional[str] = None  # comma-separated tournament labels; strict equality on Event.tournament
 
 
 class ZeroResultSearchRequest(BaseModel):
@@ -75,6 +81,7 @@ class ZeroResultSearchRequest(BaseModel):
     app/models/zero_result_search.py for storage rationale."""
     genres: Optional[str] = None
     artists: Optional[str] = None       # artist_exact value(s)
+    tournaments: Optional[str] = None   # tournament chip values, comma-separated
     type_search: Optional[str] = None
     free_search: Optional[str] = None
     city_ids: Optional[str] = None

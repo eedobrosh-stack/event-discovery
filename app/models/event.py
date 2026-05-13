@@ -36,6 +36,15 @@ class Event(Base):
     home_team  = Column(String(200), nullable=True)
     away_team  = Column(String(200), nullable=True)
     tv_channels = Column(JSON, nullable=True)          # [{channel, market, country, type}]
+    # Named sport competition this event belongs to. Examples:
+    # team-sport league labels ("FIFA World Cup", "NBA", "Premier League"),
+    # tennis Grand Slams ("Wimbledon", "US Open"), etc. Set by sport
+    # collectors at write time and used as the anchor for the Tournament
+    # autocomplete chip (top-priority chip kind — clicking it filters to
+    # every event with the same tournament value). NULL for non-sport
+    # events and for sport rows from collectors that don't yet populate
+    # it. Indexed for fast equality filter from /api/events.
+    tournament = Column(String(200), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -48,4 +57,5 @@ class Event(Base):
         Index("ix_events_start", "start_date", "start_time"),
         Index("ix_events_venue", "venue_id"),
         Index("ix_events_dedup", "scrape_source", "source_id", unique=True),
+        Index("ix_events_tournament", "tournament"),
     )

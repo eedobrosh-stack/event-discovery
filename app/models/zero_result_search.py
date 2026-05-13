@@ -25,6 +25,7 @@ class ZeroResultSearch(Base):
     # like "top 20 missing genres last 30 days" stay one-liners.
     genres = Column(String(500), nullable=True)        # "Rock,Electronic"
     artists = Column(String(500), nullable=True)       # "Coldplay"   (artist_exact)
+    tournaments = Column(String(500), nullable=True)   # "FIFA World Cup"
     type_search = Column(String(500), nullable=True)   # "Rock Concert,Jazz"
     free_search = Column(String(500), nullable=True)   # the dedicated #search box
 

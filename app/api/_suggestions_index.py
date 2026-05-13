@@ -45,6 +45,16 @@ logger = logging.getLogger(__name__)
 # rebuild scans cheap indexed columns, takes < 2s on the prod data set.
 INDEX_TTL_SECONDS = 1800
 
+# Allowlist for the Tournament chip kind. The `events.tournament` column
+# is populated broadly by the sport collectors + the backfill script,
+# but only labels in this set become AC suggestions. v1 ships with just
+# the FIFA World Cup so the surface starts narrow; add more here
+# (e.g. "NBA", "Wimbledon", "Roland Garros", "US Open", "Premier League"…)
+# to widen — no recompute needed, the index rebuild picks it up.
+TOURNAMENT_ALLOWLIST: frozenset[str] = frozenset({
+    "FIFA World Cup",
+})
+
 # Threshold below which we require a strict whole-word match (matches
 # _search_filters._WHOLE_WORD_BELOW exactly).
 _WHOLE_WORD_BELOW = 4
@@ -173,6 +183,13 @@ class SuggestionsIndex:
     sport_teams: list[tuple[str, str]] = field(default_factory=list)
     # (event_name_lower, event_name, sport_value)  — for league early-exit
     sport_event_names: list[tuple[str, str, str]] = field(default_factory=list)
+    # (tournament_lower, tournament) — populated from distinct
+    # events.tournament gated by TOURNAMENT_ALLOWLIST below. Top-priority
+    # autocomplete chip kind. v1 allowlist is just "FIFA World Cup"; the
+    # underlying column is populated more broadly (see
+    # scripts/backfill_event_tournament.py) so widening the chip surface
+    # is a one-line allowlist edit, no recompute.
+    tournaments: list[tuple[str, str]] = field(default_factory=list)
     # (name_lower, name, category)
     event_types: list[tuple[str, str, str]] = field(default_factory=list)
     categories: list[tuple[str, str]] = field(default_factory=list)
@@ -317,11 +334,27 @@ def build_index(db: Session) -> SuggestionsIndex:
             idx.event_names.append(item)
             idx.event_names_bucket.add(item)
 
+    # Tournaments — distinct events.tournament values, gated by an
+    # allowlist so the chip surface ships incrementally. The DB column
+    # is populated for all ESPN team-sport + tennis rows (see
+    # scripts/backfill_event_tournament.py and the espn/tennis
+    # collectors), but only allowlisted labels become AC suggestions.
+    # Widening the chip surface is a one-line edit to TOURNAMENT_ALLOWLIST.
+    rows = db.execute(text("""
+        SELECT DISTINCT tournament FROM events
+        WHERE tournament IS NOT NULL AND tournament != ''
+    """)).fetchall()
+    idx.tournaments = [
+        (r[0].lower(), r[0]) for r in rows
+        if r[0] and r[0] in TOURNAMENT_ALLOWLIST
+    ]
+
     elapsed_ms = (datetime.utcnow() - started).total_seconds() * 1000
     logger.info(
         f"_suggestions_index built: artists={len(idx.artists)} "
         f"teams={len(idx.sport_teams)} types={len(idx.event_types)} "
         f"venues={len(idx.venues)} events={len(idx.event_names)} "
+        f"tournaments={len(idx.tournaments)} "
         f"elapsed_ms={elapsed_ms:.0f}"
     )
     return idx
@@ -429,6 +462,18 @@ def filter_sport_teams(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
         idx.sport_teams, q, limit,
         lambda it: {"kind": "sport_team", "value": it[1], "label": it[1],
                     "badge": "Team"},
+    )
+
+
+def filter_tournaments(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
+    """Tournaments — top-priority chip kind, prepended above sub-genre
+    in the final ordering (see suggestions.py). Source is the
+    TOURNAMENT_ALLOWLIST gate over distinct events.tournament; v1 ships
+    with "FIFA World Cup" only."""
+    return _take_matches(
+        idx.tournaments, q, limit,
+        lambda it: {"kind": "tournament", "value": it[1], "label": it[1],
+                    "badge": "Tournament"},
     )
 
 

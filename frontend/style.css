@@ -500,6 +500,10 @@ a:hover { text-decoration: underline; }
 .type-chip--freetext   { background: #fff7e6; color: #92400e; }
 .type-chip--venue      { background: #fde8f0; color: #9d174d; }
 .type-chip--genre      { background: #e0e7ff; color: #4338ca; }
+/* Tournament chip — top-priority kind. Trophy-gold palette to make the
+   "FIFA World Cup" / "Wimbledon" type entity instantly distinguishable
+   from artist/genre chips. */
+.type-chip--tournament { background: #fef3c7; color: #92400e; }
 
 /* Search-empty / extended-window banner. Sits above the results table
    and reuses the same understated style as #stats. Two flavors:

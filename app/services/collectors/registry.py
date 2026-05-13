@@ -187,6 +187,13 @@ class CollectorRegistry:
                     if raw.sport and raw.tv_channels and not existing.tv_channels:
                         existing.tv_channels = raw.tv_channels
                         updated = True
+                    # Backfill tournament label for sport rows that pre-date the
+                    # column. Overwrite when the collector now provides a value
+                    # (collector configs occasionally rename labels, e.g. a
+                    # rebranded league); never clear a value the row already has.
+                    if raw.tournament and existing.tournament != raw.tournament:
+                        existing.tournament = raw.tournament
+                        updated = True
                     if (
                         raw.artist_youtube_channel
                         and not existing.artist_youtube_channel
@@ -257,6 +264,7 @@ class CollectorRegistry:
                     home_team=raw.home_team,
                     away_team=raw.away_team,
                     tv_channels=raw.tv_channels or [],
+                    tournament=raw.tournament,
                 )
                 db.add(event)
                 db.flush()

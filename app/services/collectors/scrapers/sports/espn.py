@@ -227,6 +227,12 @@ def _parse_event(raw: dict, cfg: LeagueConfig) -> Optional[RawEvent]:
         source="espn_sports",
         source_id=source_id,
         raw_categories=["Sports", cfg.category],
+        # Tournament label — anchors the top-priority Tournament chip
+        # in autocomplete. cfg.label is the human-readable competition
+        # name ("FIFA World Cup", "NBA", "Premier League"), already used
+        # as the `name=` prefix above, so the two stay in sync without
+        # a separate map.
+        tournament=cfg.label,
     )
 
 

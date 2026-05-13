@@ -56,6 +56,14 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
         selectinload(Event.event_types),
     )
 
+    # Tournament filter — strict equality on the indexed tournament
+    # column, OR'd across comma-separated values. Mirrors the filter in
+    # /api/events so exports stay consistent with what the user sees.
+    if req.tournaments:
+        labels = [t.strip() for t in req.tournaments.split(",") if t.strip()]
+        if labels:
+            query = query.filter(Event.tournament.in_(labels))
+
     # Strict artist filter (set when the user picked an Artist autocomplete
     # suggestion). Exact case-insensitive match on artist_name only.
     if req.artist_exact:

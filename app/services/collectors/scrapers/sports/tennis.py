@@ -155,6 +155,12 @@ def _build_raw_event(tour: str, e: dict, requested_city: str) -> Optional[RawEve
         source="tennis_espn",
         source_id=f"tennis-{tour}-{identifier}",
         raw_categories=["Sports", "Tennis"],
+        # Tennis events are tournaments — the event name IS the
+        # competition (e.g. "Wimbledon", "Roland Garros", "US Open").
+        # Use the bare tournament name without the "ATP -" / "WTA -"
+        # prefix so the Tournament chip groups men's and women's draws
+        # of the same Grand Slam under one entry.
+        tournament=name,
     )
 
 

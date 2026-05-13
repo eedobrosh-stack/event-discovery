@@ -421,12 +421,37 @@ def _run_migrations():
         "home_team":   "TEXT",
         "away_team":   "TEXT",
         "tv_channels": "TEXT",   # JSON stored as TEXT in SQLite
+        # Tournament label ("FIFA World Cup", "NBA", "Wimbledon"…). Backs
+        # the top-priority Tournament autocomplete chip — see the model
+        # docstring and scripts/backfill_event_tournament.py for the
+        # source of truth on which values get populated.
+        "tournament":  "TEXT",
     }
     with engine.connect() as conn:
         for col, coltype in sports_cols.items():
             if col not in existing_event_cols:
                 conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
         conn.commit()
+    # Index on tournament — small enum-like cardinality (one entry per
+    # named competition), supports the cheap WHERE tournament = X path
+    # from /api/events when the Tournament chip is selected.
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_events_tournament ON events(tournament)"
+        ))
+        conn.commit()
+
+    # zero_result_searches.tournaments — logged when a search with a
+    # Tournament chip returned 0 even after lookahead. Useful for
+    # spotting "users want a tournament we don't carry yet" demand.
+    if "zero_result_searches" in insp.get_table_names():
+        zrs_cols = [c["name"] for c in insp.get_columns("zero_result_searches")]
+        if "tournaments" not in zrs_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE zero_result_searches ADD COLUMN tournaments TEXT"
+                ))
+                conn.commit()
 
     # artist_genre.classification_attempts — added so the auto-classification
     # cron can park artists that have failed to classify N times. Default 0

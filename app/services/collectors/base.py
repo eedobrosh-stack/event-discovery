@@ -128,6 +128,11 @@ class RawEvent:
     sport: str | None = None        # e.g. "Soccer", "Basketball", "AFL"
     tv_channels: list[dict] | None = None  # [{channel, market, country, type}]
     venue_timezone: str | None = None      # IANA tz, e.g. "America/New_York"
+    # Named competition the row belongs to. Examples: "FIFA World Cup",
+    # "NBA", "Premier League", "Wimbledon". Set by sport collectors only;
+    # left NULL for non-sport sources (concerts/theatre/etc.). Surfaces
+    # as the top-priority Tournament autocomplete chip.
+    tournament: str | None = None
 
 
 class BaseCollector(ABC):

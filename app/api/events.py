@@ -40,10 +40,22 @@ _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 # app/api/_search_filters.py and are reused by suggestions.py too.
 
 
-def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None):
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None, tournaments=None):
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, and_, func, select
     from app.models import City
+
+    # Tournament filter — set when the user clicked a Tournament chip
+    # in autocomplete (slot 0). Strict equality on the indexed
+    # events.tournament column, OR'd across comma-separated values.
+    # Surface is gated on the AC side by TOURNAMENT_ALLOWLIST so only
+    # vetted labels can reach this filter; arbitrary user input flowing
+    # in via URL hydration would simply return 0 rows for an
+    # unrecognised tournament value (no harm, no info leak).
+    if tournaments:
+        labels = [t.strip() for t in tournaments.split(",") if t.strip()]
+        if labels:
+            query = query.filter(Event.tournament.in_(labels))
 
     # Strict artist filter — used when the user clicked an "Artist" suggestion
     # in autocomplete. Exact case-insensitive match on artist_name so "Sting"
@@ -339,6 +351,7 @@ def count_events(
     search: Optional[str] = None,
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names (Rock, Electronic, …); expanded to all sub-genres' artists."),
+    tournaments: Optional[str] = Query(None, description="Comma-separated tournament labels (e.g. 'FIFA World Cup'); strict equality on Event.tournament."),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import func, case as _case, exists, select
@@ -399,7 +412,7 @@ def count_events(
     query = _build_filter_query(
         db, base,
         categories, type_search, city_ids, start_date, end_date, search, country,
-        artist_exact=artist_exact, genres=genres,
+        artist_exact=artist_exact, genres=genres, tournaments=tournaments,
     )
     row = query.first()
     if not row or not row.total:
@@ -433,6 +446,7 @@ def list_events(
     search: Optional[str] = None,
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names; expanded to all sub-genres' artists."),
+    tournaments: Optional[str] = Query(None, description="Comma-separated tournament labels (e.g. 'FIFA World Cup'); strict equality on Event.tournament."),
     anchor_artist: Optional[str] = Query(None, description="When set, events whose artist differs from this name are flagged is_peer_added=true. Used by the 'Include artists like X' UI to visually distinguish peer-expanded rows."),
     limit: int = Query(50, le=500),
     offset: int = 0,
@@ -444,7 +458,7 @@ def list_events(
     )
     query = _build_filter_query(
         db, base_query, categories, type_search, city_ids, start_date, end_date, search, country,
-        artist_exact=artist_exact, genres=genres,
+        artist_exact=artist_exact, genres=genres, tournaments=tournaments,
     )
 
     events = (
@@ -542,6 +556,7 @@ def log_zero_result_search(
         db.add(ZeroResultSearch(
             genres=payload.genres,
             artists=payload.artists,
+            tournaments=payload.tournaments,
             type_search=payload.type_search,
             free_search=payload.free_search,
             city_ids=payload.city_ids,
