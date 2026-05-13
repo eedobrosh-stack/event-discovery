@@ -1621,7 +1621,7 @@ async def llm_extract_recurring_job(
     max_sources_per_run: int = 20,
     min_hours_since_last: int = 18,
     auto_block_threshold: int = 3,
-    auto_promote_threshold: int = 3,
+    auto_promote_threshold: int = 1,
 ):
     """Run the LLM extractor against active LLMSource rows.
 
