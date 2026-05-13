@@ -881,7 +881,7 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
     # llm_extract_recurring — Cadence A of Route 1. Re-scans every active
-    # LLMSource (state in trial/recurring) on a 24h cycle, capped at 20
+    # LLMSource (state in trial/recurring) on a 24h cycle, capped at 50
     # sources per fire so we never burst Gemini's quota or memory.
     # Slot at +240min — 30 min after Cadence B so the trial pool is
     # fresh, and well after the heavy enrichment chain ends
