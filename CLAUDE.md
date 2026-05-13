@@ -137,10 +137,14 @@ shows Tel Aviv before Gush Dan).
   before Cadence A (+240) so the same-night pool gets extracted.
 - **`_heavy_job_lock`** serialises long-running jobs (collect_events,
   enrich_youtube, llm_extract, etc.) so we don't OOM Render's worker.
-- **Render-only ops** for prod-touching scripts. Use the Render shell
-  for `dedupe_us_cities.py`, `backfill_mevalim_artist_name.py`,
-  `improve_genre_via_brave.py`. The user prefers running these
-  themselves (sees the dry-run first, then commits).
+- **Render-only ops** for prod-touching scripts. Run them over SSH
+  to the Render box for `dedupe_us_cities.py`,
+  `backfill_mevalim_artist_name.py`, `improve_genre_via_brave.py`,
+  `compute_artist_related.py`. **Claude runs these** — the user
+  does not want to run scripts manually. Always dry-run first; if
+  numbers look sane (match expected magnitudes, sample looks
+  right), proceed straight to `--apply`. If anything looks off,
+  surface the dry-run summary and ask before applying.
 - **Dry-run first** is the convention for any data-mutating script.
 - **PYTHONPATH=. + dotenv** for local script invocation:
   `PYTHONPATH=. python3 scripts/foo.py`. Most scripts call
@@ -212,9 +216,11 @@ items that have been queued for a while.)
   surface that early and propose the pivot rather than grinding.
 - Approves designs ("ok, go ahead") before code changes for non-
   trivial work. For pure bugs / one-line fixes, ship and explain.
-- Runs prod-touching scripts themselves on Render shell. Show the
-  exact command + expected output shape; ask them to paste back
-  results when uncertain.
+- Does NOT want to run scripts manually. Claude runs prod-touching
+  scripts over SSH to the Render box (`srv-d7838vchg0os73ak8osg@ssh.oregon.render.com`,
+  cd `/opt/render/project/src` then `PYTHONPATH=. python3 scripts/…`).
+  Always dry-run first; auto-proceed to `--apply` if the dry-run
+  output matches expectations, otherwise surface the summary and ask.
 - Cost-conscious but not penny-pinching ("I'm willing to pay" came
   up around Brave Search API). Always quote $ estimates for paid
   API runs before committing.
