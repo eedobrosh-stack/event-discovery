@@ -1048,6 +1048,45 @@ function getSelectedCityId() {
     return isCountrySelected() ? "" : v;  // country filter is separate; don't pass as city_ids
 }
 
+// Trap fix for the "typed but didn't click" case. The city-input's
+// "input" handler wipes #city-id on every keystroke (so a stale
+// selection doesn't leak into a new search), which means a user who
+// types "United States" and hits Search without picking from the
+// autocomplete dropdown sends an empty filter — silently global.
+//
+// Called at the top of searchEvents: if #city-input has text but
+// #city-id is empty, try to resolve the text against known countries
+// and cities (exact, case-insensitive match). Countries take priority
+// over city names so "United States" resolves to COUNTRY:United States,
+// not some venue-named city. Failure-to-resolve is a no-op — the
+// search still fires globally, but at least we tried.
+function _resolveCityInputIfNeeded() {
+    const input = document.getElementById("city-input");
+    const hidden = document.getElementById("city-id");
+    if (!input || !hidden) return;
+    if (hidden.value) return;       // already resolved (or explicit Global)
+    const raw = (input.value || "").trim();
+    if (raw.length < 2) return;
+    const q = raw.toLowerCase();
+
+    // Country name match wins — single-token countries ("Germany",
+    // "France", "Israel") and multi-token ("United States", "United
+    // Kingdom") all flow through here. We canonicalise the case from
+    // the first matching city's country field.
+    for (const c of allCities) {
+        if (c.country && c.country.toLowerCase() === q) {
+            hidden.value = `COUNTRY:${c.country}`;
+            return;
+        }
+    }
+
+    // City exact match — used by "Tel Aviv", "London", etc.
+    const city = allCities.find(c => c.name && c.name.toLowerCase() === q);
+    if (city) {
+        hidden.value = String(city.id);
+    }
+}
+
 function bindEvents() {
     document.getElementById("search-btn").addEventListener("click", () => {
         offset = 0;
@@ -1503,6 +1542,14 @@ async function _renderPeerBar(anchor) {
 
 async function searchEvents() {
     const isFirstPage = offset === 0;   // capture before any mutation
+    // Resolve typed-but-unclicked city input BEFORE reading filters.
+    // Otherwise getSelectedCityId() / getSelectedCountry() both return
+    // empty, and the search silently goes global despite "United States"
+    // sitting visibly in the city box. The bug was most observable on
+    // peer-expansion ("Include artists like X?") because peers tour
+    // worldwide and flood the results, but the underlying issue is the
+    // city-input lifecycle, not peer expansion itself.
+    _resolveCityInputIfNeeded();
     const { typeSearch, artistExact, genres, tournaments, cityId, startDate, endDate, search } = getFilters();
 
     // Peer-expansion state: arm/disarm based on current filter shape.
