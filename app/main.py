@@ -881,15 +881,22 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
     # llm_extract_recurring — Cadence A of Route 1. Re-scans every active
-    # LLMSource (state in trial/recurring) on a 24h cycle, capped at 50
-    # sources per fire so we never burst Gemini's quota or memory.
+    # LLMSource (state in trial/recurring) on a 3-hour cycle, capped at
+    # 150 sources per fire. Math (Path A from the 2026-05-14 scaling
+    # conversation): per-source ~23s average → ~57 min per fire of 150
+    # sources, well under the next 3h interval; daily throughput ceiling
+    # 8 fires × 150 = 1,200 sources/day, plenty for the current ~230
+    # active sources to re-scan multiple times. The min_hours_since_last
+    # gate (6h, set in jobs.py) is what actually limits re-scans of the
+    # same source — the scheduler can fire every 3h but a source only
+    # comes due for re-scan every 6h.
     # Slot at +240min — 30 min after Cadence B so the trial pool is
     # fresh, and well after the heavy enrichment chain ends
     # (enrich_youtube finishes by ~+125min, discover_venues at +185min).
     # The _heavy_job_lock further guarantees serialization with B.
     scheduler.add_job(
         llm_extract_recurring_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=240)),
+        IntervalTrigger(hours=3, start_date=_t + _td(minutes=240)),
         id="llm_extract_recurring",
         replace_existing=True,
     )

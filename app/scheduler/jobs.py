@@ -1618,8 +1618,8 @@ def _update_drift_state(src, latest_event_count: int) -> None:
 
 
 async def llm_extract_recurring_job(
-    max_sources_per_run: int = 50,
-    min_hours_since_last: int = 18,
+    max_sources_per_run: int = 150,
+    min_hours_since_last: int = 6,
     auto_block_threshold: int = 3,
     auto_promote_threshold: int = 1,
 ):
