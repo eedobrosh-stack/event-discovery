@@ -1188,6 +1188,21 @@ function applyFiltersFromURL(params) {
     const s = params.get("search");
     if (s) document.getElementById("search").value = s;
 
+    // Peer expansion rehydration. A shared link with `include_peers=1`
+    // means the sender had the "Include artists like X?" toggle on;
+    // honour that by arming the state here so the first searchEvents()
+    // fires the expanded query. Requires exactly one performer chip
+    // (the same gate _shouldOfferPeerExpansion uses) — otherwise the
+    // flag is a no-op since the toggle wouldn't surface anyway.
+    if (params.get("include_peers") === "1") {
+        const artistChips = selectedTypeFilters.filter(f => f.kind === "performer");
+        const other = selectedTypeFilters.filter(f => f.kind !== "performer");
+        if (artistChips.length === 1 && other.length === 0) {
+            _peerExpansionActive = true;
+            _peerExpansionAnchor = artistChips[0].value;
+        }
+    }
+
     if (renderTypeChips) renderTypeChips();
 }
 
@@ -1195,8 +1210,21 @@ function applyFiltersFromURL(params) {
 // Copies the current URL (which already mirrors all active filters) to
 // the clipboard. Works on prod over HTTPS; falls back to a manual
 // document.execCommand("copy") on plain HTTP / older browsers.
+//
+// Special case: when peer expansion is active ("Include artists like
+// X?" toggle is on), the address bar intentionally does NOT carry the
+// expanded artist list — keeping it un-expanded prevents URL-hydration
+// from rebuilding the chip strip as N individual artist chips. But for
+// the SHARE link we *do* want the recipient to land in the same
+// peer-expanded state, so we tack on `include_peers=1` here. The URL
+// in the address bar stays unchanged.
 async function copyShareableLink(btn) {
-    const url = window.location.href;
+    const loc = new URL(window.location.href);
+    if (typeof _peerExpansionActive !== "undefined" && _peerExpansionActive
+            && typeof _peerExpansionAnchor !== "undefined" && _peerExpansionAnchor) {
+        loc.searchParams.set("include_peers", "1");
+    }
+    const url = loc.toString();
     let ok = false;
     try {
         await navigator.clipboard.writeText(url);
