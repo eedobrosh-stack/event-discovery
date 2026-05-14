@@ -28,6 +28,89 @@ from app.services.service_costs import (
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+@router.get("/llm-status")
+def llm_extractor_status(db: Session = Depends(get_db)) -> dict:
+    """Operational snapshot of the LLM extractor pipeline.
+
+    Returns event counts, llm_sources state distribution, top producers
+    in the last 24h, and recent Cadence-A fire timings. Used by the
+    scheduled remote agent (per the 2026-05-14 Path A scaling check)
+    that curls this once a day and reports the diff.
+    """
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+
+    total_events = db.execute(text(
+        "SELECT COUNT(*) FROM events WHERE scrape_source='llm_extractor'"
+    )).scalar() or 0
+    recent_events = db.execute(text(
+        "SELECT COUNT(*) FROM events WHERE scrape_source='llm_extractor' "
+        "AND created_at >= :c"
+    ), {"c": cutoff}).scalar() or 0
+
+    state_rows = db.execute(text(
+        "SELECT state, COUNT(*) FROM llm_sources GROUP BY state ORDER BY 2 DESC"
+    )).fetchall()
+    state_counts = {r[0] or "(null)": r[1] for r in state_rows}
+
+    never_run = db.execute(text(
+        "SELECT COUNT(*) FROM llm_sources WHERE last_run_at IS NULL"
+    )).scalar() or 0
+    sources_ran_24h = db.execute(text(
+        "SELECT COUNT(*) FROM llm_sources WHERE last_run_at >= :c"
+    ), {"c": cutoff}).scalar() or 0
+
+    top_producers = [
+        {"url": r[0], "events": r[1], "state": r[2], "method": r[3]}
+        for r in db.execute(text(
+            "SELECT url, last_event_count, state, last_method "
+            "FROM llm_sources WHERE last_run_at >= :c AND last_event_count > 0 "
+            "ORDER BY last_event_count DESC LIMIT 15"
+        ), {"c": cutoff}).fetchall()
+    ]
+
+    blocked_24h = [
+        {"url": r[0], "consecutive_empty_runs": r[1], "last_error": r[2]}
+        for r in db.execute(text(
+            "SELECT url, consecutive_empty_runs, last_error "
+            "FROM llm_sources WHERE state='blocked' AND updated_at >= :c"
+        ), {"c": cutoff}).fetchall()
+    ]
+
+    recent_fires = [
+        {
+            "started_at": str(r[0]),
+            "finished_at": str(r[1]) if r[1] else None,
+            "status": r[2],
+            "events_found": r[3] or 0,
+            "events_saved": r[4] or 0,
+            "duration_s": round(r[5] or 0, 1) if r[5] else None,
+        }
+        for r in db.execute(text(
+            "SELECT started_at, finished_at, status, events_found, events_saved, "
+            "       (julianday(finished_at) - julianday(started_at)) * 86400 AS dur "
+            "FROM scan_logs WHERE job_name='llm_extract_recurring' "
+            "ORDER BY started_at DESC LIMIT 12"
+        )).fetchall()
+    ]
+
+    return {
+        "snapshot_at_utc": datetime.utcnow().isoformat(),
+        "events": {
+            "llm_extractor_total": total_events,
+            "llm_extractor_created_last_24h": recent_events,
+        },
+        "llm_sources": {
+            "state_counts": state_counts,
+            "never_run": never_run,
+            "ran_in_last_24h": sources_ran_24h,
+        },
+        "top_producers_24h": top_producers,
+        "blocked_in_last_24h": blocked_24h,
+        "recent_fires": recent_fires,
+    }
+
+
 @router.get("/services")
 def list_services() -> dict:
     """Static third-party service catalog with monthly fees.
