@@ -40,6 +40,12 @@ class ZeroResultSearch(Base):
     # Truncated to 500 chars to bound a single bad client. Optional.
     user_agent = Column(String(500), nullable=True)
 
+    # Timestamp when this dead-end query was fed into Brave discovery
+    # by the seed_brave_from_zero_results job. NULL = still pending.
+    # Set once and never reset, so a query that already produced
+    # trial-pool entries doesn't get re-fired every cycle.
+    seeded_brave_at = Column(DateTime, nullable=True)
+
     __table_args__ = (
         Index("ix_zero_result_searches_timestamp", "timestamp"),
     )

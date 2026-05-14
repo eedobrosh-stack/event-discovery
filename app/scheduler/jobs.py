@@ -2009,6 +2009,234 @@ def _registered_domain(url: str) -> str:
 _DOMAIN_VERIFIED_STATES = frozenset({"recurring", "graduated"})
 
 
+# ── seed_brave_from_zero_results ─────────────────────────────────────
+# When a user search returns 0 events globally (even after the
+# lookahead date-extend retry), /api/events/zero-result logs the
+# query into zero_result_searches. This job feeds those dead-end
+# queries into Brave Search as "{text} performances" / "{text}
+# events 2026" / "{text} schedule", then registers the top results
+# as LLMSource trial rows. Cadence A's auto-promote (=1 success) and
+# auto-block (=3 empties) self-clean any noise — no LLM classifier
+# needed at registration time.
+
+# Pure-noise patterns we never want to feed back to Brave. Tournament
+# bracket placeholders ("Semifinal 1 Winner", "Round of 32: 1A vs.
+# TBD", "Group D Runners-up") sneak into the AC index from
+# Ticketmaster's WC fixtures and end up here when users click them
+# expecting a real event. Filter ruthlessly.
+_DEAD_END_NOISE_PATTERNS = [
+    "semifinal", "quarterfinal", "round of",
+    "group winner", "group 2nd", "group runner", "runners-up", "runners up",
+    "tbd", "tba", "winner", "third place",
+]
+
+
+def _is_query_meaningful_for_brave(q):
+    """Cheap noise filter for dead-end queries before we spend Brave
+    credits on them. Rejects empty, too-short, or tournament-placeholder
+    strings that wouldn't yield useful discovery."""
+    if not q:
+        return False
+    s = q.strip()
+    if len(s) < 3:
+        return False
+    sl = s.lower()
+    # Reject if the query is dominated by bracket-placeholder language.
+    # We use 'in' rather than 'startswith' so "X v Group A Winner" also
+    # gets filtered — the noise is the bracket vocab, wherever it sits.
+    for pat in _DEAD_END_NOISE_PATTERNS:
+        if pat in sl:
+            return False
+    return True
+
+
+async def seed_brave_from_zero_results_job(
+    max_queries_per_run: int = 5,
+    brave_hits_per_query: int = 5,
+    min_seen_count: int = 1,
+):
+    """Feed dead-end user searches into Brave to grow the LLM-source pool.
+
+    Pulls zero_result_searches entries with seeded_brave_at IS NULL,
+    groups by the actual query text (free_search if set, else
+    type_search), counts occurrences in the last 90 days, sorts by
+    count DESC + recency DESC, picks the top ``max_queries_per_run``
+    after noise filtering, and emits 3 Brave variants per query:
+    "{q} performances", "{q} events 2026", "{q} schedule".
+
+    Each unique URL returned by Brave that isn't already an LLMSource
+    becomes a new trial row. The matching zero_result_searches rows
+    get stamped with seeded_brave_at so they aren't re-fired.
+
+    Cost envelope (defaults):
+      5 queries/fire × 3 Brave variants × 5 hits each = up to 75 hits/day
+      → maybe 10-20 new LLMSource trials/day after dedup
+      → ~$0.45/day in Brave (15 queries @ ~$3/1k = $0.045) — trivial.
+
+    Cadence A's promote=1 / block=3 cycle handles trial-pool hygiene.
+    """
+    import gc
+    from datetime import datetime
+    from app.models import LLMSource, ZeroResultSearch
+    from app.extractors.discovery_search import brave_search
+
+    if _heavy_job_lock.locked():
+        logger.info("seed_brave_from_zero_results: another heavy job running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        log = ScanLog(job_name="seed_brave_from_zero_results", status="running")
+        db = SessionLocal()
+        db.add(log)
+        db.commit()
+        stats = {"queries_processed": 0, "brave_hits": 0, "new_sources": 0, "stamped": 0}
+        try:
+            # Pull pending dead-ends, grouped + counted. We use the
+            # raw rows query so the SAME row can be stamped after we
+            # extract a query from it; an aggregate would lose the row
+            # ids. Cap the raw fetch at 200 to bound work.
+            pending = db.query(ZeroResultSearch).filter(
+                ZeroResultSearch.seeded_brave_at.is_(None)
+            ).order_by(ZeroResultSearch.timestamp.desc()).limit(200).all()
+
+            # Group by the meaningful query text. A row contributes its
+            # free_search if non-empty, else its type_search. Rows with
+            # neither (genre-only or artist-chip-only dead-ends) are
+            # ignored — we don't know what to ask Brave for them.
+            by_query: dict[str, list[ZeroResultSearch]] = {}
+            for row in pending:
+                q = (row.free_search or "").strip() or (row.type_search or "").strip()
+                if not _is_query_meaningful_for_brave(q):
+                    continue
+                by_query.setdefault(q, []).append(row)
+
+            if not by_query:
+                logger.info("seed_brave_from_zero_results: nothing pending")
+                log.status = "success"
+                log.finished_at = datetime.utcnow()
+                log.notes = "no pending meaningful queries"
+                db.commit()
+                return
+
+            # Rank: most-frequent (proxy: most-recent occurrences captured
+            # in `pending`) wins. Most-recent within ties.
+            ranked = sorted(
+                by_query.items(),
+                key=lambda kv: (-len(kv[1]), -max(r.id for r in kv[1])),
+            )
+            top_queries = [q for q, rows in ranked[:max_queries_per_run]
+                           if len(rows) >= min_seen_count]
+
+            logger.info(
+                f"seed_brave_from_zero_results: {len(pending)} pending rows, "
+                f"{len(by_query)} distinct queries, processing top {len(top_queries)}"
+            )
+
+            # Pre-load existing LLMSource URLs once to dedupe in-memory.
+            existing_urls = {
+                u for (u,) in db.query(LLMSource.url).all() if u
+            }
+
+            for q in top_queries:
+                stats["queries_processed"] += 1
+                rows_for_query = by_query[q]
+                # Take city/country hint from the most recent row that
+                # had one — it's the LLMSource's city_name/country
+                # field, which Cadence A uses for downstream scoping.
+                city_name = None
+                country = None
+                for r in sorted(rows_for_query, key=lambda x: x.id, reverse=True):
+                    if r.city_ids and not city_name:
+                        # city_ids is a comma-string of ids; first id is good enough.
+                        first_id = (r.city_ids.split(",") or [""])[0].strip()
+                        if first_id.isdigit():
+                            row = db.execute(
+                                text("SELECT name, country FROM cities WHERE id = :id"),
+                                {"id": int(first_id)},
+                            ).fetchone()
+                            if row:
+                                city_name = row[0]
+                                country = row[1]
+                                break
+                    if r.country and not country:
+                        country = r.country
+                # Three query variants — different phrasing catches
+                # different page shapes (artist pages, calendars,
+                # season schedules).
+                variants = [
+                    f"{q} performances",
+                    f"{q} events 2026",
+                    f"{q} schedule",
+                ]
+                seen_for_query: set[str] = set()
+                for variant in variants:
+                    try:
+                        hits = brave_search(variant, n=brave_hits_per_query)
+                    except Exception as e:
+                        logger.warning(
+                            f"seed_brave_from_zero_results: brave_search({variant!r}) failed: {e}"
+                        )
+                        continue
+                    for h in hits:
+                        if not h.url or h.url in seen_for_query:
+                            continue
+                        seen_for_query.add(h.url)
+                        stats["brave_hits"] += 1
+                        if h.url in existing_urls:
+                            continue
+                        existing_urls.add(h.url)
+                        # Register as trial — Cadence A picks it up
+                        # and either extracts events (auto-promote) or
+                        # racks up 3 empties (auto-block).
+                        note = (
+                            f"[zero-result seed {datetime.utcnow().date()}] "
+                            f"q={q!r} via {variant!r} — "
+                            f"{(h.title or '')[:120]}"
+                        )
+                        db.add(LLMSource(
+                            url=h.url,
+                            city_name=city_name,
+                            country=country,
+                            state="trial",
+                            runs_total=0,
+                            events_seen_total=0,
+                            events_saved_total=0,
+                            notes=note,
+                        ))
+                        stats["new_sources"] += 1
+                db.commit()
+
+                # Stamp every zero_result_searches row that contributed
+                # this query so we don't re-fire next cycle.
+                now = datetime.utcnow()
+                for r in rows_for_query:
+                    r.seeded_brave_at = now
+                stats["stamped"] += len(rows_for_query)
+                db.commit()
+                gc.collect()
+
+            log.status = "success"
+            log.finished_at = datetime.utcnow()
+            log.events_found = stats["brave_hits"]
+            log.events_saved = stats["new_sources"]
+            log.notes = (
+                f"queries={stats['queries_processed']} "
+                f"hits={stats['brave_hits']} "
+                f"new_sources={stats['new_sources']} "
+                f"rows_stamped={stats['stamped']}"
+            )
+            db.commit()
+            logger.info(f"seed_brave_from_zero_results: {log.notes}")
+        except Exception as e:
+            logger.exception(f"seed_brave_from_zero_results failed: {e}")
+            log.status = "failed"
+            log.finished_at = datetime.utcnow()
+            log.notes = f"error: {type(e).__name__}: {e}"[:255]
+            db.commit()
+        finally:
+            db.close()
+
+
 async def llm_discover_sources_job(
     candidates_per_city: int = 15,
     min_event_count_to_register: int = 3,

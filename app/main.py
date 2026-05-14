@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job
 
 scheduler = AsyncIOScheduler()
 
@@ -452,6 +452,16 @@ def _run_migrations():
                     "ALTER TABLE zero_result_searches ADD COLUMN tournaments TEXT"
                 ))
                 conn.commit()
+        # seeded_brave_at: when this dead-end query was fed into Brave
+        # discovery. NULL means "still pending"; set by the
+        # seed_brave_from_zero_results job so we don't re-fire the
+        # same query every cycle.
+        if "seeded_brave_at" not in zrs_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE zero_result_searches ADD COLUMN seeded_brave_at DATETIME"
+                ))
+                conn.commit()
 
     # artist_genre.classification_attempts — added so the auto-classification
     # cron can park artists that have failed to classify N times. Default 0
@@ -878,6 +888,18 @@ async def lifespan(app: FastAPI):
         llm_discover_sources_job,
         IntervalTrigger(days=1, start_date=_t + _td(minutes=210)),
         id="llm_discover_sources",
+        replace_existing=True,
+    )
+    # seed_brave_from_zero_results — feeds user dead-end searches into
+    # Brave discovery. Daily, +225min (15 min after Cadence B). Cheap
+    # (max 5 queries × 3 variants × 5 hits = 75 Brave calls/day), and
+    # the resulting trial-pool rows clean themselves up via Cadence A's
+    # promote=1 / block=3 cycle. See the job's docstring for the cost
+    # envelope + design rationale.
+    scheduler.add_job(
+        seed_brave_from_zero_results_job,
+        IntervalTrigger(days=1, start_date=_t + _td(minutes=225)),
+        id="seed_brave_from_zero_results",
         replace_existing=True,
     )
     # llm_extract_recurring — Cadence A of Route 1. Re-scans every active
