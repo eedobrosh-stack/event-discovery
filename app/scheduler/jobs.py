@@ -2077,6 +2077,7 @@ async def seed_brave_from_zero_results_job(
     """
     import gc
     from datetime import datetime
+    from sqlalchemy import text
     from app.models import LLMSource, ZeroResultSearch
     from app.extractors.discovery_search import brave_search
 
