@@ -76,6 +76,19 @@
     </header>
     <div class="content">
         <div id="summary" class="loading">Loading…</div>
+
+        <!-- Recent Cadence-A fires (batch sizes) — populated by
+             loadRecentFires() which hits /api/admin/llm-status. -->
+        <div class="box" id="fires-box" style="margin-bottom:1rem;">
+            <div class="box-header">
+                <h2>Recent Cadence-A fires</h2>
+                <button onclick="loadRecentFires()">Refresh</button>
+            </div>
+            <div id="fires-wrap">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
+
         <div class="legend">
             <strong>Sort order:</strong> attention-needed first —
             <span class="badge badge-drift">drift</span> →
@@ -128,6 +141,70 @@ async function load() {
         document.getElementById("table-wrap").innerHTML =
             `<div class="empty">Error loading: ${esc(e.message)}</div>`;
     }
+    // Fires live in a different endpoint — fire-and-forget; the
+    // sources table doesn't need to wait on it.
+    loadRecentFires();
+}
+
+// Recent Cadence-A fires — sources processed per fire, save rate,
+// duration. Hits /api/admin/llm-status (separate from the sources
+// endpoint above). The "batch size" the user wants to monitor is
+// `events_found` × `events_saved` per fire, plus duration as the
+// time-budget signal.
+async function loadRecentFires() {
+    const el = document.getElementById("fires-wrap");
+    el.innerHTML = '<div class="loading">Loading…</div>';
+    let d;
+    try {
+        const r = await fetch("/api/admin/llm-status");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        d = await r.json();
+    } catch (e) {
+        el.innerHTML = `<div class="empty">Error loading: ${esc(e.message)}</div>`;
+        return;
+    }
+    const fires = d.recent_fires || [];
+    const fmtDur = (s) => s == null ? "—" : (s < 60 ? `${Math.round(s)}s` : `${Math.round(s/60)} min`);
+    const fmtTs = (iso) => iso ? iso.replace("T"," ").slice(0,16) : "—";
+    const statusColor = (st) => st === "success" ? "#16a34a" :
+                                 st === "running" ? "#0ea5e9" :
+                                 st === "failed"  ? "#dc2626" : "#9ca3af";
+    if (!fires.length) {
+        el.innerHTML = `<div class="empty">No recent fires.</div>`;
+        return;
+    }
+    el.innerHTML = `
+        <p style="font-size:0.78rem;color:#666;margin:0 0 0.5rem 0;padding:0 0.85rem;">
+            Schedule: every 3h at <code>:15</code> UTC (00:15, 03:15, 06:15, …, 21:15). Cap 150 sources per fire.
+            Snapshot: ${esc(d.snapshot_at_utc || "—")} UTC.
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Started (UTC)</th>
+                    <th style="text-align:right;">Duration</th>
+                    <th>Status</th>
+                    <th style="text-align:right;">Found</th>
+                    <th style="text-align:right;">Saved</th>
+                    <th style="text-align:right;">Save rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${fires.map(f => {
+                    const found = f.events_found || 0;
+                    const saved = f.events_saved || 0;
+                    const rate = found > 0 ? Math.round(saved / found * 100) + "%" : "—";
+                    return `<tr>
+                        <td>${esc(fmtTs(f.started_at))}</td>
+                        <td style="text-align:right;">${esc(fmtDur(f.duration_s))}</td>
+                        <td style="color:${statusColor(f.status)};font-weight:500;">${esc(f.status || "?")}</td>
+                        <td style="text-align:right;">${found.toLocaleString()}</td>
+                        <td style="text-align:right;font-weight:600;">${saved.toLocaleString()}</td>
+                        <td style="text-align:right;color:#666;">${rate}</td>
+                    </tr>`;
+                }).join("")}
+            </tbody>
+        </table>`;
 }
 
 function renderSummary(s) {
