@@ -912,15 +912,30 @@ async def lifespan(app: FastAPI):
     # gate (6h, set in jobs.py) is what actually limits re-scans of the
     # same source — the scheduler can fire every 3h but a source only
     # comes due for re-scan every 6h.
-    # Slot at +240min — 30 min after Cadence B so the trial pool is
-    # fresh, and well after the heavy enrichment chain ends
-    # (enrich_youtube finishes by ~+125min, discover_venues at +185min).
-    # The _heavy_job_lock further guarantees serialization with B.
+    #
+    # CronTrigger (not IntervalTrigger) — fires at fixed UTC clock times
+    # 00:15, 03:15, 06:15, …, 21:15. This is RESTART-IMMUNE: a Render
+    # redeploy can't shove the next fire forward by +240min the way the
+    # old boot-relative IntervalTrigger did. Before this change, a day
+    # with 3 deploys lost ~12h of Cadence A time per redeploy
+    # (the 2026-05-15 fire-skipping investigation). 8 fires/day every
+    # day, deploys notwithstanding.
+    #
+    # misfire_grace_time=600 — if a fire-time falls within 10 min of
+    # when the scheduler can actually dispatch (e.g. the box came back
+    # up just after :15), APScheduler still runs it. Beyond 10 min, the
+    # fire is dropped — coalesce=True means the next due fire absorbs
+    # any further missed ones rather than firing back-to-back.
+    #
+    # Minute :15 sidesteps the on-the-hour competition with other
+    # heavy jobs that drift boot-relative.
     scheduler.add_job(
         llm_extract_recurring_job,
-        IntervalTrigger(hours=3, start_date=_t + _td(minutes=240)),
+        CronTrigger(hour="*/3", minute=15),
         id="llm_extract_recurring",
         replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
     )
     # classify_new_artists — Daily auto-classification for artists newly
     # introduced by Cadence A (the LLM extractor) and for the rolling
