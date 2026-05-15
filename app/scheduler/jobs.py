@@ -2321,7 +2321,7 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
     into the parent job's ScanLog notes.
     """
     from sqlalchemy import text
-    from app.models import BraveQueryCoverage
+    from app.models import BraveQueryCoverage, LLMSource
     from app.models.city import City  # noqa: F401 — kept for relationship resolution
     from app.extractors.vertical_taxonomy import (
         enumerate_pairs, render_query,
