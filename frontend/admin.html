@@ -91,6 +91,7 @@
     <button class="tab-btn" data-tab="artists">Artists</button>
     <button class="tab-btn" data-tab="cities">Cities</button>
     <button class="tab-btn" data-tab="logs">Scan Logs</button>
+    <button class="tab-btn" data-tab="llm-pipeline">LLM Pipeline</button>
     <button class="tab-btn" data-tab="upload">Bulk Upload</button>
     <button class="tab-btn" data-tab="services">Services &amp; Costs</button>
 </nav>
@@ -328,6 +329,19 @@
         </div>
     </div>
 
+    <!-- LLM PIPELINE -->
+    <div class="panel" id="panel-llm-pipeline">
+        <div class="content-box">
+            <div class="box-header">
+                <h2>LLM Extractor — Cadence A pipeline</h2>
+                <button class="btn btn-sm" id="llm-refresh-btn" type="button" style="padding:0.3rem 0.7rem;">↻ Refresh</button>
+            </div>
+            <div class="box-body" id="llm-pipeline-body">
+                <div class="loading">Loading…</div>
+            </div>
+        </div>
+    </div>
+
     <!-- BULK UPLOAD -->
     <div class="panel" id="panel-upload">
         <div class="box">
@@ -422,6 +436,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
         if (btn.dataset.tab === "events") loadEventsPreview();
         if (btn.dataset.tab === "platform-venues") loadPlatformVenues();
         if (btn.dataset.tab === "services") loadServices();
+        if (btn.dataset.tab === "llm-pipeline") loadLLMPipeline();
     });
 });
 
@@ -854,6 +869,119 @@ async function loadServices() {
         (unknown ? ` · <span style="color:#f59e0b;">${unknown} TBD</span>` : "");
     _servicesLoaded = true;
 }
+
+// ── LLM Pipeline ──────────────────────────────────────────────────────────────
+// Reads /api/admin/llm-status and renders four sections: headline stats,
+// per-state source counts, recent fires with batch sizes, top producers in
+// the last 24h. Re-fetches on tab click or the explicit refresh button —
+// no auto-poll because the underlying data only changes every few hours.
+async function loadLLMPipeline() {
+    const el = document.getElementById("llm-pipeline-body");
+    el.innerHTML = `<div class="loading">Loading…</div>`;
+    let d;
+    try {
+        d = await fetch("/api/admin/llm-status").then(r => r.json());
+    } catch (e) {
+        el.innerHTML = `<div style="color:#b91c1c;">Failed to load: ${esc(String(e))}</div>`;
+        return;
+    }
+    const ev = d.events || {};
+    const src = d.llm_sources || {};
+    const states = src.state_counts || {};
+    const fires = d.recent_fires || [];
+    const top = d.top_producers_24h || [];
+    const blocked = d.blocked_in_last_24h || [];
+
+    const fmtFireDur = (s) => s == null ? "—" : (s < 60 ? `${s.toFixed(0)}s` : `${(s/60).toFixed(0)} min`);
+    const fmtTs = (iso) => iso ? iso.replace("T", " ").slice(0, 16) + " UTC" : "—";
+    const fireStatusColor = (st) => st === "success" ? "#16a34a" :
+                                    st === "running" ? "#0ea5e9" :
+                                    st === "failed"  ? "#dc2626" : "#9ca3af";
+
+    const totalFiresLast24h = fires.filter(f =>
+        f.started_at && f.started_at >= new Date(Date.now() - 24*3600*1000).toISOString()
+    ).length;
+
+    el.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0.85rem;margin-bottom:1.5rem;">
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;">${(ev.llm_extractor_total||0).toLocaleString()}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">events total</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;color:#16a34a;">+${(ev.llm_extractor_created_last_24h||0).toLocaleString()}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">events last 24h</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;color:#7c6af7;">${states.recurring || 0}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">recurring sources</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;color:#f59e0b;">${states.trial || 0}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">trial sources</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;color:#dc2626;">${states.blocked || 0}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">blocked sources</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;">${src.never_run || 0}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">never_run backlog</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;">${src.ran_in_last_24h || 0}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">scanned last 24h</div></div>
+            <div class="stat-card"><div style="font-size:1.5rem;font-weight:700;">${totalFiresLast24h}</div><div style="font-size:0.75rem;color:#666;text-transform:uppercase;">fires last 24h</div></div>
+        </div>
+
+        <h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;">Recent Cadence-A fires</h3>
+        <p style="font-size:0.8rem;color:#666;margin:0 0 0.5rem;">Schedule: every 3h at <code>:15</code> UTC (00:15, 03:15, 06:15, …, 21:15). Cap 150 sources per fire.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+            <thead style="background:#f9fafb;border-bottom:1px solid #e5e7eb;">
+                <tr>
+                    <th style="text-align:left;padding:0.5rem 0.6rem;">Started (UTC)</th>
+                    <th style="text-align:right;padding:0.5rem 0.6rem;">Duration</th>
+                    <th style="text-align:left;padding:0.5rem 0.6rem;">Status</th>
+                    <th style="text-align:right;padding:0.5rem 0.6rem;">Found</th>
+                    <th style="text-align:right;padding:0.5rem 0.6rem;">Saved</th>
+                    <th style="text-align:right;padding:0.5rem 0.6rem;">Save rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${fires.length ? fires.map(f => {
+                    const found = f.events_found || 0;
+                    const saved = f.events_saved || 0;
+                    const rate = found > 0 ? Math.round(saved / found * 100) + "%" : "—";
+                    return `<tr style="border-bottom:1px solid #f3f4f6;">
+                        <td style="padding:0.5rem 0.6rem;">${esc(fmtTs(f.started_at))}</td>
+                        <td style="padding:0.5rem 0.6rem;text-align:right;">${esc(fmtFireDur(f.duration_s))}</td>
+                        <td style="padding:0.5rem 0.6rem;color:${fireStatusColor(f.status)};font-weight:500;">${esc(f.status || "?")}</td>
+                        <td style="padding:0.5rem 0.6rem;text-align:right;">${found.toLocaleString()}</td>
+                        <td style="padding:0.5rem 0.6rem;text-align:right;font-weight:500;">${saved.toLocaleString()}</td>
+                        <td style="padding:0.5rem 0.6rem;text-align:right;color:#666;">${rate}</td>
+                    </tr>`;
+                }).join("") : `<tr><td colspan="6" style="padding:1rem;color:#999;">No recent fires.</td></tr>`}
+            </tbody>
+        </table>
+
+        <h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;">Top producers — last 24h</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+            <thead style="background:#f9fafb;border-bottom:1px solid #e5e7eb;">
+                <tr>
+                    <th style="text-align:right;padding:0.5rem 0.6rem;width:80px;">Events</th>
+                    <th style="text-align:left;padding:0.5rem 0.6rem;width:90px;">State</th>
+                    <th style="text-align:left;padding:0.5rem 0.6rem;width:80px;">Method</th>
+                    <th style="text-align:left;padding:0.5rem 0.6rem;">URL</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${top.length ? top.map(p => `<tr style="border-bottom:1px solid #f3f4f6;">
+                    <td style="padding:0.4rem 0.6rem;text-align:right;font-weight:600;">${p.events}</td>
+                    <td style="padding:0.4rem 0.6rem;color:#666;">${esc(p.state || "?")}</td>
+                    <td style="padding:0.4rem 0.6rem;color:#666;">${esc(p.method || "?")}</td>
+                    <td style="padding:0.4rem 0.6rem;"><a href="${esc(p.url)}" target="_blank" style="color:#4338ca;">${esc(p.url)}</a></td>
+                </tr>`).join("") : `<tr><td colspan="4" style="padding:1rem;color:#999;">No producers in last 24h.</td></tr>`}
+            </tbody>
+        </table>
+
+        ${blocked.length ? `
+        <h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;">Newly auto-blocked (last 24h)</h3>
+        <ul style="font-size:0.85rem;color:#444;margin:0;">
+            ${blocked.map(b => `<li><a href="${esc(b.url)}" target="_blank">${esc(b.url)}</a> — ${esc(b.last_error || "no events for 3 consecutive runs")}</li>`).join("")}
+        </ul>` : ""}
+
+        <p style="font-size:0.75rem;color:#999;margin-top:1.5rem;">Snapshot: ${esc(d.snapshot_at_utc || "—")} UTC</p>
+    `;
+}
+
+document.getElementById("llm-refresh-btn")?.addEventListener("click", () => loadLLMPipeline());
+
+// Stat-card shared styling — keep narrow so the section reads as data, not chrome.
+(function(){
+    const css = document.createElement("style");
+    css.textContent = `.stat-card { background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:0.7rem 0.9rem; }`;
+    document.head.appendChild(css);
+})();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadOverview();
