@@ -2324,7 +2324,7 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
     from app.models import BraveQueryCoverage, LLMSource
     from app.models.city import City  # noqa: F401 — kept for relationship resolution
     from app.extractors.vertical_taxonomy import (
-        enumerate_pairs, render_query,
+        enumerate_pairs, render_query, compute_priority,
     )
     from app.extractors.discovery_search import brave_search
 
@@ -2349,24 +2349,52 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
     )).fetchall()
     countries = sorted({(r[0] or "").strip() for r in country_rows if r[0]})
 
+    # Top-100 cities by event count drive Wave 1 priority. Recomputed
+    # every fire because the leaderboard moves as we ingest. Empty
+    # result set is fine (early-deploy state) — compute_priority
+    # falls through to wave 0.
+    top_city_rows = db.execute(text(
+        "SELECT c.name, COUNT(e.id) AS ec "
+        "FROM cities c "
+        "LEFT JOIN venues v ON v.city_id = c.id "
+        "LEFT JOIN events e ON e.venue_id = v.id "
+        "WHERE c.name IS NOT NULL AND c.name != '' "
+        "GROUP BY c.id, c.name "
+        "ORDER BY ec DESC LIMIT 100"
+    )).fetchall()
+    top_cities: set[str] = {(r[0] or "").strip() for r in top_city_rows if r[0]}
+    logger.info(
+        f"vertical_geo: top_cities[0..5]="
+        f"{[r[0] for r in top_city_rows[:5]]} ({len(top_cities)} total)"
+    )
+
     # Upsert one row per pair into brave_query_coverage. With ~8K
-    # cities × 51 verticals + 28 × ~50 countries this is ~410K rows
-    # on first build. We batch the insert and use a set-based
-    # existence check so the first build is ~30s instead of hours.
+    # cities × 51 verticals + 28 × ~50 countries + 23 × ~50 countries
+    # this is ~410K rows on first build. We batch the insert and use
+    # a set-based existence check so the first build is ~30s instead
+    # of hours. Each row gets its computed priority on creation.
     pairs = enumerate_pairs(cities, countries)
-    existing = {
-        (r[0], r[1], r[2]) for r in db.execute(text(
-            "SELECT kind, vertical, geo_name FROM brave_query_coverage"
-        )).fetchall()
-    }
+    existing: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for r in db.execute(text(
+        "SELECT kind, vertical, geo_name, id, priority FROM brave_query_coverage"
+    )).fetchall():
+        existing[(r[0], r[1], r[2])] = (r[3], r[4])
+
     pending_inserts = []
+    priority_updates = []   # (id, new_priority) for rows whose tier shifted
     for kind, vertical, geo_type, geo_name in pairs:
-        if (kind, vertical, geo_name) in existing:
+        prio = compute_priority(kind, vertical, geo_name, top_cities)
+        key = (kind, vertical, geo_name)
+        if key in existing:
+            row_id, old_prio = existing[key]
+            if old_prio != prio:
+                priority_updates.append({"id": row_id, "priority": prio})
             continue
         pending_inserts.append({
             "kind": kind, "vertical": vertical,
             "geo_type": geo_type, "geo_name": geo_name,
             "fired_at": None, "hits": 0, "new_sources": 0,
+            "priority": prio,
         })
     if pending_inserts:
         # Batch bulk_insert_mappings at 5k/commit so a fresh prod box
@@ -2382,6 +2410,18 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
             f"vertical_geo: added {len(pending_inserts)} new coverage rows "
             f"(total matrix: {len(pairs)})"
         )
+    if priority_updates:
+        # Top-100 leaderboard shifts → row tiers shift. Bulk-update
+        # so a Wave 1→0 or vice-versa transition doesn't lag.
+        CHUNK = 5000
+        for i in range(0, len(priority_updates), CHUNK):
+            db.bulk_update_mappings(
+                BraveQueryCoverage, priority_updates[i:i + CHUNK]
+            )
+            db.commit()
+        logger.info(
+            f"vertical_geo: updated priority on {len(priority_updates)} rows"
+        )
 
     # Pre-load existing LLMSource URLs once for dedupe in-memory —
     # same trick as seed_brave_from_zero_results.
@@ -2389,12 +2429,17 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
         u for (u,) in db.query(LLMSource.url).all() if u
     }
 
-    # Pick the next batch — NULL fired_at sorts first via the
-    # CASE WHEN trick (SQLite NULLS FIRST equivalent), then by
-    # fired_at ASC. Cap at queries_per_run.
+    # Pick the next batch — three-key ordering:
+    #   1. priority DESC (Wave 1 first, then Wave 2, then long-tail)
+    #   2. NULL fired_at first (never-fired before re-fires) via the
+    #      CASE WHEN trick
+    #   3. fired_at ASC (oldest re-fire next)
+    # Cap at queries_per_run. The composite index on (priority,
+    # fired_at) makes this a cheap scan.
     due = db.execute(text(
         "SELECT id, kind, vertical, geo_type, geo_name FROM brave_query_coverage "
-        "ORDER BY CASE WHEN fired_at IS NULL THEN 0 ELSE 1 END ASC, "
+        "ORDER BY priority DESC, "
+        "         CASE WHEN fired_at IS NULL THEN 0 ELSE 1 END ASC, "
         "         fired_at ASC "
         "LIMIT :n"
     ), {"n": queries_per_run}).fetchall()

@@ -36,9 +36,20 @@ class BraveQueryCoverage(Base):
     fired_at = Column(DateTime, nullable=True)
     hits = Column(Integer, nullable=False, default=0)
     new_sources = Column(Integer, nullable=False, default=0)
+    # 2 = Wave 1 (top-100 cities × all cats/verts),
+    # 1 = Wave 2 (OECD × top-10 cats / top-6 verts),
+    # 0 = long-tail rotation.
+    # Picker orders by priority DESC, then fired_at NULLS FIRST.
+    priority = Column(Integer, nullable=False, default=0)
 
     __table_args__ = (
         Index("ix_brave_query_coverage_fired_at", "fired_at"),
+        # Composite index for the picker's hot path:
+        # `ORDER BY priority DESC, fired_at NULLS FIRST` over the
+        # whole table. Without this the picker does a full scan
+        # every fire.
+        Index("ix_brave_query_coverage_priority_fired",
+              "priority", "fired_at"),
         UniqueConstraint("kind", "vertical", "geo_name",
                          name="uq_brave_query_coverage_combo"),
     )

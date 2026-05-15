@@ -441,6 +441,29 @@ def _run_migrations():
         ))
         conn.commit()
 
+    # brave_query_coverage.priority — added 2026-05-16. Existing rows
+    # default to 0 (long-tail); Cadence B recomputes priorities for
+    # all rows on its next fire so Wave 1 / Wave 2 entries pick up
+    # the right tier automatically. Create the composite index even
+    # if create_all already made the table — IF NOT EXISTS handles
+    # the duplicate case.
+    if "brave_query_coverage" in insp.get_table_names():
+        bqc_cols = [c["name"] for c in insp.get_columns("brave_query_coverage")]
+        if "priority" not in bqc_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE brave_query_coverage "
+                    "ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"
+                ))
+                conn.commit()
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_brave_query_coverage_priority_fired "
+                "ON brave_query_coverage(priority, fired_at)"
+            ))
+            conn.commit()
+
     # zero_result_searches.tournaments — logged when a search with a
     # Tournament chip returned 0 even after lookahead. Useful for
     # spotting "users want a tournament we don't carry yet" demand.
