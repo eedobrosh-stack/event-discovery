@@ -1722,6 +1722,28 @@ async def llm_extract_recurring_job(
 
                 src_url = src.url
 
+                # Defense-in-depth reserved-domain guard. Discovery
+                # (Cadence B + seed_brave_from_zero_results) is
+                # supposed to filter these out before they reach
+                # LLMSource, but legacy rows or future bypasses
+                # shouldn't waste a fetch + Gemini call. Auto-block
+                # the source so it never gets picked up again.
+                if _is_reserved_discovery_url(src_url):
+                    if src.state != "blocked":
+                        src.state = "blocked"
+                        src.notes = (
+                            (src.notes or "")
+                            + f"\n[auto-blocked {datetime.utcnow().date()}] "
+                            + "reserved-domain — covered by hand-coded collector"
+                        ).strip()
+                        db.commit()
+                        auto_blocked += 1
+                        logger.info(
+                            f"llm_extract_recurring: reserved-domain skip "
+                            f"+ auto-block: {src_url}"
+                        )
+                    continue
+
                 # Resolve URL template if the source has one (Move 2). For
                 # plain sources this is just [src.url]. For template
                 # sources we iterate the expanded URL list, aggregate
@@ -2184,6 +2206,15 @@ async def seed_brave_from_zero_results_job(
                         seen_for_query.add(h.url)
                         stats["brave_hits"] += 1
                         if h.url in existing_urls:
+                            continue
+                        # Skip reserved domains — we already cover
+                        # ticketmaster.com / espn.com / bandsintown.com
+                        # via hand-coded collectors or API, so a Brave
+                        # hit pointing at one of those URLs is pure
+                        # noise (it would just race to auto-block).
+                        if _is_reserved_discovery_url(h.url):
+                            stats.setdefault("skipped_reserved", 0)
+                            stats["skipped_reserved"] += 1
                             continue
                         existing_urls.add(h.url)
                         # Register as trial — Cadence A picks it up
