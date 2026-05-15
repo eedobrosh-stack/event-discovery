@@ -77,6 +77,19 @@ def llm_extractor_status(db: Session = Depends(get_db)) -> dict:
         ), {"c": cutoff}).fetchall()
     ]
 
+    # For in-flight (running) fires we synthesize a duration from
+    # `now() - started_at` so the admin tab can show ticking elapsed
+    # time and the progress string out of scan_logs.detail. Once the
+    # fire flips to success/failed/stale, finished_at populates and
+    # duration becomes its true value.
+    fire_rows = db.execute(text(
+        "SELECT started_at, finished_at, status, events_found, events_saved, "
+        "       (julianday(finished_at) - julianday(started_at)) * 86400 AS dur, "
+        "       detail, "
+        "       (julianday('now') - julianday(started_at)) * 86400 AS elapsed_s "
+        "FROM scan_logs WHERE job_name='llm_extract_recurring' "
+        "ORDER BY started_at DESC LIMIT 12"
+    )).fetchall()
     recent_fires = [
         {
             "started_at": str(r[0]),
@@ -84,14 +97,14 @@ def llm_extractor_status(db: Session = Depends(get_db)) -> dict:
             "status": r[2],
             "events_found": r[3] or 0,
             "events_saved": r[4] or 0,
-            "duration_s": round(r[5] or 0, 1) if r[5] else None,
+            "duration_s": (
+                round(r[5], 1) if r[5] is not None
+                else (round(r[7], 1) if (r[2] == "running" and r[7] is not None) else None)
+            ),
+            "detail": r[6],
+            "is_running": r[2] == "running",
         }
-        for r in db.execute(text(
-            "SELECT started_at, finished_at, status, events_found, events_saved, "
-            "       (julianday(finished_at) - julianday(started_at)) * 86400 AS dur "
-            "FROM scan_logs WHERE job_name='llm_extract_recurring' "
-            "ORDER BY started_at DESC LIMIT 12"
-        )).fetchall()
+        for r in fire_rows
     ]
 
     return {

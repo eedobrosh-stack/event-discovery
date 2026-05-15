@@ -151,9 +151,13 @@ async function load() {
 // endpoint above). The "batch size" the user wants to monitor is
 // `events_found` × `events_saved` per fire, plus duration as the
 // time-budget signal.
+//
+// While any fire has status='running' we auto-poll every 30s so the
+// LIVE row updates in place. Stops polling when the in-flight fire
+// flips to success/failed/stale.
+let _firesPollHandle = null;
 async function loadRecentFires() {
     const el = document.getElementById("fires-wrap");
-    el.innerHTML = '<div class="loading">Loading…</div>';
     let d;
     try {
         const r = await fetch("/api/admin/llm-status");
@@ -168,15 +172,18 @@ async function loadRecentFires() {
     const fmtTs = (iso) => iso ? iso.replace("T"," ").slice(0,16) : "—";
     const statusColor = (st) => st === "success" ? "#16a34a" :
                                  st === "running" ? "#0ea5e9" :
-                                 st === "failed"  ? "#dc2626" : "#9ca3af";
+                                 st === "failed"  ? "#dc2626" :
+                                 st === "stale"   ? "#9ca3af" : "#9ca3af";
     if (!fires.length) {
         el.innerHTML = `<div class="empty">No recent fires.</div>`;
         return;
     }
+    const hasRunning = fires.some(f => f.is_running);
     el.innerHTML = `
         <p style="font-size:0.78rem;color:#666;margin:0 0 0.5rem 0;padding:0 0.85rem;">
-            Schedule: every 3h at <code>:15</code> UTC (00:15, 03:15, 06:15, …, 21:15). Cap 150 sources per fire.
-            Snapshot: ${esc(d.snapshot_at_utc || "—")} UTC.
+            Schedule: every 3h at <code>:15</code> UTC. Cap 150 sources per fire.
+            ${hasRunning ? '<span style="color:#0ea5e9;font-weight:600;">● LIVE — auto-refresh every 30s</span>' : ''}
+            <span style="float:right;">Snapshot: ${esc(d.snapshot_at_utc || "—")} UTC</span>
         </p>
         <table>
             <thead>
@@ -194,10 +201,17 @@ async function loadRecentFires() {
                     const found = f.events_found || 0;
                     const saved = f.events_saved || 0;
                     const rate = found > 0 ? Math.round(saved / found * 100) + "%" : "—";
-                    return `<tr>
-                        <td>${esc(fmtTs(f.started_at))}</td>
+                    const liveBg = f.is_running ? "background:#eff6ff;" : "";
+                    const liveBadge = f.is_running
+                        ? `<span style="display:inline-block;background:#0ea5e9;color:#fff;padding:1px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;margin-right:6px;letter-spacing:0.04em;">LIVE</span>`
+                        : "";
+                    const detail = f.is_running && f.detail
+                        ? `<div style="font-size:0.75rem;color:#0369a1;margin-top:3px;">${esc(f.detail)}</div>`
+                        : "";
+                    return `<tr style="${liveBg}">
+                        <td>${esc(fmtTs(f.started_at))}${detail}</td>
                         <td style="text-align:right;">${esc(fmtDur(f.duration_s))}</td>
-                        <td style="color:${statusColor(f.status)};font-weight:500;">${esc(f.status || "?")}</td>
+                        <td style="color:${statusColor(f.status)};font-weight:500;">${liveBadge}${esc(f.status || "?")}</td>
                         <td style="text-align:right;">${found.toLocaleString()}</td>
                         <td style="text-align:right;font-weight:600;">${saved.toLocaleString()}</td>
                         <td style="text-align:right;color:#666;">${rate}</td>
@@ -205,6 +219,16 @@ async function loadRecentFires() {
                 }).join("")}
             </tbody>
         </table>`;
+
+    // Manage the auto-poll lifecycle: start when a fire is running,
+    // stop when it isn't. setInterval handle held on a module-level
+    // global so re-renders don't double-schedule.
+    if (hasRunning && !_firesPollHandle) {
+        _firesPollHandle = setInterval(loadRecentFires, 30000);
+    } else if (!hasRunning && _firesPollHandle) {
+        clearInterval(_firesPollHandle);
+        _firesPollHandle = null;
+    }
 }
 
 function renderSummary(s) {

@@ -1714,13 +1714,24 @@ async def llm_extract_recurring_job(
             auto_blocked = 0
             extractor_unavailable = False
 
-            for src in sources:
+            for _src_idx, src in enumerate(sources, start=1):
                 # If the extractor was unconfigured on a previous source,
                 # skip the rest — they'd all fail the same way.
                 if extractor_unavailable:
                     break
 
                 src_url = src.url
+
+                # Real-time progress signal — write to scan_logs.detail
+                # *before* the fetch so admin LLM Pipeline tab shows
+                # "currently scanning: X" while the slow work happens.
+                # No commit here — the next per-source commit below
+                # flushes it.
+                log.detail = (
+                    f"{_src_idx}/{len(sources)} fetching: "
+                    + (src_url or "")[:120]
+                )
+                db.commit()
 
                 # Defense-in-depth reserved-domain guard. Discovery
                 # (Cadence B + seed_brave_from_zero_results) is
@@ -1930,6 +1941,20 @@ async def llm_extract_recurring_job(
                 db.commit()
                 total_events += len(result.events)
                 total_saved += saved
+
+                # Roll running totals into the scan_log so the admin
+                # LLM Pipeline tab can show live progress without
+                # waiting for the whole 150-source fire to finish.
+                # auto_blocked count is included in the detail so a
+                # spike in blocks is visible immediately.
+                log.events_found = total_events
+                log.events_saved = total_saved
+                log.detail = (
+                    f"{_src_idx}/{len(sources)} done — "
+                    f"found {total_events}, saved {total_saved}, "
+                    f"blocked {auto_blocked}"
+                )
+                db.commit()
 
                 logger.info(
                     f"llm_extract_recurring: {src_url} → {len(result.events)} "
