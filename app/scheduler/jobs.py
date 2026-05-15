@@ -2294,10 +2294,180 @@ async def seed_brave_from_zero_results_job(
             db.close()
 
 
+def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
+                                  hits_per_query: int = 5):
+    """Cadence-B phase 2: rotate through the vertical × geo matrix.
+
+    Source taxonomy lives in app/extractors/vertical_taxonomy.py
+    (operator-curated: 23 event categories, 28 conference verticals,
+    ~46 target cities, plus distinct countries from the cities table).
+    Total matrix ≈ 3,700 pairs.
+
+    Each fire picks ``queries_per_run`` oldest-fired-or-never-fired
+    pairs (NULL fired_at sorts first), runs the Brave query for each
+    (e.g. "Art events in Detroit", "MarTech conferences in Norway"),
+    registers up to ``hits_per_query`` hits as LLMSource trials, and
+    stamps the coverage row. Reserved-domain filter applied per hit
+    so already-covered hosts (ticketmaster.com, espn.com, etc.) don't
+    pollute the trial pool.
+
+    Cost envelope at the defaults:
+      100 queries × ~$0.003 per Brave call ≈ $0.30/day
+      Full matrix coverage: ~37 days → monthly refresh cadence.
+
+    No LLM classifier on the hits (same design call as
+    seed_brave_from_zero_results — auto-promote=1 / auto-block=3
+    handles trial-pool hygiene). Returns a stats dict the caller folds
+    into the parent job's ScanLog notes.
+    """
+    from sqlalchemy import text
+    from app.models import BraveQueryCoverage
+    from app.models.city import City  # noqa: F401 — kept for relationship resolution
+    from app.extractors.vertical_taxonomy import (
+        enumerate_pairs, render_query,
+    )
+    from app.extractors.discovery_search import brave_search
+
+    stats = {
+        "queries_fired": 0,
+        "brave_hits": 0,
+        "new_sources": 0,
+        "skipped_reserved": 0,
+        "skipped_existing": 0,
+    }
+
+    # Distinct country names from the cities table — that's our
+    # country axis. Filtering blanks defensively; the unique
+    # constraint on (kind, vertical, geo_name) does the rest.
+    rows = db.execute(text(
+        "SELECT DISTINCT country FROM cities WHERE country IS NOT NULL AND country != ''"
+    )).fetchall()
+    countries = sorted({(r[0] or "").strip() for r in rows if r[0]})
+
+    # Upsert one row per pair into brave_query_coverage. Idempotent —
+    # existing rows are left alone, only the missing ones get added.
+    # We do this every Cadence-B fire so the table tracks taxonomy
+    # edits (new categories/verticals/cities) automatically.
+    pairs = enumerate_pairs(countries)
+    existing = {
+        (r[0], r[1], r[2]) for r in db.execute(text(
+            "SELECT kind, vertical, geo_name FROM brave_query_coverage"
+        )).fetchall()
+    }
+    new_rows = 0
+    for kind, vertical, geo_type, geo_name in pairs:
+        if (kind, vertical, geo_name) in existing:
+            continue
+        db.add(BraveQueryCoverage(
+            kind=kind, vertical=vertical,
+            geo_type=geo_type, geo_name=geo_name,
+            fired_at=None, hits=0, new_sources=0,
+        ))
+        new_rows += 1
+    if new_rows:
+        db.commit()
+        logger.info(
+            f"vertical_geo: added {new_rows} new coverage rows "
+            f"(total matrix: {len(pairs)})"
+        )
+
+    # Pre-load existing LLMSource URLs once for dedupe in-memory —
+    # same trick as seed_brave_from_zero_results.
+    existing_urls = {
+        u for (u,) in db.query(LLMSource.url).all() if u
+    }
+
+    # Pick the next batch — NULL fired_at sorts first via the
+    # CASE WHEN trick (SQLite NULLS FIRST equivalent), then by
+    # fired_at ASC. Cap at queries_per_run.
+    due = db.execute(text(
+        "SELECT id, kind, vertical, geo_type, geo_name FROM brave_query_coverage "
+        "ORDER BY CASE WHEN fired_at IS NULL THEN 0 ELSE 1 END ASC, "
+        "         fired_at ASC "
+        "LIMIT :n"
+    ), {"n": queries_per_run}).fetchall()
+
+    for row in due:
+        cov_id, kind, vertical, geo_type, geo_name = row
+        query = render_query(kind, vertical, geo_name)
+        try:
+            hits = brave_search(query, n=hits_per_query)
+        except Exception as e:
+            logger.warning(f"vertical_geo: brave_search({query!r}) failed: {e}")
+            hits = []
+        stats["queries_fired"] += 1
+        stats["brave_hits"] += len(hits)
+
+        new_sources_for_pair = 0
+        for h in hits:
+            if not h.url:
+                continue
+            if h.url in existing_urls:
+                stats["skipped_existing"] += 1
+                continue
+            if _is_reserved_discovery_url(h.url):
+                stats["skipped_reserved"] += 1
+                continue
+            existing_urls.add(h.url)
+            note = (
+                f"[vertical-geo seed {datetime.utcnow().date()}] "
+                f"{kind}: {vertical} × {geo_name} via {query!r} — "
+                f"{(h.title or '')[:120]}"
+            )
+            # city_name on LLMSource gets the geo_name if it's a
+            # city, else left null (countries don't fit the column
+            # semantics — the country field handles that).
+            city_name = geo_name if geo_type == "city" else None
+            country = geo_name if geo_type == "country" else None
+            db.add(LLMSource(
+                url=h.url,
+                city_name=city_name,
+                country=country,
+                state="trial",
+                runs_total=0,
+                events_seen_total=0,
+                events_saved_total=0,
+                notes=note,
+            ))
+            new_sources_for_pair += 1
+            stats["new_sources"] += 1
+
+        # Stamp coverage row even when hits=0 — that signals "we did
+        # try this combo, just got nothing useful". Sorts the row to
+        # the back of the queue regardless of outcome.
+        db.execute(text(
+            "UPDATE brave_query_coverage "
+            "SET fired_at = :now, hits = :h, new_sources = :ns "
+            "WHERE id = :id"
+        ), {
+            "now": datetime.utcnow(),
+            "h": len(hits),
+            "ns": new_sources_for_pair,
+            "id": cov_id,
+        })
+        db.commit()
+        # Update the parent log incrementally so the LLM Pipeline tab
+        # shows progress through the matrix in real time.
+        log.detail = (
+            f"vertical-geo {stats['queries_fired']}/{len(due)}: "
+            f"hits={stats['brave_hits']} new_sources={stats['new_sources']}"
+        )
+        db.commit()
+
+    logger.info(
+        f"vertical_geo: fired={stats['queries_fired']} "
+        f"hits={stats['brave_hits']} new_sources={stats['new_sources']} "
+        f"skipped_reserved={stats['skipped_reserved']} "
+        f"skipped_existing={stats['skipped_existing']}"
+    )
+    return stats
+
+
 async def llm_discover_sources_job(
     candidates_per_city: int = 15,
     min_event_count_to_register: int = 3,
     max_cities_per_run: int = 10,
+    vertical_geo_queries_per_run: int = 100,
 ):
     """Cadence B of Route 1 — find new candidate event sources per city.
 
@@ -2581,9 +2751,23 @@ async def llm_discover_sources_job(
                 db.expire_all()
                 gc.collect()
 
+            # Phase 2 — vertical × geo matrix rotation. Hits the
+            # operator-curated taxonomy in app/extractors/vertical_taxonomy.py
+            # at the configured query budget. Wrapped in its own try
+            # so a Brave outage in phase 2 doesn't undo phase 1's
+            # successful registrations.
+            phase2_stats = {}
+            try:
+                phase2_stats = _run_vertical_geo_brave_phase(
+                    db, log,
+                    queries_per_run=vertical_geo_queries_per_run,
+                )
+            except Exception as e:
+                logger.exception(f"vertical_geo phase failed: {e}")
+
             log.status = "success" if log.status != "failed" else log.status
-            log.events_found = stats["registered"]
-            log.events_saved = stats["registered"]
+            log.events_found = stats["registered"] + phase2_stats.get("new_sources", 0)
+            log.events_saved = log.events_found
             log.notes = (
                 f"cities={stats['scanned']} registered={stats['registered']} "
                 f"(jsonld={stats['registered_jsonld']}, "
@@ -2592,6 +2776,10 @@ async def llm_discover_sources_job(
                 f"skipped_existing={stats['skipped_existing']} "
                 f"skipped_same_domain={stats['skipped_same_domain']} "
                 f"no_events={stats['no_events']} fetch_errors={stats['fetch_errors']}"
+                + (f" | vertical_geo: fired={phase2_stats.get('queries_fired', 0)} "
+                   f"hits={phase2_stats.get('brave_hits', 0)} "
+                   f"new={phase2_stats.get('new_sources', 0)}"
+                   if phase2_stats else "")
             )
             logger.info(f"llm_discover_sources: {log.notes}")
         except Exception as e:
