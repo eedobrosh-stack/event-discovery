@@ -2524,7 +2524,7 @@ async def llm_discover_sources_job(
     candidates_per_city: int = 15,
     min_event_count_to_register: int = 3,
     max_cities_per_run: int = 10,
-    vertical_geo_queries_per_run: int = 100,
+    vertical_geo_queries_per_run: int = 500,
 ):
     """Cadence B of Route 1 — find new candidate event sources per city.
 
