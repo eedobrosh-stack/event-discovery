@@ -2336,38 +2336,50 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
         "skipped_existing": 0,
     }
 
-    # Distinct country names from the cities table — that's our
-    # country axis. Filtering blanks defensively; the unique
-    # constraint on (kind, vertical, geo_name) does the rest.
-    rows = db.execute(text(
+    # Pull the geo axis from the live cities table. Cities = all
+    # ~8K rows; countries = distinct country values. This is the
+    # whole geography we collect events for — no curated subset.
+    city_rows = db.execute(text(
+        "SELECT name FROM cities WHERE name IS NOT NULL AND name != ''"
+    )).fetchall()
+    cities = sorted({(r[0] or "").strip() for r in city_rows if r[0]})
+
+    country_rows = db.execute(text(
         "SELECT DISTINCT country FROM cities WHERE country IS NOT NULL AND country != ''"
     )).fetchall()
-    countries = sorted({(r[0] or "").strip() for r in rows if r[0]})
+    countries = sorted({(r[0] or "").strip() for r in country_rows if r[0]})
 
-    # Upsert one row per pair into brave_query_coverage. Idempotent —
-    # existing rows are left alone, only the missing ones get added.
-    # We do this every Cadence-B fire so the table tracks taxonomy
-    # edits (new categories/verticals/cities) automatically.
-    pairs = enumerate_pairs(countries)
+    # Upsert one row per pair into brave_query_coverage. With ~8K
+    # cities × 51 verticals + 28 × ~50 countries this is ~410K rows
+    # on first build. We batch the insert and use a set-based
+    # existence check so the first build is ~30s instead of hours.
+    pairs = enumerate_pairs(cities, countries)
     existing = {
         (r[0], r[1], r[2]) for r in db.execute(text(
             "SELECT kind, vertical, geo_name FROM brave_query_coverage"
         )).fetchall()
     }
-    new_rows = 0
+    pending_inserts = []
     for kind, vertical, geo_type, geo_name in pairs:
         if (kind, vertical, geo_name) in existing:
             continue
-        db.add(BraveQueryCoverage(
-            kind=kind, vertical=vertical,
-            geo_type=geo_type, geo_name=geo_name,
-            fired_at=None, hits=0, new_sources=0,
-        ))
-        new_rows += 1
-    if new_rows:
-        db.commit()
+        pending_inserts.append({
+            "kind": kind, "vertical": vertical,
+            "geo_type": geo_type, "geo_name": geo_name,
+            "fired_at": None, "hits": 0, "new_sources": 0,
+        })
+    if pending_inserts:
+        # Batch bulk_insert_mappings at 5k/commit so a fresh prod box
+        # building the full 410k-row matrix doesn't hold a single
+        # write transaction for the whole job.
+        CHUNK = 5000
+        for i in range(0, len(pending_inserts), CHUNK):
+            db.bulk_insert_mappings(
+                BraveQueryCoverage, pending_inserts[i:i + CHUNK]
+            )
+            db.commit()
         logger.info(
-            f"vertical_geo: added {new_rows} new coverage rows "
+            f"vertical_geo: added {len(pending_inserts)} new coverage rows "
             f"(total matrix: {len(pairs)})"
         )
 

@@ -91,60 +91,10 @@ CONFERENCE_VERTICALS: list[str] = [
 ]
 
 
-# ── Target cities ────────────────────────────────────────────────────
-# Curated cities from the operator's sheet, deduped (Paris/London/
-# Berlin/Istanbul appeared twice; "İstanbul" with the Turkish dotless-I
-# is the canonical form Brave returns most results for). Order
-# preserved from the sheet so deterministic rotation matches the
-# operator's mental model. Used for both event-category and conference
-# queries.
-TARGET_CITIES: list[str] = [
-    "Paris",
-    "London",
-    "Berlin",
-    "New York",
-    "Chicago",
-    "Buenos Aires",
-    "Toronto",
-    "Los Angeles",
-    "Sydney",
-    "São Paulo",
-    "Amsterdam",
-    "Berkeley",
-    "San Francisco",
-    "Tel Aviv",
-    "Rio de Janeiro",
-    "Barcelona",
-    "Manchester",
-    "Edinburgh",
-    "Melbourne",
-    "Madrid",
-    "Vancouver",
-    "Kaunas",
-    "Lisbon",
-    "Las Vegas",
-    "İstanbul",
-    "Ljubljana",
-    "Portland",
-    "Denver",
-    "Austin",
-    "Glasgow",
-    "Nashville",
-    "Seattle",
-    "Hamburg",
-    "Stuttgart",
-    "San Diego",
-    "Atlanta",
-    "Bremen",
-    "Houston",
-    "Dallas",
-    "Salt Lake City",
-    "Birmingham",
-    "Bristol",
-    "Philadelphia",
-    "Brisbane",
-    "Sofia",
-]
+# Cities are NOT hardcoded — the phase pulls all cities (~8K) from
+# the live `cities` table so geo coverage tracks whatever rows we
+# already collect events for, not a frozen curated list. Same goes
+# for the country axis (distinct cities.country values).
 
 
 # ── Query template helpers ───────────────────────────────────────────
@@ -164,10 +114,17 @@ def conference_country_query(vertical: str, country: str) -> str:
     return f"{vertical} conferences in {country}"
 
 
-def enumerate_pairs(countries: list[str]) -> list[tuple[str, str, str, str]]:
+def enumerate_pairs(cities: list[str],
+                    countries: list[str]) -> list[tuple[str, str, str, str]]:
     """All (kind, vertical, geo_type, geo_name) combos this taxonomy
-    can produce. Caller is responsible for mixing with a coverage
-    log to pick which ones to fire next.
+    can produce given a city list + country list. Caller is
+    responsible for mixing with a coverage log to pick which ones
+    to fire next.
+
+    Matrix size grows linearly with city count — at ~8K cities and
+    51 verticals (23 categories + 28 conference verticals), this
+    yields ~408K (vertical, city) combos plus 28 × |countries| for
+    conference-at-country queries. ~410K total. Plan accordingly.
 
     `kind`      : "category_city" | "conference_city" | "conference_country"
     `vertical`  : the topical term (event category or conference vertical)
@@ -176,10 +133,10 @@ def enumerate_pairs(countries: list[str]) -> list[tuple[str, str, str, str]]:
     """
     pairs: list[tuple[str, str, str, str]] = []
     for cat in EVENT_CATEGORIES:
-        for city in TARGET_CITIES:
+        for city in cities:
             pairs.append(("category_city", cat, "city", city))
     for vert in CONFERENCE_VERTICALS:
-        for city in TARGET_CITIES:
+        for city in cities:
             pairs.append(("conference_city", vert, "city", city))
         for country in countries:
             pairs.append(("conference_country", vert, "country", country))
