@@ -1010,7 +1010,7 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         collect_bandsintown_job,
-        IntervalTrigger(hours=12, start_date=_t + _td(minutes=25)),
+        IntervalTrigger(hours=8, start_date=_t + _td(minutes=25)),
         id="collect_bandsintown",
         replace_existing=True,
     )

@@ -810,11 +810,13 @@ async def discover_venues_job():
         db.close()
 
 
-async def collect_bandsintown_job(batch: int = 150):
+async def collect_bandsintown_job(batch: int = 300):
     """
     Artist-centric Bandsintown scan — queries the top `batch` performers
     by event count and saves any upcoming events returned by the API.
-    Runs every 12 hours so the most-popular artists stay fresh.
+    Runs every 8 hours; the offset advances after 2 fires at any given
+    band so we sweep through the full performer pool (~13.8K) in ~15
+    days rather than the prior ~46-day cycle.
     """
     if _heavy_job_lock.locked():
         logger.info("collect_bandsintown_job: another heavy job is running — skipping this run")
@@ -838,13 +840,14 @@ async def collect_bandsintown_job(batch: int = 150):
     found = saved = 0
 
     try:
-        # Pool rotation: the top-150 by event count saturate on dedupe
-        # once Bandsintown has been seen — every event returned for an
-        # already-popular artist is one we already have. When the save
-        # rate drops below 1% for 3 consecutive runs, slide the OFFSET
-        # forward by `batch` to expose mid-tier artists. The offset is
-        # persisted in the previous successful run's `notes` string
-        # ("offset=N") — no new state table needed.
+        # Pool rotation: each offset band saturates on dedupe within a
+        # couple of fires (the first fire at a fresh offset typically
+        # finds ~25% new, the second <1%). Rotate after 2 fires at the
+        # same offset regardless of save rate — the prior "wait for 3
+        # consecutive <1% fires" rule wasted ~3-4 fires per band, so
+        # the pool advanced only ~7 bands per month (1,050 of 13.8K
+        # performers). The offset is persisted in the previous run's
+        # `notes` string ("offset=N") — no new state table needed.
         import re as _re
         prev_logs = (
             db.query(ScanLog)
@@ -858,13 +861,11 @@ async def collect_bandsintown_job(batch: int = 150):
             m = _re.search(r"offset=(\d+)", prev_logs[0].notes or "")
             if m:
                 prev_offset = int(m.group(1))
-        should_rotate = (
-            len(prev_logs) >= 3
-            and all(
-                (l.events_saved or 0) / max(l.events_found or 1, 1) < 0.01
-                for l in prev_logs
-            )
+        fires_at_current = sum(
+            1 for l in prev_logs
+            if l.notes and f"offset={prev_offset}" in l.notes
         )
+        should_rotate = fires_at_current >= 2
         total_perf = db.query(Performer).count()
         offset = (
             (prev_offset + batch) % max(total_perf, 1)
@@ -872,8 +873,8 @@ async def collect_bandsintown_job(batch: int = 150):
         )
         if should_rotate:
             logger.info(
-                f"collect_bandsintown_job: pool saturated (last 3 runs <1% save) "
-                f"— rotating offset {prev_offset} -> {offset}"
+                f"collect_bandsintown_job: 2 fires at offset={prev_offset} "
+                f"— rotating to offset {offset}"
             )
 
         # Performers by event count, starting at the rotation offset
