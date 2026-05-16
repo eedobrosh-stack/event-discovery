@@ -901,29 +901,41 @@ async def lifespan(app: FastAPI):
     # list keep the LLM classifier from wasting candidate slots on
     # aggregators we already cover via hand-coded collectors.
     #
-    # Scheduled BEFORE Cadence A within each daily cycle so the new
-    # trial pool gets exercised by extraction the same night, instead
-    # of having to wait an extra 24h. Pre-Brave the order was reversed,
-    # which meant the first night after every redeploy effectively
-    # skipped extraction on freshly discovered sources (observed
-    # 2026-05-08).
+    # CronTrigger at 02:30 UTC daily — restart-immune, same pattern as
+    # Cadence A's CronTrigger (see comment block at the
+    # llm_extract_recurring add_job below). Sits between Cadence A's
+    # 00:15 and 03:15 ticks: the 00:15 A fire finishes well before
+    # 02:30, B runs for ~22 min (per-city discovery + 500-query
+    # vertical-geo phase), and A's 03:15 picks up cleanly after B
+    # releases the _heavy_job_lock.
+    #
+    # Why this fix matters: the previous IntervalTrigger(days=1,
+    # start_date=_t + 210min) reset on every Render redeploy, so
+    # multiple pushes in a day meant Cadence B never got its 24h
+    # window. The vertical-geo matrix sat at 0/410K despite shipping
+    # because no Cadence B fire actually happened post-deploy.
+    # 2026-05-16 morning audit caught it.
     scheduler.add_job(
         llm_discover_sources_job,
-        IntervalTrigger(days=1, start_date=_t + _td(minutes=210)),
+        CronTrigger(hour=2, minute=30),
         id="llm_discover_sources",
         replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
     )
     # seed_brave_from_zero_results — feeds user dead-end searches into
-    # Brave discovery. Daily, +225min (15 min after Cadence B). Cheap
-    # (max 5 queries × 3 variants × 5 hits = 75 Brave calls/day), and
-    # the resulting trial-pool rows clean themselves up via Cadence A's
-    # promote=1 / block=3 cycle. See the job's docstring for the cost
-    # envelope + design rationale.
+    # Brave discovery. Daily at 03:00 UTC (30 min after Cadence B's
+    # 02:30, comfortably finishes before Cadence A's 03:15 tick).
+    # CronTrigger here too so deploys don't reset its schedule.
+    # Cost envelope unchanged: ~75 Brave calls/day for new dead-end
+    # queries; clean-up handled by Cadence A's promote=1 / block=3 cycle.
     scheduler.add_job(
         seed_brave_from_zero_results_job,
-        IntervalTrigger(days=1, start_date=_t + _td(minutes=225)),
+        CronTrigger(hour=3, minute=0),
         id="seed_brave_from_zero_results",
         replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
     )
     # llm_extract_recurring — Cadence A of Route 1. Re-scans every active
     # LLMSource (state in trial/recurring) on a 3-hour cycle, capped at
