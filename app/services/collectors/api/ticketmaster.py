@@ -1,8 +1,25 @@
 from __future__ import annotations
+import logging
+from datetime import date, datetime, timedelta, timezone
+
 import httpx
-from datetime import date
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Ticketmaster Discovery API caps responses at 1 000 events
+# (5 pages × 200) per query. Major cities (NYC, LA, London, Berlin)
+# routinely have 10k+ upcoming events, so a single un-windowed query
+# only ever sees the chronologically-first slice. We slice the
+# calendar into three windows so each gets its own 1 000-event budget.
+# Cost: 3× API calls per city per fire — still well inside the free
+# tier (~250 calls/day total at 4 cities × 6h cycle).
+_DATE_WINDOWS = [
+    ("0-3mo",  0,    90),
+    ("3-6mo",  90,   180),
+    ("6-12mo", 180,  365),
+]
 
 # Map full country names → ISO 2-letter codes for Ticketmaster API
 COUNTRY_ISO = {
@@ -32,43 +49,79 @@ class TicketmasterCollector(BaseCollector):
 
     async def collect(self, city_name: str, country_code: str = "US", **kwargs) -> list[RawEvent]:
         country_code = COUNTRY_ISO.get(country_code, country_code)
-        events = []
-        _MAX_PAGES = 5  # TM caps at 5 pages × 200 = 1 000 events per city
+        events: list[RawEvent] = []
+        seen_ids: set[str] = set()  # belt-and-braces dedup within one collect()
+        _MAX_PAGES = 5
+
+        now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+        window_summary: list[str] = []
 
         async with httpx.AsyncClient(timeout=30) as client:
-            for page in range(_MAX_PAGES):
-                resp = await client.get(
-                    "https://app.ticketmaster.com/discovery/v2/events.json",
-                    params={
-                        "apikey": settings.TICKETMASTER_KEY,
-                        "city": city_name,
-                        "countryCode": country_code,
-                        "size": 200,
-                        "page": page,
-                        "sort": "date,asc",
-                        "includePriceRanges": "yes",
-                    },
+            for label, start_d, end_d in _DATE_WINDOWS:
+                start_dt = now_utc + timedelta(days=start_d)
+                end_dt = now_utc + timedelta(days=end_d)
+                window_total_elements = None
+                window_added = 0
+
+                for page in range(_MAX_PAGES):
+                    resp = await client.get(
+                        "https://app.ticketmaster.com/discovery/v2/events.json",
+                        params={
+                            "apikey": settings.TICKETMASTER_KEY,
+                            "city": city_name,
+                            "countryCode": country_code,
+                            "size": 200,
+                            "page": page,
+                            "sort": "date,asc",
+                            "startDateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "endDateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "includePriceRanges": "yes",
+                        },
+                    )
+                    if resp.status_code == 400:
+                        break  # page out of range — TM returns 400 when page > total pages
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    page_events = data.get("_embedded", {}).get("events", [])
+                    if not page_events:
+                        break
+
+                    for ev in page_events:
+                        ev_id = ev.get("id")
+                        if ev_id and ev_id in seen_ids:
+                            continue
+                        raw = self._transform(ev)
+                        if raw:
+                            events.append(raw)
+                            window_added += 1
+                            if ev_id:
+                                seen_ids.add(ev_id)
+
+                    pagination = data.get("page", {})
+                    window_total_elements = pagination.get("totalElements", window_total_elements)
+                    total_pages = pagination.get("totalPages", 1)
+                    if page + 1 >= total_pages:
+                        break
+
+                # Surface per-window stats so we can spot windows that
+                # are still capped at the 1 000-event ceiling (i.e. a
+                # window where totalElements > 1 000 means we're still
+                # missing events in that slice and should narrow further
+                # with e.g. segmentId).
+                te = window_total_elements if window_total_elements is not None else "?"
+                capped = (
+                    isinstance(window_total_elements, int)
+                    and window_total_elements > 1000
                 )
-                if resp.status_code == 400:
-                    break  # page out of range — TM returns 400 when page > total pages
-                resp.raise_for_status()
-                data = resp.json()
+                window_summary.append(
+                    f"{label}: te={te} added={window_added}"
+                    + (" CAPPED" if capped else "")
+                )
 
-                page_events = data.get("_embedded", {}).get("events", [])
-                if not page_events:
-                    break
-
-                for ev in page_events:
-                    raw = self._transform(ev)
-                    if raw:
-                        events.append(raw)
-
-                # Stop if this was the last page
-                pagination = data.get("page", {})
-                total_pages = pagination.get("totalPages", 1)
-                if page + 1 >= total_pages:
-                    break
-
+        logger.info(
+            f"ticketmaster {city_name}/{country_code}: " + " | ".join(window_summary)
+        )
         return events
 
     def _transform(self, ev: dict) -> RawEvent | None:
