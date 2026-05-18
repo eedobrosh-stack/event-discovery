@@ -1985,11 +1985,15 @@ async def llm_extract_recurring_job(
             db.close()
 
 
-# Domains already covered by hand-coded collectors. Discovery skips
-# candidates on these hosts so we don't pay LLM tokens to find inventory
-# we already have via free / cheap paths. New collectors → add the
-# host(s) here to keep discovery efficient.
+# Discovery skips candidates on these hosts. Two reasons a host lands
+# here: (a) already covered by a hand-coded collector — don't pay LLM
+# tokens for inventory we have cheaper; (b) low-quality conference-
+# aggregator hosts that template-generate one row per city for the same
+# underlying event, polluting the LLM event pool. The runtime filter
+# also auto-blocks any existing LLMSource that resolves to one of these
+# hosts on its next Cadence-A fire.
 _RESERVED_DISCOVERY_DOMAINS: frozenset[str] = frozenset({
+    # ── Already covered by hand-coded collectors ───────────────────
     # API-based collectors
     "ticketmaster.com", "ticketmaster.co.uk", "ticketmaster.de",
     "seatgeek.com", "bandsintown.com", "predicthq.com",
@@ -2006,6 +2010,26 @@ _RESERVED_DISCOVERY_DOMAINS: frozenset[str] = frozenset({
     # Sports
     "espn.com", "mlb.com", "openf1.org", "cricapi.com",
     "euroleague.net",
+    # ── Low-quality conference aggregators ─────────────────────────
+    # 2026-05-18 QA review: 59% of LLM-extracted upcoming events came
+    # from these 8 hosts, all of which template-generate "events"
+    # (one row per city for the same conference series, or one row
+    # per month-name for the same series). They polluted the pool
+    # with junk like the Malala Yousafzai "Leadership Conference"
+    # replicated across {Germany, Switzerland | London, Paris |
+    # Munich, Berlin | Gdańsk, Warsaw} city-pair titles, all dated
+    # 2027-07-04/05/06. Existing rows stay in events.db (no
+    # destructive cleanup yet); new ones get blocked at both
+    # write-time (Cadence B) and runtime (Cadence A auto-block).
+    "internationalconferencealerts.com",
+    "conferenceindex.org",
+    "allconferencealert.com",
+    "allconferencealert.net",
+    "conferencenext.com",
+    "k12conferences.com",
+    "freeconferencealerts.com",
+    "10times.com",
+    "vendelux.com",
 })
 
 
