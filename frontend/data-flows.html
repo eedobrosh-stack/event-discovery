@@ -15,6 +15,7 @@
     --route1: #a78bfa;
     --enrich: #fbbf24;
     --tournament: #f59e0b;
+    --decision: #38bdf8;
     --rule: rgba(255,255,255,0.08);
   }
   * { box-sizing: border-box; }
@@ -40,6 +41,7 @@
   .route.r1 .tag { background: rgba(167,139,250,0.15); color: var(--route1); }
   .route.en .tag { background: rgba(251,191,36,0.15); color: var(--enrich); }
   .route.to .tag { background: rgba(245,158,11,0.15); color: var(--tournament); }
+  .route.dt .tag { background: rgba(56,189,248,0.15); color: var(--decision); }
   .route h2 { font-size: 1.3rem; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   .route .blurb { color: var(--muted); font-size: 0.95rem; margin-top: 0.25rem; margin-bottom: 1.2rem; }
   .diagram { background: #f8fafc; border-radius: 8px; padding: 1.25rem; overflow-x: auto; border: 1px solid var(--rule); }
@@ -77,6 +79,75 @@
   <div class="stat en"><div class="v">13.6k</div><div class="l">Performers (Spotify / MusicBrainz)</div></div>
   <div class="stat en"><div class="v">17.3k</div><div class="l">Artists classified (Gemini)</div></div>
   <div class="stat to"><div class="v">114</div><div class="l">Tournament events tagged</div></div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="route dt">
+  <div class="head"><span class="tag">Decision tree</span><h2>How a single fire decides what to collect</h2></div>
+  <div class="blurb">Every <code>collect_all_events</code> tick runs this gate stack per (city × collector) pair. Most "missing data" answers trace to one of the diamond gates here — a key not set, a city not in the collector's hardcoded allowlist, or a dedup short-circuit.</div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart TD
+    T[APScheduler tick<br/>collect_all_events · every 6h] --> LOCK{_heavy_job_lock<br/>held by another<br/>heavy job?}
+    LOCK -->|yes| SKIP[skip this tick<br/>next slot retries]
+    LOCK -->|no| BATCH[Read job_state cursor<br/>→ pick next 4 cities<br/>from PRIORITY_CITIES]
+
+    BATCH --> LOOP[For each city in batch]
+    LOOP --> REG[For each registered<br/>collector in CollectorRegistry]
+
+    REG --> G1{is_configured?<br/>API key present?}
+    G1 -->|no — TICKETMASTER_KEY<br/>SEATGEEK_CLIENT_ID<br/>PREDICTHQ_TOKEN unset| X1[skip collector]
+    G1 -->|yes / not required| G2{city_name in<br/>collector's hardcoded<br/>CITY_SLUGS / CITY_AREA_IDS /<br/>METRO_SLUGS / CITY_COORDS?}
+
+    G2 -->|no — Tier-1 gate| X2[return empty list<br/>most 'missing source' cases<br/>land here]
+    G2 -->|yes| TYPE{collector<br/>shape}
+
+    TYPE -->|REST API<br/>w/ auth| API[Ticketmaster<br/>3 date windows × 5 pages × 200<br/>SeatGeek / PredictHQ: paged JSON]
+    TYPE -->|GraphQL| GQL[ResidentAdvisor: areaId query<br/>Meetup: coords + radius<br/>VenuePilot: per-venue]
+    TYPE -->|HTML scraper| SCRP[Songkick / Skiddle / AllEvents<br/>Eventbrite / Xceed / Dice<br/>BeautifulSoup + paginate]
+    TYPE -->|Sport feed| SPRT[ESPN / MLB StatsAPI / OpenF1<br/>EuroLeague / Tennis / etc<br/>walk league schedule]
+    TYPE -->|Venue calendar| VEN[Barby / Cameri / Hatarbut<br/>Leaan / Smarticket / Tickchak<br/>venue-by-venue]
+
+    API & GQL & SCRP & SPRT & VEN --> FETCH{HTTP<br/>response?}
+    FETCH -->|Cloudflare block<br/>or 4xx| RETRY[scrapingbee fallback<br/>or scan_log warning]
+    FETCH -->|200 OK<br/>empty body| X3[return empty list]
+    FETCH -->|200 OK<br/>events found| NORM[_transform →<br/>RawEvent list]
+
+    NORM --> PAST{start_date<br/>before today?}
+    PAST -->|yes| X4[drop past-event]
+    PAST -->|no| DEDUP{scrape_source +<br/>source_id<br/>already in events.db?}
+    DEDUP -->|yes| X5[skip — duplicate<br/>most common terminal state]
+    DEDUP -->|no| SAVE[(events.db row inserted)]
+
+    SAVE -.->|side jobs pick up<br/>fresh rows| EN[Enrichment lane<br/>see below]
+
+    style T fill:#38bdf8,stroke:#0b1220,color:#0b1220
+    style SAVE fill:#34d399,stroke:#0b1220,color:#0b1220
+    style EN fill:#fbbf24,stroke:#0b1220,color:#0b1220
+    style X1 fill:#f87171,stroke:#0b1220,color:#0b1220
+    style X2 fill:#f87171,stroke:#0b1220,color:#0b1220
+    style X3 fill:#f87171,stroke:#0b1220,color:#0b1220
+    style X4 fill:#f87171,stroke:#0b1220,color:#0b1220
+    style X5 fill:#fbbf24,stroke:#0b1220,color:#0b1220
+    style SKIP fill:#f87171,stroke:#0b1220,color:#0b1220
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:1rem;">
+    <div class="insight">
+      <strong>Gate 1 — is_configured.</strong> Registered in <code>app/scheduler/jobs.py</code> only when the env var is set. Today's missing keys → SeatGeek and PredictHQ are unregistered; Bandsintown takes a different path (per-artist, not per-city) and isn't part of this tree.
+    </div>
+    <div class="insight warn">
+      <strong>Gate 2 — city allowlist (the big one).</strong> Each city-based collector has a hardcoded dict at the top of its file. Coverage = <code>PRIORITY_CITIES ∩ collector_allowlist</code>. Most "we don't have data for X" answers terminate here. <code>dice.py</code> has 4 entries; <code>xceed.py</code> has 35 (Iberian/Italian only); <code>skiddle.py</code> has 16 (UK/IE).
+    </div>
+    <div class="insight">
+      <strong>Bandsintown — different shape.</strong> Artist-centric, runs every 8h. Picks the top-300 performers by event count (cursor-rotated) and queries <code>/artists/{name}/events</code>. No city gate — globally returns wherever that artist plays. Sits outside this decision tree.
+    </div>
+    <div class="insight">
+      <strong>LLM (Route 1) — different shape.</strong> Two cadences (B: discovery, A: extraction). Cadence A iterates active LLMSource URLs, not cities. The "city" coordinate is inferred post-hoc from the venue. See the Route 1 box below.
+    </div>
+  </div>
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════════ -->
