@@ -9,15 +9,26 @@ Query shapes (see also: scheduler.jobs.llm_discover_sources_job):
 
   category × city     → "{category} events in {city}"
                         e.g. "Art events in Detroit"
-  vertical × city     → "{vertical} conferences in {city}"
+  conference × city   → "{vertical} conferences in {city}"
                         e.g. "AI/ML conferences in Tel Aviv"
-  vertical × country  → "{vertical} conferences in {country}"
-                        e.g. "MarTech conferences in Norway"
+  city × template     → "things to do in {city}" / "concerts in {city}"
+                        / "live shows in {city}" / "{city} event calendar"
+                        / "{city} events this weekend"
+  category × country  → "{category} events in {country}"
+                        e.g. "Music events in Norway"
 
 Country list comes from the live ``cities`` table at runtime (distinct
 ``country`` values), not hardcoded here — that keeps the geography
 axis aligned with whatever cities we're actually collecting events
 for.
+
+The ``conference_country`` shape was retired on 2026-05-18: a QA
+review of the LLM-extracted event pool showed that 59% of upcoming
+LLM events came from 9 conference-aggregator hosts, all reached
+predominantly through country-level conference queries (which return
+templated aggregator landing pages). Those domains are now in
+``_RESERVED_DISCOVERY_DOMAINS`` and the kind is filtered out of the
+coverage-row picker so legacy rows stay inert.
 """
 from __future__ import annotations
 
@@ -53,41 +64,35 @@ EVENT_CATEGORIES: list[str] = [
 
 
 # ── Professional conference verticals ─────────────────────────────────
-# 28 entries. Used for both:
-#   "{vertical} conferences in {city}"
-#   "{vertical} conferences in {country}"
-#
-# Format choice (with the "&" separator) preserves the operator's
-# spelling so the query reads natural in Brave's index.
+# Trimmed 2026-05-18 from 28 → 8 high-signal B2B verticals. The dropped
+# entries (Psychology, Leadership & Culture, EdTech, PropTech, Supply
+# Chain, Aerospace, AgTech, Sustainability/ESG, etc.) were the ones
+# driving most of the conference-aggregator junk surfaced in the
+# 2026-05-18 QA review. Used only for the city-level shape — the
+# country-level conference shape is retired.
 CONFERENCE_VERTICALS: list[str] = [
     "Artificial Intelligence & Machine Learning",
     "Cybersecurity & Data Privacy",
-    "Cloud Computing & DevOps",
-    "Mobile & Telecommunications",
     "MarTech & Marketing Automation",
-    "Content Strategy & Creator Economy",
-    "Social Media & Influencer Marketing",
-    "Data Analytics & Personalization",
     "Digital Banking & FinTech",
-    "E-commerce & Retail Innovation",
-    "RegTech & Compliance",
-    "Web3 & Decentralized Finance",
     "Digital Health & Telemedicine",
-    "Biotechnology & Therapeutics",
-    "Healthcare Administration & Policy",
-    "Renewable Energy Infrastructure",
     "ClimateTech & Decarbonization",
-    "Corporate Sustainability & ESG",
     "SaaS & Enterprise Operations",
-    "Future of Work & Talent Acquisition",
-    "Leadership & Culture",
-    "EdTech & Higher Education Innovation",
-    "PropTech & Real Estate Innovation",
-    "Supply Chain & Logistics Automation",
     "Gaming & Esports Business",
-    "Aerospace & Defense Technology",
-    "AgTech & Sustainable Farming",
-    "Psychology",
+]
+
+
+# ── Consumer-event city query templates ───────────────────────────────
+# Added 2026-05-18 to rebalance the query mix away from B2B conferences.
+# These shapes hit consumer-aggregator pages (TimeOut, SecretNYC, Do312,
+# tourism boards) rather than conference indices. Rendered with
+# .format(city=…) so the template stores the entire phrase.
+CITY_QUERY_TEMPLATES: list[str] = [
+    "things to do in {city}",
+    "concerts in {city}",
+    "live shows in {city}",
+    "{city} event calendar",
+    "{city} events this weekend",
 ]
 
 
@@ -101,16 +106,17 @@ CONFERENCE_VERTICALS: list[str] = [
 # Used by the vertical-geo phase to compute coverage-row priority:
 #
 #   * Wave 1 (priority=2): top 100 cities by event count × ALL
-#                          categories + ALL conference verticals.
-#   * Wave 2 (priority=1): OECD-38 (ordered by population) × first
-#                          10 categories + first 6 conference
-#                          verticals.
+#                          city-axis shapes (category × city,
+#                          conference × city, and the 5 city query
+#                          templates).
+#   * Wave 2 (priority=1): OECD-38 × first 10 categories
+#                          (country-level conference shape retired).
 #   * Wave 0 (priority=0): every other (kind, vertical, geo_name)
 #                          combo in the matrix.
 #
 # Cities for Wave 1 are computed at runtime from the events table
-# (popularity is a moving target). OECD list + category/vertical
-# "top N" picks live here as named constants.
+# (popularity is a moving target). OECD list + category "top N" pick
+# live here as named constants.
 
 # OECD member states ordered by population (2024 estimates). 38
 # countries total. Names match the canonical `cities.country` values
@@ -164,13 +170,6 @@ def wave2_categories() -> list[str]:
     return EVENT_CATEGORIES[:10]
 
 
-def wave2_conferences() -> list[str]:
-    """Top 6 conference verticals from the spreadsheet — i.e. the
-    first 6 entries of CONFERENCE_VERTICALS in the operator-defined
-    order."""
-    return CONFERENCE_VERTICALS[:6]
-
-
 # ── Query template helpers ───────────────────────────────────────────
 # Centralised so the registered coverage rows agree with the actually-
 # fired Brave queries (no skew between "what we said we'd fire" vs
@@ -188,8 +187,9 @@ def conference_city_query(vertical: str, city: str) -> str:
     return f"{vertical} conferences in {city}"
 
 
-def conference_country_query(vertical: str, country: str) -> str:
-    return f"{vertical} conferences in {country}"
+def city_template_query(template: str, city: str) -> str:
+    """Render a CITY_QUERY_TEMPLATES entry against a city."""
+    return template.format(city=city)
 
 
 def enumerate_pairs(cities: list[str],
@@ -199,16 +199,22 @@ def enumerate_pairs(cities: list[str],
     responsible for mixing with a coverage log to pick which ones
     to fire next.
 
-    Matrix size at prod scale (~8K cities, ~50 countries):
+    Matrix size at prod scale (~8K cities, ~38 OECD countries):
       category_city      : 23 × 8K   = 184,000
-      conference_city    : 28 × 8K   = 224,000
-      category_country   : 23 × 50   =   1,150  (new — added for Wave 2)
-      conference_country : 28 × 50   =   1,400
-      Total                          ≈ 410,550
+      conference_city    : 8  × 8K   =  64,000
+      city_query         : 5  × 8K   =  40,000
+      category_country   : 23 × 38   =     874
+      Total                          ≈ 288,874
+
+    For `city_query`, the `vertical` field stores the template string
+    (e.g. "things to do in {city}"); `render_query` substitutes the
+    geo_name in. The `conference_country` kind was retired 2026-05-18
+    after a QA review showed it drove most aggregator-junk discovery.
 
     `kind`      : "category_city" | "category_country" |
-                  "conference_city" | "conference_country"
-    `vertical`  : the topical term (event category or conference vertical)
+                  "conference_city" | "city_query"
+    `vertical`  : the topical term (event category, conference vertical,
+                  or city-query template string)
     `geo_type`  : "city" | "country"
     `geo_name`  : the resolved place name
     """
@@ -221,21 +227,33 @@ def enumerate_pairs(cities: list[str],
     for vert in CONFERENCE_VERTICALS:
         for city in cities:
             pairs.append(("conference_city", vert, "city", city))
-        for country in countries:
-            pairs.append(("conference_country", vert, "country", country))
+    for template in CITY_QUERY_TEMPLATES:
+        for city in cities:
+            pairs.append(("city_query", template, "city", city))
     return pairs
 
 
 def render_query(kind: str, vertical: str, geo_name: str) -> str:
-    """Return the Brave query string for one row."""
+    """Return the Brave query string for one row.
+
+    The retired ``conference_country`` kind is still rendered for
+    back-compat with any legacy brave_query_coverage rows that happen
+    to slip through the picker filter — but those rows are excluded
+    by ``llm_discover_sources_job``'s ``WHERE kind != 'conference_country'``
+    clause, so this branch is essentially unreachable in practice.
+    """
     if kind == "category_city":
         return category_city_query(vertical, geo_name)
     if kind == "category_country":
         return category_country_query(vertical, geo_name)
     if kind == "conference_city":
         return conference_city_query(vertical, geo_name)
+    if kind == "city_query":
+        return city_template_query(vertical, geo_name)
     if kind == "conference_country":
-        return conference_country_query(vertical, geo_name)
+        # retired 2026-05-18; legacy rows return the old shape if
+        # anything still references them
+        return f"{vertical} conferences in {geo_name}"
     raise ValueError(f"unknown kind: {kind!r}")
 
 
@@ -246,29 +264,26 @@ def compute_priority(kind: str, vertical: str, geo_name: str,
     Priority semantics (used by _run_vertical_geo_brave_phase's
     picker as the primary ORDER BY):
 
-      2 — Wave 1: top-100 cities × ALL categories + ALL verticals
-      1 — Wave 2: OECD × first-10 cats + first-6 verticals
-                 (city kinds NOT included here; OECD cities tend to
-                 already sit in the top-100 by event count, so the
-                 city-level coverage is handled by Wave 1)
-      0 — everything else (the long-tail rotation)
+      2 — Wave 1: top-100 cities × any city-axis kind
+                  (category_city, conference_city, city_query).
+      1 — Wave 2: country kinds, OECD-only, top-10 categories
+                  (conference_country tier was retired 2026-05-18).
+      0 — everything else (the long-tail rotation).
 
     Note: when a Wave 2 country has a city in the top-100, that
     city's city-level queries are Wave 1 and the country-level
     queries are Wave 2. Both fire ahead of long-tail; the city
     queries fire first because Wave 1 > Wave 2.
     """
-    # Wave 1: city kinds × any vertical/category, when city is in
-    # the top-100 set.
-    if geo_name in top_cities and kind in ("category_city", "conference_city"):
+    # Wave 1: any city-axis kind, when city is in the top-100 set.
+    if geo_name in top_cities and kind in (
+        "category_city", "conference_city", "city_query"
+    ):
         return 2
 
-    # Wave 2: country kinds, OECD-only, top-10 cats / top-6 verticals.
+    # Wave 2: category × OECD country (conference_country retired).
     if kind == "category_country" and geo_name in OECD_COUNTRIES_BY_POPULATION:
         if vertical in wave2_categories():
-            return 1
-    if kind == "conference_country" and geo_name in OECD_COUNTRIES_BY_POPULATION:
-        if vertical in wave2_conferences():
             return 1
 
     return 0

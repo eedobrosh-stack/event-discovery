@@ -2461,8 +2461,12 @@ def _run_vertical_geo_brave_phase(db, log, queries_per_run: int = 100,
     #   3. fired_at ASC (oldest re-fire next)
     # Cap at queries_per_run. The composite index on (priority,
     # fired_at) makes this a cheap scan.
+    # The ``conference_country`` kind was retired 2026-05-18 (legacy
+    # rows stay in the table but are filtered out here so they never
+    # fire). See app/extractors/vertical_taxonomy.py for the rationale.
     due = db.execute(text(
         "SELECT id, kind, vertical, geo_type, geo_name FROM brave_query_coverage "
+        "WHERE kind != 'conference_country' "
         "ORDER BY priority DESC, "
         "         CASE WHEN fired_at IS NULL THEN 0 ELSE 1 END ASC, "
         "         fired_at ASC "
