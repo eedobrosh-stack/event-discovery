@@ -11,12 +11,17 @@ from app.database import SessionLocal
 _heavy_job_lock = asyncio.Lock()
 
 # City batching: scrape CITY_BATCH_SIZE cities per run, rotating through
-# PRIORITY_CITIES on each invocation. All ~34 cities are covered over ~48h
-# at the default 6h scrape interval with 8 batches of 4 cities each.
+# PRIORITY_CITIES on each invocation. As of the 2026-05-23 Tier-2
+# expansion there are ~91 cities; at 4 cities/fire and the 6h scrape
+# interval the full set covers in ~6 days (longer when _heavy_job_lock
+# contention drops a fire). Each city is processed in its own session
+# with a gc.collect() between, so peak memory is one-city-at-a-time —
+# the batch size does NOT scale memory, only fires-per-cycle.
 #
 # Batch size was lowered from 8→4 after repeated Render OOM kills during
 # large cities like New York: the process would die mid-batch and restart,
 # losing the in-memory cursor and starting over from Batch 1 every time.
+# Kept at 4 through the Tier-2 expansion to stay clear of that history.
 CITY_BATCH_SIZE = 4
 _BATCH_INDEX_KEY = "city_batch_index"
 from app.models import City, Event, Venue, ScanLog, JobState
@@ -171,6 +176,82 @@ PRIORITY_CITIES = [
     ("Jerusalem",      "Israel"),
     ("Haifa",          "Israel"),
     ("Eilat",          "Israel"),
+    # ── Tier-2 expansion (2026-05-23) ──────────────────────────────────
+    # 58 cities verified against the live cities table (exact name +
+    # country spelling). Most are already in the hardcoded allowlists of
+    # the city-based collectors (AllEvents, Eventbrite, Songkick, Meetup,
+    # Luma, ResidentAdvisor, Skiddle, Xceed) — so adding them here
+    # activates 6+ collectors per city with no collector-code change.
+    # Goal: grow the future-events pool toward 1M. Duplicate-spelling
+    # rows (Montreal/Montréal, Zurich/Zürich, etc.) are both included on
+    # purpose — each spelling fires its own collectors and events dedup
+    # at the (scrape_source, source_id) index, so no double-counting.
+    # ── United States ──────────────────────────────────────────────────
+    ("Miami",          "United States"),
+    ("Austin",         "United States"),
+    ("Seattle",        "United States"),
+    ("Boston",         "United States"),
+    ("Nashville",      "United States"),
+    ("Denver",         "United States"),
+    ("Atlanta",        "United States"),
+    ("Philadelphia",   "United States"),
+    ("Portland",       "United States"),
+    ("Las Vegas",      "United States"),
+    ("Houston",        "United States"),
+    ("Dallas",         "United States"),
+    ("Phoenix",        "United States"),
+    ("Washington",     "United States"),
+    ("San Diego",      "United States"),
+    ("New Orleans",    "United States"),
+    # ── Canada ─────────────────────────────────────────────────────────
+    ("Montreal",       "Canada"),
+    ("Montréal",       "Canada"),
+    # ── United Kingdom ─────────────────────────────────────────────────
+    ("Birmingham",     "United Kingdom"),
+    ("Glasgow",        "United Kingdom"),
+    ("Bristol",        "United Kingdom"),
+    ("Leeds",          "United Kingdom"),
+    ("Liverpool",      "United Kingdom"),
+    ("Belfast",        "United Kingdom"),
+    # ── Ireland ────────────────────────────────────────────────────────
+    ("Dublin",         "Ireland"),
+    ("Cork",           "Ireland"),
+    # ── Continental Europe ─────────────────────────────────────────────
+    ("Vienna",         "Austria"),
+    ("Prague",         "Czech Republic"),
+    ("Prague",         "Czechia"),
+    ("Budapest",       "Hungary"),
+    ("Zurich",         "Switzerland"),
+    ("Zürich",         "Switzerland"),
+    ("Copenhagen",     "Denmark"),
+    ("Stockholm",      "Sweden"),
+    ("Oslo",           "Norway"),
+    ("Helsinki",       "Finland"),
+    ("Warsaw",         "Poland"),
+    ("Hamburg",        "Germany"),
+    ("Cologne",        "Germany"),
+    ("Köln",           "Germany"),
+    ("Frankfurt",      "Germany"),
+    # ── Asia / Middle East / Pacific ───────────────────────────────────
+    ("Tokyo",          "Japan"),
+    ("Seoul",          "South Korea"),
+    ("Singapore",      "Singapore"),
+    ("Bangkok",        "Thailand"),
+    ("Dubai",          "United Arab Emirates"),
+    ("Auckland",       "New Zealand"),
+    ("Wellington",     "New Zealand"),
+    # ── Spain (Xceed coverage) ─────────────────────────────────────────
+    ("Valencia",       "Spain"),
+    ("Seville",        "Spain"),
+    ("Sevilla",        "Spain"),
+    ("Bilbao",         "Spain"),
+    ("Málaga",         "Spain"),
+    ("Ibiza",          "Spain"),
+    ("Alicante",       "Spain"),
+    # ── Italy / Portugal (Xceed coverage) ──────────────────────────────
+    ("Turin",          "Italy"),
+    ("Torino",         "Italy"),
+    ("Porto",          "Portugal"),
 ]
 
 

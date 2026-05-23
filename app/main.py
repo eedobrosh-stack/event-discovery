@@ -998,13 +998,19 @@ async def lifespan(app: FastAPI):
     )
     # recompute_popularity — Weekly recompute of Performer.derived_popularity
     # AND the per-parent-genre percentile thresholds the API uses for UI
-    # stars. Slot at +300 min from boot — a half-hour after the daily
-    # classify cron so any newly-classified artists with brave_total_results
-    # are included. Weekly cadence: scores change slowly, percentile
-    # boundaries drift even slower, daily would be wasted work.
+    # stars. Weekly cadence: scores change slowly, percentile boundaries
+    # drift even slower, daily would be wasted work.
+    #
+    # CronTrigger (Monday 04:00 UTC) — restart-immune, same fix as Cadence B
+    # (48e1631). The previous IntervalTrigger(weeks=1, start_date=_t+300min)
+    # reset its 7-day window on every Render redeploy; with deploys landing
+    # every day or two the job was effectively starved — last real fire was
+    # 2026-05-14, missing its 2026-05-21 slot entirely (caught in the
+    # 2026-05-23 audit). 04:00 UTC sits after Cadence B (02:30) and
+    # seed-brave (03:00); Monday avoids the Sunday-05:00 dedup job.
     scheduler.add_job(
         recompute_popularity_job,
-        IntervalTrigger(weeks=1, start_date=_t + _td(minutes=300)),
+        CronTrigger(day_of_week="mon", hour=4, minute=0),
         id="recompute_popularity",
         replace_existing=True,
     )
