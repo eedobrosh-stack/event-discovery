@@ -1605,7 +1605,7 @@ async def spotify_brave_query_job(batch: int = SPOTIFY_BRAVE_BATCH):
     Cadence A then picks the new sources up on its next tick.
     """
     import gc
-    from app.models import SpotifyArtist, SpotifyBraveAttempt
+    from app.models import SpotifyArtist, SpotifyBraveAttempt, LLMSource
     from app.extractors.discovery_search import (
         brave_search, filter_artist_tour_pages_via_llm, SearchHit,
     )
