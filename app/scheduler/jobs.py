@@ -1275,27 +1275,32 @@ async def collect_techconf_job():
 #     discovered_via='spotify_artist_query', spotify_artist_id=…). Cadence A
 #     picks them up on its next tick — funnel closes through Event.llm_source_id.
 
-# Spotify market codes — ISO 3166-1 alpha-2 codes Spotify exposes editorial
-# content for. Comprehensive list (75 markets) drawn from Spotify's
-# /v1/markets endpoint; we hardcode rather than fetching dynamically so a
-# bad API call can't strand the scan. Order matches Spotify's rough
-# population-weighted ranking — top of the list is heaviest catalogue,
-# which the LRU rotation naturally re-visits first.
-_SPOTIFY_MARKETS: tuple[str, ...] = (
-    "US", "GB", "DE", "FR", "IT", "ES", "BR", "MX", "CA", "AU",
-    "JP", "KR", "NL", "SE", "NO", "DK", "FI", "PL", "IE", "PT",
-    "BE", "AT", "CH", "GR", "CZ", "HU", "RO", "TR", "IL", "AE",
-    "SA", "EG", "ZA", "NG", "KE", "MA", "AR", "CL", "CO", "PE",
-    "UY", "VE", "DO", "GT", "CR", "PA", "EC", "BO", "PY", "IN",
-    "ID", "MY", "PH", "SG", "TH", "VN", "TW", "HK", "NZ", "BG",
-    "HR", "EE", "LV", "LT", "SK", "SI", "IS", "LU", "MT", "CY",
-    "JO", "KW", "QA", "OM", "BH",
+# Last.fm chart countries. Last.fm's geo.gettopartists takes the English
+# name (NOT an ISO code), so we hardcode names. Covers the same markets
+# the Spotify-era design used, plus a few extras where Last.fm data is
+# strong (Russia, Ukraine, Czechia under that spelling). Order is rough
+# data-volume weight so the LRU rotation hits the heaviest charts first.
+_LASTFM_COUNTRIES: tuple[str, ...] = (
+    "United States", "United Kingdom", "Germany", "France", "Italy",
+    "Spain", "Brazil", "Mexico", "Canada", "Australia",
+    "Japan", "Korea, Republic of", "Netherlands", "Sweden", "Norway",
+    "Denmark", "Finland", "Poland", "Ireland", "Portugal",
+    "Belgium", "Austria", "Switzerland", "Greece", "Czech Republic",
+    "Hungary", "Romania", "Turkey", "Israel", "United Arab Emirates",
+    "Saudi Arabia", "Egypt", "South Africa", "Nigeria", "Kenya",
+    "Morocco", "Argentina", "Chile", "Colombia", "Peru",
+    "Uruguay", "Venezuela", "Dominican Republic", "Guatemala", "Costa Rica",
+    "Panama", "Ecuador", "Bolivia", "Paraguay", "India",
+    "Indonesia", "Malaysia", "Philippines", "Singapore", "Thailand",
+    "Vietnam", "Taiwan", "Hong Kong", "New Zealand", "Bulgaria",
+    "Croatia", "Estonia", "Latvia", "Lithuania", "Slovakia",
+    "Slovenia", "Iceland", "Luxembourg", "Malta", "Cyprus",
+    "Jordan", "Kuwait", "Qatar", "Oman", "Bahrain",
 )
 
-# How many markets we visit per daily run. 10/day × 7 days ≈ a full
-# rotation per week, well under the rolling-window limit that the old
-# enrich job tripped (and that one was hammering /v1/search, which
-# shares a tighter quota than the browse endpoints we hit here).
+# How many countries we visit per daily run. 10/day × 7-8 days ≈ a full
+# rotation. Each call is one HTTP request to Last.fm; we also fire one
+# global call per run regardless. Total ~11 Last.fm calls/day.
 SPOTIFY_MARKETS_PER_RUN = 10
 
 # A/B test: switch to winner-only after each variant has this many
@@ -1313,18 +1318,21 @@ SPOTIFY_BRAVE_HITS_PER_QUERY = 10
 
 
 def _spotify_market_cursor(db: "Session") -> tuple[list[str], int]:
-    """Return (markets-to-walk-this-run, next-cursor).
+    """Return (countries-to-walk-this-run, next-cursor).
 
     Uses JobState['spotify_market_cursor'] as the LRU pointer. Wraps
-    naturally at the end of _SPOTIFY_MARKETS.
+    naturally at the end of _LASTFM_COUNTRIES. Key name kept as
+    'spotify_market_cursor' for continuity with the prior design — the
+    cursor value advances over the new Last.fm country list now, and
+    re-using the key avoids a JobState row migration.
     """
     from app.models import JobState
     key = "spotify_market_cursor"
     state = db.query(JobState).filter(JobState.key == key).first()
     cursor = int(state.value) if state and state.value.isdigit() else 0
-    n = len(_SPOTIFY_MARKETS)
+    n = len(_LASTFM_COUNTRIES)
     cursor = cursor % n
-    picks = [_SPOTIFY_MARKETS[(cursor + i) % n] for i in range(SPOTIFY_MARKETS_PER_RUN)]
+    picks = [_LASTFM_COUNTRIES[(cursor + i) % n] for i in range(SPOTIFY_MARKETS_PER_RUN)]
     next_cursor = (cursor + SPOTIFY_MARKETS_PER_RUN) % n
     if state:
         state.value = str(next_cursor)
@@ -1334,26 +1342,37 @@ def _spotify_market_cursor(db: "Session") -> tuple[list[str], int]:
 
 
 async def spotify_scan_job():
-    """Walk Spotify editorial surfaces for SPOTIFY_MARKETS_PER_RUN markets.
+    """Walk Last.fm charts (global + SPOTIFY_MARKETS_PER_RUN rotating
+    countries) and upsert every artist into spotify_artists.
 
-    Upserts every artist seen into spotify_artists. New rows are matched
-    against Performer.normalized_name on first encounter; matched rows
-    are 'matched', unmatched ones become 'pending_brave' for the
-    Brave A/B job to pick up on its next tick.
+    Why Last.fm and not Spotify: Spotify deprecated featured-playlists,
+    new-releases, categories, and even editorial-playlist track reads
+    for Client Credentials apps in late 2024 — first prod run returned
+    0 artists because every endpoint we hit responded 403. Last.fm's
+    chart API is free, unauthenticated (api key only), and effectively
+    measures the same thing the Spotify charts would have (Spotify
+    listening feeds Last.fm scrobbles, so its global chart IS the
+    cross-platform popularity ranking).
 
-    Writes a ScanLog row with notes encoding coverage % and per-market
-    breakdown — consumed by /api/stats/spotify.
+    PK strategy: prefer MusicBrainz ID (from Last.fm response), fall
+    back to SHA1(lowercase name) — both fit in the existing
+    SpotifyArtist.id String(40) column. See _normalize_artist_id in
+    lastfm_chart.py for details.
+
+    Match against Performer.normalized_name on first encounter:
+        matched         → coverage; nothing else to do.
+        pending_brave   → queued for spotify_brave_query_job.
+
+    Writes a ScanLog row with structured notes consumed by
+    /api/stats/spotify (json:// prefix triggers the dashboard parser).
     """
     import httpx as _httpx
     import json as _json
     from app.models import SpotifyArtist, Performer
-    from app.services.spotify_browser import (
-        walk_market, walk_browse_categories, acquire_token,
-    )
-    from app.services.spotify_lookup import SpotifyRateLimited
+    from app.services.lastfm_chart import fetch_global_top, fetch_country_top
 
-    if not settings.SPOTIFY_CLIENT_ID or not settings.SPOTIFY_CLIENT_SECRET:
-        logger.info("spotify_scan_job: SPOTIFY_CLIENT_ID not set — skipping")
+    if not settings.LASTFM_API_KEY:
+        logger.info("spotify_scan_job: LASTFM_API_KEY not set — skipping")
         return
 
     if _heavy_job_lock.locked():
@@ -1372,7 +1391,7 @@ async def spotify_scan_job():
         artists_unmatched = 0
         markets_walked: list[str] = []
 
-        # Pull the market batch + advance cursor in one transaction so
+        # Pull the country batch + advance cursor in one transaction so
         # a mid-run crash doesn't double-walk on next fire.
         try:
             picks, _next = _spotify_market_cursor(db)
@@ -1386,58 +1405,35 @@ async def spotify_scan_job():
             db.close()
             return
 
-        logger.info(f"spotify_scan_job: walking markets {picks}")
+        logger.info(f"spotify_scan_job: walking countries {picks} + global")
 
-        # Aggregate artists across all markets in this run + the global
-        # Browse Categories pass. Then a single DB upsert pass commits.
+        # Aggregate artists across global + per-country charts. Single
+        # upsert pass commits at the end.
         combined: dict[str, dict] = {}
 
         try:
             async with _httpx.AsyncClient(timeout=20) as http:
-                token = await acquire_token(
-                    http, settings.SPOTIFY_CLIENT_ID, settings.SPOTIFY_CLIENT_SECRET
-                )
-                for market in picks:
-                    try:
-                        per = await walk_market(http, token, market)
-                    except SpotifyRateLimited as e:
-                        logger.warning(
-                            f"spotify_scan_job: rate-limited mid-walk "
-                            f"(market={market}, retry_after={e.retry_after_seconds}s) — bailing"
-                        )
-                        log.status = "failed"
-                        log.notes = (
-                            f"halted=rate_limit retry_after_s={e.retry_after_seconds} "
-                            f"markets_walked={','.join(markets_walked)}"
-                        )
-                        log.finished_at = datetime.utcnow()
-                        db.commit()
-                        db.close()
-                        return
-                    markets_walked.append(market)
+                # Global chart first — heaviest single signal.
+                glob = await fetch_global_top(http, settings.LASTFM_API_KEY)
+                for aid, meta in glob.items():
+                    combined[aid] = {
+                        "name": meta["name"],
+                        "external_url": meta.get("external_url"),
+                        "markets": set(meta.get("markets") or set()),
+                    }
+                if glob:
+                    markets_walked.append("global")
+                # Then per-country rotation.
+                for country in picks:
+                    per = await fetch_country_top(http, settings.LASTFM_API_KEY, country)
+                    if per:
+                        markets_walked.append(country)
                     for aid, meta in per.items():
                         slot = combined.setdefault(
                             aid,
-                            {"name": meta["name"], "external_url": meta["external_url"], "markets": set()},
+                            {"name": meta["name"], "external_url": meta.get("external_url"), "markets": set()},
                         )
                         slot["markets"] |= meta.get("markets") or set()
-                # Global Browse Categories pass — once per run.
-                try:
-                    cat_artists = await walk_browse_categories(http, token)
-                except SpotifyRateLimited as e:
-                    # Categories aren't critical; log + continue with what
-                    # we have rather than bailing the whole run.
-                    logger.warning(
-                        f"spotify_scan_job: rate-limited on categories "
-                        f"(retry_after={e.retry_after_seconds}s) — continuing with market data"
-                    )
-                    cat_artists = {}
-                for aid, meta in cat_artists.items():
-                    slot = combined.setdefault(
-                        aid,
-                        {"name": meta["name"], "external_url": meta["external_url"], "markets": set()},
-                    )
-                    slot["markets"] |= meta.get("markets") or set()
         except Exception as e:
             logger.exception(f"spotify_scan_job: walk failed: {e}")
             log.status = "failed"

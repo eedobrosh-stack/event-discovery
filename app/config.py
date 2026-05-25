@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     CRICAPI_KEY: str = ""          # cricapi.com — free 100 req/day; sign up at https://cricapi.com
     SPOTIFY_CLIENT_ID: str = ""    # developer.spotify.com — Client Credentials flow, no user login
     SPOTIFY_CLIENT_SECRET: str = ""
+    # last.fm/api — free, instant signup. Used by spotify_scan_job since
+    # Spotify deprecated the browse/featured-playlists/new-releases
+    # endpoints for Client Credentials apps in late 2024. Last.fm's
+    # chart.gettopartists + geo.gettopartists give us the same
+    # "anybody who's anybody" signal without auth gymnastics.
+    LASTFM_API_KEY: str = ""
 
     # scrapingbee.com — paid fallback for Cloudflare-challenged sites
     # (metopera.org, residentadvisor.net edge cases, the long-tail

@@ -1,9 +1,20 @@
-"""Every Spotify artist ID we've ever surfaced via the daily scanner.
+"""Every charting artist we've surfaced via the daily scanner.
 
-Populated by `spotify_scan_job` from Spotify's editorial surfaces — Top 50 /
-Viral 50 charts, Featured Playlists, New Releases, Browse Categories. Each
-artist is upserted on the unique Spotify artist ID; first_seen_at / last_seen_at
-move on each pass.
+Populated by `spotify_scan_job` from Last.fm's chart endpoints
+(`chart.gettopartists` for the global ranking + `geo.gettopartists` for
+the rotating country axis). Originally designed to pull from Spotify's
+own editorial surfaces (featured-playlists, new-releases, browse), but
+Spotify deprecated all of those for Client Credentials apps in late
+2024 — the first prod run scanned 10 markets and returned 0 artists
+because every endpoint we hit responded 403. The Last.fm pivot keeps
+the same "anybody who's anybody" semantic (chart presence = real
+listener count) without needing OAuth or quota-extension applications.
+
+`SpotifyArtist.id` is the row's external identifier — preferentially a
+MusicBrainz ID (Last.fm carries those when known), with a SHA1(lower
+name) fallback for the long tail without an MBID. The table name and
+column name still say "spotify" because the original design landed on
+disk and the rename isn't worth a migration.
 
 Lifecycle (`match_status`):
 
