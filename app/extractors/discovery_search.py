@@ -454,10 +454,155 @@ def discover_via_search_pipeline(
     return filter_candidates_via_llm(pruned, city, model=model)
 
 
+_ARTIST_TOUR_FILTER_PROMPT = """\
+You are reviewing search results triggered by the query "{artist} shows" /
+"{artist} upcoming performances". The goal is to find pages that LIST
+events — not biographical pages, social-media posts, or streaming links.
+
+ACCEPT if:
+  - URL path / title looks like a tour-date listing, calendar, or
+    upcoming-events grid (artist OR multi-artist).
+  - Snippet mentions concrete event/tour dates, venues, or "buy tickets".
+  - It is an indie ticketing site, venue calendar, or city events hub
+    that surfaced because it lists this artist.
+
+REJECT if:
+  - It is a Wikipedia / Bandcamp / Spotify / YouTube / Genius / Apple
+    Music page (we already have those signals).
+  - It is a single article ABOUT the artist (news, profile, review).
+  - It is a fan forum / Reddit / Twitter / Facebook / Instagram page.
+  - It is a generic global aggregator we already cover (Ticketmaster,
+    Bandsintown, Eventbrite, ResidentAdvisor, Meetup, Lu.ma, Songkick,
+    Dice, Skiddle, AllEvents, Xceed).
+  - It clearly does not list events (lyric site, merch store).
+
+Results to review:
+{results_block}
+
+Return ONLY a JSON array describing accepted results, no markdown fences,
+no commentary. Each entry MUST have:
+
+  index         — 1-based number of the accepted result
+  source_type   — one of: "tour_listing" | "venue" | "ticketing"
+                          | "city_magazine" | "tourism_board" | "other"
+  language      — ISO-639-1 code
+  why_relevant  — one short sentence
+
+Example:
+[
+  {{"index": 2, "source_type": "venue", "language": "en",
+    "why_relevant": "Local venue's upcoming-shows calendar."}}
+]
+"""
+
+
+def filter_artist_tour_pages_via_llm(
+    hits: list[SearchHit],
+    artist: str,
+    model: str = "gemini-2.5-flash",
+) -> list[dict]:
+    """Same shape as ``filter_candidates_via_llm`` but framed for the
+    artist-driven Brave query in spotify_brave_query_job.
+
+    Accepts tour-date pages, venue calendars, ticketing sites, and city
+    event hubs that surfaced for the artist query. Rejects single-artist
+    bio/news/social pages and aggregators we already cover.
+    """
+    if not hits:
+        return []
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise DiscoveryError(
+            "Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set; "
+            "LLM classifier cannot run."
+        )
+    try:
+        from google import genai
+        from google.genai import types as gtypes
+    except ImportError as e:
+        raise DiscoveryError(
+            "google-genai SDK not installed (add to requirements.txt)."
+        ) from e
+
+    client = genai.Client(api_key=api_key)
+    prompt = _ARTIST_TOUR_FILTER_PROMPT.format(
+        artist=artist,
+        results_block=_format_results_block(hits),
+    )
+    logger.info(
+        f"filter_artist_tour_pages_via_llm({artist!r}): "
+        f"classifying {len(hits)} search hits via {model}"
+    )
+
+    # Same transient-503 retry pattern as the city classifier.
+    import time
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=gtypes.GenerateContentConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                ),
+            )
+            break
+        except Exception as e:
+            msg = str(e).lower()
+            transient = ("503" in msg or "unavailable" in msg
+                         or "timeout" in msg or "deadline" in msg
+                         or "resource_exhausted" in msg)
+            if not transient or attempt == 2:
+                logger.warning(
+                    f"filter_artist_tour_pages_via_llm({artist!r}): "
+                    f"API call failed (attempt {attempt + 1}/3): "
+                    f"{type(e).__name__}: {e}"
+                )
+                return []
+            time.sleep(2 ** attempt * 2)
+    if resp is None:
+        return []
+
+    raw = (resp.text or "").strip()
+    if not raw:
+        return []
+    try:
+        decisions = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning(
+            f"filter_artist_tour_pages_via_llm({artist!r}): JSON parse failed: {e}; "
+            f"first 200 chars: {raw[:200]!r}"
+        )
+        return []
+    if not isinstance(decisions, list):
+        return []
+
+    out: list[dict] = []
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+        try:
+            idx = int(d.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= idx <= len(hits)):
+            continue
+        out.append({
+            "url": hits[idx - 1].url,
+            "source_type": d.get("source_type") or "other",
+            "language": d.get("language") or "en",
+            "why_relevant": d.get("why_relevant") or "",
+        })
+    return out
+
+
 __all__ = [
     "SearchHit",
     "brave_search",
     "discover_via_search",
     "filter_candidates_via_llm",
+    "filter_artist_tour_pages_via_llm",
     "discover_via_search_pipeline",
 ]

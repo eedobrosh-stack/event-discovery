@@ -6,7 +6,10 @@ from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import City, Venue, Event, EventType, event_event_types
+from app.models import (
+    City, Venue, Event, EventType, event_event_types,
+    SpotifyArtist, SpotifyBraveAttempt, LLMSource, Performer,
+)
 from app.models.scan_log import ScanLog
 from app.services.collectors.scrapers.city_guides import CITY_GUIDES
 
@@ -813,3 +816,149 @@ def city_guides_index(db: Session = Depends(get_db)):
             ],
         })
     return {"guides": result}
+
+
+@router.get("/spotify")
+def spotify_funnel(db: Session = Depends(get_db)):
+    """End-to-end metrics for the Spotify → Brave → LLMSource → Performer funnel.
+
+    Surfaces:
+      coverage:
+        seen          — cumulative SpotifyArtist rows
+        matched       — found in our Performer DB on first encounter
+        unmatched     — never matched (pending_brave or brave_done)
+        coverage_pct  — matched / seen
+      ab_test:
+        per-variant trial count + avg new_llm_sources_registered
+        winner — null while either variant is below the threshold
+      funnel:
+        new_artists       — SpotifyArtists in unmatched state
+        new_websites      — LLMSources discovered via spotify_artist_query
+        new_artists_via   — distinct artist_names on Events from those sources
+                            (artist_name not in Performer at the time of the
+                            event was registered → "new" in the funnel sense)
+      recent_runs:
+        last 7 spotify_scan + spotify_brave_query ScanLog rows for the card
+
+    The card on stats.html consumes this whole payload as-is; keep keys stable.
+    """
+    # ── Coverage ───────────────────────────────────────────────────────
+    seen = db.query(func.count(SpotifyArtist.id)).scalar() or 0
+    matched = db.query(func.count(SpotifyArtist.id)).filter(
+        SpotifyArtist.match_status == "matched"
+    ).scalar() or 0
+    pending = db.query(func.count(SpotifyArtist.id)).filter(
+        SpotifyArtist.match_status == "pending_brave"
+    ).scalar() or 0
+    done = db.query(func.count(SpotifyArtist.id)).filter(
+        SpotifyArtist.match_status == "brave_done"
+    ).scalar() or 0
+    unmatched = pending + done
+    coverage_pct = (
+        round(100 * matched / (matched + unmatched), 2)
+        if (matched + unmatched) else 0.0
+    )
+
+    # ── A/B test ──────────────────────────────────────────────────────
+    ab_rows = (
+        db.query(
+            SpotifyBraveAttempt.query_variant,
+            func.count(SpotifyBraveAttempt.id).label("trials"),
+            func.coalesce(func.sum(SpotifyBraveAttempt.new_llm_sources_registered), 0).label("new_sources"),
+            func.coalesce(func.sum(SpotifyBraveAttempt.brave_results_count), 0).label("hits"),
+        )
+        .group_by(SpotifyBraveAttempt.query_variant)
+        .all()
+    )
+    ab = {
+        r.query_variant: {
+            "trials": r.trials,
+            "total_new_sources": r.new_sources,
+            "total_brave_hits": r.hits,
+            "avg_new_sources": round(r.new_sources / r.trials, 3) if r.trials else 0.0,
+            "avg_brave_hits": round(r.hits / r.trials, 2) if r.trials else 0.0,
+        } for r in ab_rows
+    }
+    a = ab.get("shows", {}).get("trials", 0)
+    b = ab.get("upcoming_performances", {}).get("trials", 0)
+    THRESHOLD = 100
+    if a >= THRESHOLD and b >= THRESHOLD:
+        avg_a = ab["shows"]["avg_new_sources"]
+        avg_b = ab["upcoming_performances"]["avg_new_sources"]
+        winner = "shows" if avg_a >= avg_b else "upcoming_performances"
+    else:
+        winner = None
+
+    # ── Funnel ─────────────────────────────────────────────────────────
+    new_websites = db.query(func.count(LLMSource.id)).filter(
+        LLMSource.discovered_via == "spotify_artist_query"
+    ).scalar() or 0
+
+    # New artists via new websites: Events with llm_source_id pointing
+    # to a spotify_artist_query LLMSource, whose artist_name doesn't
+    # exist in Performer.normalized_name. Conservative — we may double-
+    # count case variants, but the SUBSTRING gives the right rough number.
+    # SQLite-compatible (no DISTINCT-on subqueries).
+    rows = (
+        db.query(func.lower(func.trim(Event.artist_name)).label("aname"))
+        .join(LLMSource, Event.llm_source_id == LLMSource.id)
+        .filter(
+            LLMSource.discovered_via == "spotify_artist_query",
+            Event.artist_name.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    candidate_artists = {r.aname for r in rows if r.aname}
+    if candidate_artists:
+        known = {
+            n for (n,) in db.query(Performer.normalized_name)
+            .filter(Performer.normalized_name.in_(list(candidate_artists)))
+            .all()
+        }
+        new_artists_via_websites = len(candidate_artists - known)
+    else:
+        new_artists_via_websites = 0
+
+    # ── Recent runs ─────────────────────────────────────────────────────
+    recent = (
+        db.query(ScanLog)
+        .filter(ScanLog.job_name.in_(["spotify_scan", "spotify_brave_query"]))
+        .order_by(ScanLog.started_at.desc())
+        .limit(10)
+        .all()
+    )
+    recent_runs = [
+        {
+            "job": r.job_name,
+            "status": r.status,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "events_found": r.events_found,
+            "events_saved": r.events_saved,
+            "notes": r.notes,
+        }
+        for r in recent
+    ]
+
+    return {
+        "coverage": {
+            "seen": seen,
+            "matched": matched,
+            "unmatched": unmatched,
+            "pending_brave": pending,
+            "brave_done": done,
+            "coverage_pct": coverage_pct,
+        },
+        "ab_test": {
+            "threshold": THRESHOLD,
+            "variants": ab,
+            "winner": winner,
+        },
+        "funnel": {
+            "new_artists_from_spotify": unmatched,
+            "new_websites_registered": new_websites,
+            "new_artists_via_websites": new_artists_via_websites,
+        },
+        "recent_runs": recent_runs,
+    }

@@ -87,7 +87,20 @@ class CollectorRegistry:
 
     _SAVE_BATCH = 50   # commit + expire every N events to keep identity map small
 
-    def _save_events(self, raw_events: list[RawEvent], city: City, db: Session) -> int:
+    def _save_events(
+        self,
+        raw_events: list[RawEvent],
+        city: City,
+        db: Session,
+        llm_source_id: int | None = None,
+    ) -> int:
+        """Persist a batch of RawEvents under ``city``.
+
+        ``llm_source_id`` is set when Cadence A's ``llm_extract_recurring_job``
+        calls this — the FK on the resulting Event row closes the provenance
+        chain LLMSource → Event → Performer so the Spotify funnel-attribution
+        query can run. Route 2 collectors keep passing None (default).
+        """
         saved = 0
         for i, raw in enumerate(raw_events):
             try:
@@ -259,6 +272,7 @@ class CollectorRegistry:
                     venue_name=raw.venue_name or (venue.name if venue else None),
                     scrape_source=raw.source,
                     source_id=raw.source_id,
+                    llm_source_id=llm_source_id,
                     # Sports fields
                     sport=raw.sport,
                     home_team=raw.home_team,

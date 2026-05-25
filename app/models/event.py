@@ -31,6 +31,11 @@ class Event(Base):
     is_online = Column(Boolean, default=False)
     scrape_source = Column(String(100), nullable=True)
     source_id = Column(String(255), nullable=True)
+    # Set when this row was extracted by Cadence A (Route 1, LLM extractor)
+    # so we can trace events back to the LLMSource that produced them, and
+    # via LLMSource.spotify_artist_id back to the Spotify-funnel query that
+    # discovered the source. NULL for everything Route 2 collectors write.
+    llm_source_id = Column(Integer, ForeignKey("llm_sources.id"), nullable=True)
     # ── Sports fields ────────────────────────────────────────────────────────
     sport      = Column(String(50),  nullable=True)   # "Soccer", "NFL", "AFL" …
     home_team  = Column(String(200), nullable=True)
@@ -58,4 +63,5 @@ class Event(Base):
         Index("ix_events_venue", "venue_id"),
         Index("ix_events_dedup", "scrape_source", "source_id", unique=True),
         Index("ix_events_tournament", "tournament"),
+        Index("ix_events_llm_source", "llm_source_id"),
     )

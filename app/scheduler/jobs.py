@@ -1242,193 +1242,562 @@ async def collect_techconf_job():
         db.close()
 
 
-async def enrich_spotify_job(batch: int = 250):
-    """
-    Enrich Performer records with Spotify data: genres, image, popularity, URL.
-    Prioritises performers with no spotify_id yet, ordered by event count.
-    Runs nightly after enrich_performers_job so MusicBrainz stubs exist first.
+# enrich_spotify_job removed 2026-05-25 — Spotify gutted popularity/genres
+# /followers in late 2024 so the lookup had been writing popularity=0 +
+# genres=[] for every row. The frontend never rendered the fields anyway
+# (no references in app.js/home.js). Superseded by spotify_scan_job +
+# spotify_brave_query_job below.
 
-    Batch reduced from 500 → 250 on 2026-05-11 after Spotify hit us with
-    a 19.5h punitive rate-limit (Retry-After ≈ 70K seconds). The d49882f
-    bump to ~1000/day overshot Spotify's rolling quota; 250 × 2 jobs/day
-    = ~500/day is the safe ceiling.
+
+# ===========================================================================
+# Spotify funnel — Phase 2 (scan) and Phase 3 (Brave A/B + LLMSource register)
+# ===========================================================================
+# Goal: use Spotify's editorial curation as a source of "artists who matter"
+# (anybody-who's-anybody = anybody with a Spotify artist page who's surfaced
+# on a chart, featured playlist, new release, or browse-category curation).
+# Two-step pipeline:
+#
+#   spotify_scan_job (daily, +300min from boot)
+#     Rotate through 10 Spotify markets/day (full ~75-market pass per week).
+#     Walk Featured Playlists + Top 50 / Viral 50 + New Releases per market,
+#     plus a global Browse Categories pass. Upsert into spotify_artists. For
+#     each new row, match by lower(name) against Performer.normalized_name:
+#         matched         → coverage; nothing else to do.
+#         unmatched       → match_status='pending_brave', queued for phase 3.
+#     Daily roll-up written as a ScanLog row with structured notes.
+#
+#   spotify_brave_query_job (every 2h, batch=25 from pending_brave queue)
+#     For each artist, run the A/B query pair until each variant has
+#     ≥AB_TRIAL_THRESHOLD attempts globally; thereafter only the winner.
+#     For each Brave result URL: domain-dedupe against existing llm_sources,
+#     classify-survivors via the artist-tour-page Gemini filter, and
+#     register passers as LLMSource(state='trial',
+#     discovered_via='spotify_artist_query', spotify_artist_id=…). Cadence A
+#     picks them up on its next tick — funnel closes through Event.llm_source_id.
+
+# Spotify market codes — ISO 3166-1 alpha-2 codes Spotify exposes editorial
+# content for. Comprehensive list (75 markets) drawn from Spotify's
+# /v1/markets endpoint; we hardcode rather than fetching dynamically so a
+# bad API call can't strand the scan. Order matches Spotify's rough
+# population-weighted ranking — top of the list is heaviest catalogue,
+# which the LRU rotation naturally re-visits first.
+_SPOTIFY_MARKETS: tuple[str, ...] = (
+    "US", "GB", "DE", "FR", "IT", "ES", "BR", "MX", "CA", "AU",
+    "JP", "KR", "NL", "SE", "NO", "DK", "FI", "PL", "IE", "PT",
+    "BE", "AT", "CH", "GR", "CZ", "HU", "RO", "TR", "IL", "AE",
+    "SA", "EG", "ZA", "NG", "KE", "MA", "AR", "CL", "CO", "PE",
+    "UY", "VE", "DO", "GT", "CR", "PA", "EC", "BO", "PY", "IN",
+    "ID", "MY", "PH", "SG", "TH", "VN", "TW", "HK", "NZ", "BG",
+    "HR", "EE", "LV", "LT", "SK", "SI", "IS", "LU", "MT", "CY",
+    "JO", "KW", "QA", "OM", "BH",
+)
+
+# How many markets we visit per daily run. 10/day × 7 days ≈ a full
+# rotation per week, well under the rolling-window limit that the old
+# enrich job tripped (and that one was hammering /v1/search, which
+# shares a tighter quota than the browse endpoints we hit here).
+SPOTIFY_MARKETS_PER_RUN = 10
+
+# A/B test: switch to winner-only after each variant has this many
+# trials. Matches the spec ("after 100 attempts, keep the stronger").
+AB_TRIAL_THRESHOLD = 100
+# Max pending_brave artists processed per scheduler tick. Each costs
+# 1-2 Brave queries (2 during A/B, 1 after) so batch=25 → ≤50
+# Brave calls / 2h ≈ 600/day in the worst case, similar to the
+# existing enrich_youtube_via_brave budget.
+SPOTIFY_BRAVE_BATCH = 25
+# Hits per Brave query to consider. Brave's free tier supports up
+# to 20 per call but we only need the top ~10 — long-tail results
+# rarely classify as event-listing pages.
+SPOTIFY_BRAVE_HITS_PER_QUERY = 10
+
+
+def _spotify_market_cursor(db: "Session") -> tuple[list[str], int]:
+    """Return (markets-to-walk-this-run, next-cursor).
+
+    Uses JobState['spotify_market_cursor'] as the LRU pointer. Wraps
+    naturally at the end of _SPOTIFY_MARKETS.
     """
-    import json as _json
+    from app.models import JobState
+    key = "spotify_market_cursor"
+    state = db.query(JobState).filter(JobState.key == key).first()
+    cursor = int(state.value) if state and state.value.isdigit() else 0
+    n = len(_SPOTIFY_MARKETS)
+    cursor = cursor % n
+    picks = [_SPOTIFY_MARKETS[(cursor + i) % n] for i in range(SPOTIFY_MARKETS_PER_RUN)]
+    next_cursor = (cursor + SPOTIFY_MARKETS_PER_RUN) % n
+    if state:
+        state.value = str(next_cursor)
+    else:
+        db.add(JobState(key=key, value=str(next_cursor)))
+    return picks, next_cursor
+
+
+async def spotify_scan_job():
+    """Walk Spotify editorial surfaces for SPOTIFY_MARKETS_PER_RUN markets.
+
+    Upserts every artist seen into spotify_artists. New rows are matched
+    against Performer.normalized_name on first encounter; matched rows
+    are 'matched', unmatched ones become 'pending_brave' for the
+    Brave A/B job to pick up on its next tick.
+
+    Writes a ScanLog row with notes encoding coverage % and per-market
+    breakdown — consumed by /api/stats/spotify.
+    """
     import httpx as _httpx
-    from app.models import Performer
-    from app.services.spotify_lookup import lookup_spotify_artist, SpotifyRateLimited
+    import json as _json
+    from app.models import SpotifyArtist, Performer
+    from app.services.spotify_browser import (
+        walk_market, walk_browse_categories, acquire_token,
+    )
+    from app.services.spotify_lookup import SpotifyRateLimited
 
     if not settings.SPOTIFY_CLIENT_ID or not settings.SPOTIFY_CLIENT_SECRET:
-        logger.info("enrich_spotify_job: SPOTIFY_CLIENT_ID not set — skipping")
+        logger.info("spotify_scan_job: SPOTIFY_CLIENT_ID not set — skipping")
         return
 
     if _heavy_job_lock.locked():
-        logger.info("enrich_spotify_job: another heavy job is running — skipping this run")
+        logger.info("spotify_scan_job: another heavy job is running — skipping this run")
         return
 
     async with _heavy_job_lock:
         db = SessionLocal()
-        log = ScanLog(job_name="enrich_spotify", status="running")
+        log = ScanLog(job_name="spotify_scan", status="running")
         db.add(log)
         db.commit()
         db.refresh(log)
-        enriched = 0
-        skipped = 0
+        artists_seen = 0
+        artists_new = 0
+        artists_matched = 0
+        artists_unmatched = 0
+        markets_walked: list[str] = []
 
-        def _select_pending():
-            # Prioritise performers with events but no Spotify data yet
-            return (
-                db.query(Performer.id, Performer.name, func.count(Event.id).label("n"))
-                .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
-                .filter(
-                    Performer.spotify_id.is_(None),
-                    Performer.source != "not_found",   # skip confirmed-dead stubs
-                )
-                .group_by(Performer.id, Performer.name)
-                .order_by(func.count(Event.id).desc())
-                .limit(batch)
-                .all()
-            )
-
-        def _persist(perf_id: int, name: str, result: dict | None) -> int:
-            """Sync DB write. Returns 1 on enriched, 0 on skipped."""
-            if not result:
-                db.commit()
-                db.expire_all()
-                return 0
-            perf_update: dict = {
-                "spotify_id":  result["spotify_id"],
-                "spotify_url": result["spotify_url"],
-                "image_url":   result["image_url"],
-                "popularity":  result["popularity"],
-            }
-            # Only overwrite genres/category/event_type if Spotify
-            # gives us something more specific than what we have.
-            if result["genres"]:
-                perf_update["genres"] = _json.dumps(result["genres"])
-            if result["event_type_name"]:
-                perf_update["event_type_name"] = result["event_type_name"]
-                perf_update["category"] = result["category"]
-                perf_update["source"] = "spotify"
-
-            db.query(Performer).filter(Performer.id == perf_id).update(
-                perf_update, synchronize_session=False
-            )
-
-            # Propagate 1-10 popularity score + Spotify URL to all
-            # events for this artist so the frontend can display it.
-            # Match case-insensitively against artist_name — the
-            # SELECT-pending block above also uses func.lower() and
-            # the same casing inconsistency that lets Performer rows
-            # be picked up under any artist_name capitalisation must
-            # apply to the WRITE path too. Without LOWER on both
-            # sides, the propagation silently no-ops on every
-            # event whose collector wrote the artist_name in a
-            # different case than Performer.name was registered with.
-            # That bug left Event.artist_popularity at 0/145k rows
-            # despite 708 performers having popularity (2026-05-10).
-            raw_pop = result["popularity"] or 0
-            score_1_10 = max(1, round(raw_pop / 10)) if raw_pop else None
-            event_update: dict = {}
-            if score_1_10:
-                event_update["artist_popularity"] = score_1_10
-            if result["spotify_url"]:
-                event_update["artist_spotify_url"] = result["spotify_url"]
-            name_lower = (name or "").lower()
-            # Fill missing event image with artist photo
-            if result["image_url"]:
-                db.query(Event).filter(
-                    func.lower(Event.artist_name) == name_lower,
-                    Event.image_url.is_(None),
-                ).update(
-                    {"image_url": result["image_url"]},
-                    synchronize_session=False,
-                )
-            if event_update:
-                db.query(Event).filter(
-                    func.lower(Event.artist_name) == name_lower,
-                ).update(event_update, synchronize_session=False)
-
+        # Pull the market batch + advance cursor in one transaction so
+        # a mid-run crash doesn't double-walk on next fire.
+        try:
+            picks, _next = _spotify_market_cursor(db)
             db.commit()
-            db.expire_all()
-            logger.debug(
-                f"enrich_spotify: {name!r} → {result['event_type_name']} "
-                f"(pop={result['popularity']})"
-            )
-            return 1
+        except Exception as e:
+            logger.error(f"spotify_scan_job: cursor advance failed: {e}")
+            log.status = "failed"
+            log.notes = f"cursor_advance_failed: {e}"
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+            return
+
+        logger.info(f"spotify_scan_job: walking markets {picks}")
+
+        # Aggregate artists across all markets in this run + the global
+        # Browse Categories pass. Then a single DB upsert pass commits.
+        combined: dict[str, dict] = {}
 
         try:
-            # Sync query off the event loop
-            rows = await asyncio.to_thread(_select_pending)
-            logger.info(f"enrich_spotify_job: {len(rows)} performers to enrich")
-
-            # Granular httpx timeout — `timeout=10` is a total budget
-            # that doesn't always cover pool/connect phases. A wedged
-            # TLS handshake left this job running for 4h47m on 2026-05-11
-            # before being killed by hand; the per-phase split + an
-            # asyncio.wait_for ceiling per artist guarantees forward
-            # progress.
-            _SPOTIFY_TIMEOUT = _httpx.Timeout(connect=5, read=10, write=5, pool=5)
-            async with _httpx.AsyncClient(timeout=_SPOTIFY_TIMEOUT) as http:
-                for perf_id, name, _n in rows:
+            async with _httpx.AsyncClient(timeout=20) as http:
+                token = await acquire_token(
+                    http, settings.SPOTIFY_CLIENT_ID, settings.SPOTIFY_CLIENT_SECRET
+                )
+                for market in picks:
                     try:
-                        result = await asyncio.wait_for(
-                            lookup_spotify_artist(
-                                name,
-                                settings.SPOTIFY_CLIENT_ID,
-                                settings.SPOTIFY_CLIENT_SECRET,
-                                http,
-                            ),
-                            timeout=20,
-                        )
-                        if await asyncio.to_thread(_persist, perf_id, name, result):
-                            enriched += 1
-                        else:
-                            skipped += 1
-                        await asyncio.sleep(0.2)   # ~5 req/s — well within Spotify limits
-
+                        per = await walk_market(http, token, market)
                     except SpotifyRateLimited as e:
-                        # Spotify's penalty-box response — every further
-                        # artist would hit the same 429. Bail the whole
-                        # run, log the wait, let the next scheduled tick
-                        # try again after the window expires.
                         logger.warning(
-                            f"enrich_spotify_job: bailing after Spotify "
-                            f"penalty-box (retry_after={e.retry_after_seconds}s). "
-                            f"Enriched {enriched}/{len(rows)} before halt."
-                        )
-                        await asyncio.to_thread(db.rollback)
-                        log.notes = (
-                            f"halted=spotify_penalty_box "
-                            f"retry_after_s={e.retry_after_seconds} "
-                            f"enriched={enriched} processed={enriched + skipped + 1}/{len(rows)}"
+                            f"spotify_scan_job: rate-limited mid-walk "
+                            f"(market={market}, retry_after={e.retry_after_seconds}s) — bailing"
                         )
                         log.status = "failed"
-                        log.events_found = len(rows)
-                        log.events_saved = enriched
+                        log.notes = (
+                            f"halted=rate_limit retry_after_s={e.retry_after_seconds} "
+                            f"markets_walked={','.join(markets_walked)}"
+                        )
                         log.finished_at = datetime.utcnow()
                         db.commit()
                         db.close()
                         return
-
-                    except Exception as e:
-                        logger.warning(f"enrich_spotify: error for {name!r}: {e}")
-                        await asyncio.to_thread(db.rollback)
-                        skipped += 1
-
-            log.status = "success"
-            log.events_found = len(rows)
-            log.events_saved = enriched
-            log.notes = f"enriched={enriched} no_result={skipped}"
-            logger.info(f"enrich_spotify_job done: enriched={enriched} skipped={skipped}")
-
+                    markets_walked.append(market)
+                    for aid, meta in per.items():
+                        slot = combined.setdefault(
+                            aid,
+                            {"name": meta["name"], "external_url": meta["external_url"], "markets": set()},
+                        )
+                        slot["markets"] |= meta.get("markets") or set()
+                # Global Browse Categories pass — once per run.
+                try:
+                    cat_artists = await walk_browse_categories(http, token)
+                except SpotifyRateLimited as e:
+                    # Categories aren't critical; log + continue with what
+                    # we have rather than bailing the whole run.
+                    logger.warning(
+                        f"spotify_scan_job: rate-limited on categories "
+                        f"(retry_after={e.retry_after_seconds}s) — continuing with market data"
+                    )
+                    cat_artists = {}
+                for aid, meta in cat_artists.items():
+                    slot = combined.setdefault(
+                        aid,
+                        {"name": meta["name"], "external_url": meta["external_url"], "markets": set()},
+                    )
+                    slot["markets"] |= meta.get("markets") or set()
         except Exception as e:
+            logger.exception(f"spotify_scan_job: walk failed: {e}")
             log.status = "failed"
-            log.notes = str(e)
-            logger.error(f"enrich_spotify_job error: {e}")
-        finally:
+            log.notes = f"walk_failed: {type(e).__name__}: {e}"[:255]
             log.finished_at = datetime.utcnow()
             db.commit()
+            db.close()
+            return
+
+        artists_seen = len(combined)
+        logger.info(f"spotify_scan_job: combined {artists_seen} unique Spotify artists")
+
+        # ── Upsert + match in batches. We commit per N to keep the
+        # identity map small and bound rollback cost on errors.
+        try:
+            now = datetime.utcnow()
+            BATCH = 200
+            ids = list(combined.keys())
+            for i in range(0, len(ids), BATCH):
+                chunk_ids = ids[i:i + BATCH]
+                existing_rows = {
+                    r.id: r for r in db.query(SpotifyArtist)
+                    .filter(SpotifyArtist.id.in_(chunk_ids)).all()
+                }
+                # Bulk performer lookup for unmatched candidates only —
+                # existing SpotifyArtist rows already know their match
+                # status, no need to re-check.
+                fresh_ids = [a for a in chunk_ids if a not in existing_rows]
+                names_lower = {
+                    a: combined[a]["name"].strip().lower()
+                    for a in fresh_ids
+                    if combined[a]["name"]
+                }
+                perf_hits: dict[str, int] = {}
+                if names_lower:
+                    rows = (
+                        db.query(Performer.id, Performer.normalized_name)
+                        .filter(Performer.normalized_name.in_(list(set(names_lower.values()))))
+                        .all()
+                    )
+                    norm_to_pid = {nn: pid for pid, nn in rows}
+                    for aid, lname in names_lower.items():
+                        if lname in norm_to_pid:
+                            perf_hits[aid] = norm_to_pid[lname]
+
+                for aid in chunk_ids:
+                    meta = combined[aid]
+                    markets_str = ",".join(sorted(meta["markets"])) if meta["markets"] else None
+                    if aid in existing_rows:
+                        row = existing_rows[aid]
+                        row.last_seen_at = now
+                        # Union of markets_surfaced_in, capped at 4K chars
+                        # to avoid runaway growth on cumulative scans.
+                        prev_markets = set((row.markets_surfaced_in or "").split(",")) if row.markets_surfaced_in else set()
+                        prev_markets.discard("")
+                        merged = sorted(prev_markets | meta["markets"])
+                        row.markets_surfaced_in = ",".join(merged)[:4000]
+                    else:
+                        artists_new += 1
+                        matched_pid = perf_hits.get(aid)
+                        if matched_pid:
+                            artists_matched += 1
+                            status = "matched"
+                        else:
+                            artists_unmatched += 1
+                            status = "pending_brave"
+                        db.add(SpotifyArtist(
+                            id=aid,
+                            name=meta["name"][:500],
+                            external_url=meta["external_url"],
+                            first_seen_at=now,
+                            last_seen_at=now,
+                            match_status=status,
+                            matched_performer_id=matched_pid,
+                            markets_surfaced_in=markets_str,
+                        ))
+                db.commit()
+        except Exception as e:
+            logger.exception(f"spotify_scan_job: upsert failed: {e}")
+            db.rollback()
+            log.status = "failed"
+            log.notes = f"upsert_failed: {type(e).__name__}: {e}"[:255]
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+            return
+
+        # Coverage % for the new-this-run cohort. Cumulative coverage
+        # lives on the SpotifyArtist table and the stats endpoint
+        # computes it on read.
+        coverage_pct = (
+            round(100 * artists_matched / (artists_matched + artists_unmatched), 1)
+            if (artists_matched + artists_unmatched) else 0.0
+        )
+
+        log.status = "success"
+        log.events_found = artists_seen
+        log.events_saved = artists_new
+        # Structured-but-parseable notes — the stats endpoint json-decodes
+        # the json://… prefix slice. Plain k=v format kept for parity with
+        # other jobs that don't need structure.
+        log.notes = "json://" + _json.dumps({
+            "markets": markets_walked,
+            "artists_seen": artists_seen,
+            "artists_new": artists_new,
+            "artists_matched": artists_matched,
+            "artists_unmatched": artists_unmatched,
+            "coverage_pct_new_cohort": coverage_pct,
+        })
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        logger.info(
+            f"spotify_scan_job done: seen={artists_seen} new={artists_new} "
+            f"matched={artists_matched} unmatched={artists_unmatched} "
+            f"coverage_new={coverage_pct}%"
+        )
+        db.close()
+
+
+# Cache the current A/B winner across job runs so the brave loop doesn't
+# requery the DB for it on every artist. Reset on process restart.
+_AB_WINNER_CACHE: dict = {"winner": None, "computed_at": None}
+
+
+def _compute_ab_winner(db: "Session") -> str | None:
+    """Return the winning query variant once both have ≥AB_TRIAL_THRESHOLD
+    attempts, else None.
+
+    Winner = variant with the higher mean new_llm_sources_registered.
+    """
+    from app.models import SpotifyBraveAttempt
+    from sqlalchemy import func as _f
+    rows = (
+        db.query(
+            SpotifyBraveAttempt.query_variant,
+            _f.count(SpotifyBraveAttempt.id).label("n"),
+            _f.coalesce(_f.sum(SpotifyBraveAttempt.new_llm_sources_registered), 0).label("total"),
+        )
+        .group_by(SpotifyBraveAttempt.query_variant)
+        .all()
+    )
+    counts = {r.query_variant: (r.n, r.total) for r in rows}
+    a = counts.get("shows", (0, 0))
+    b = counts.get("upcoming_performances", (0, 0))
+    if a[0] < AB_TRIAL_THRESHOLD or b[0] < AB_TRIAL_THRESHOLD:
+        return None
+    avg_a = a[1] / a[0]
+    avg_b = b[1] / b[0]
+    if avg_a >= avg_b:
+        return "shows"
+    return "upcoming_performances"
+
+
+async def spotify_brave_query_job(batch: int = SPOTIFY_BRAVE_BATCH):
+    """For each pending_brave SpotifyArtist, fire Brave query (or both
+    during A/B) and register new LLMSources.
+
+    Until both query variants have ≥AB_TRIAL_THRESHOLD attempts, runs
+    BOTH variants on every artist. Thereafter runs only the winner —
+    determined by mean new_llm_sources_registered per variant.
+
+    Each Brave result is:
+      1. Reserved-domain filtered (same list Cadence B uses).
+      2. Existing-LLMSource filtered (dedup on registered_domain).
+      3. Gemini-classified as an event-listing page.
+      4. Registered as LLMSource(state='trial', discovered_via=
+         'spotify_artist_query', spotify_artist_id=…) on accept.
+
+    Cadence A then picks the new sources up on its next tick.
+    """
+    import gc
+    from app.models import SpotifyArtist, SpotifyBraveAttempt
+    from app.extractors.discovery_search import (
+        brave_search, filter_artist_tour_pages_via_llm, SearchHit,
+    )
+
+    if _heavy_job_lock.locked():
+        logger.info("spotify_brave_query_job: another heavy job is running — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="spotify_brave_query", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        try:
+            # Refresh the A/B winner cache on each run — cheap query,
+            # avoids stale-winner-after-restart corner case.
+            winner = _compute_ab_winner(db)
+            _AB_WINNER_CACHE["winner"] = winner
+            _AB_WINNER_CACHE["computed_at"] = datetime.utcnow()
+            logger.info(
+                f"spotify_brave_query_job: A/B winner={winner!r}; "
+                f"{'winner-only' if winner else 'both variants (A/B in progress)'}"
+            )
+
+            # Pick batch from the pending_brave queue, oldest-first
+            # so artists don't get stuck waiting forever.
+            artists = (
+                db.query(SpotifyArtist)
+                .filter(SpotifyArtist.match_status == "pending_brave")
+                .order_by(SpotifyArtist.first_seen_at.asc())
+                .limit(batch)
+                .all()
+            )
+            if not artists:
+                log.status = "success"
+                log.notes = "no pending artists"
+                log.finished_at = datetime.utcnow()
+                db.commit()
+                db.close()
+                logger.info("spotify_brave_query_job: nothing to do")
+                return
+
+            # Build the existing-LLMSource domain set once per run.
+            existing_domains: set[str] = set()
+            for (url,) in db.query(LLMSource.url).all():
+                existing_domains.add(_registered_domain(url))
+
+            variants_to_run = (
+                ["shows", "upcoming_performances"] if not winner else [winner]
+            )
+
+            total_attempts = 0
+            total_new_sources = 0
+            artists_processed = 0
+
+            for artist in artists:
+                # Each variant produces one SpotifyBraveAttempt row.
+                attempts_this_artist = 0
+                new_sources_this_artist = 0
+                for variant in variants_to_run:
+                    query = (
+                        f"{artist.name} shows"
+                        if variant == "shows"
+                        else f"{artist.name} upcoming performances"
+                    )
+                    try:
+                        hits: list[SearchHit] = await asyncio.to_thread(
+                            brave_search, query, SPOTIFY_BRAVE_HITS_PER_QUERY
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"spotify_brave_query: brave_search failed for "
+                            f"{artist.name!r} ({variant!r}): {e}"
+                        )
+                        hits = []
+                    attempts_this_artist += 1
+
+                    # Filter out reserved domains and already-known
+                    # LLMSource domains BEFORE classifier — saves
+                    # Gemini calls.
+                    novel: list[SearchHit] = []
+                    for h in hits:
+                        if _is_reserved_discovery_url(h.url):
+                            continue
+                        dom = _registered_domain(h.url)
+                        if not dom or dom in existing_domains:
+                            continue
+                        novel.append(h)
+
+                    new_sources_this_variant = 0
+                    if novel:
+                        try:
+                            candidates = await asyncio.to_thread(
+                                filter_artist_tour_pages_via_llm,
+                                novel,
+                                artist.name,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"spotify_brave_query: classifier failed for "
+                                f"{artist.name!r}: {e}"
+                            )
+                            candidates = []
+
+                        for cand in candidates:
+                            url = cand.get("url")
+                            if not url:
+                                continue
+                            dom = _registered_domain(url)
+                            if not dom or dom in existing_domains:
+                                continue
+                            existing_domains.add(dom)
+                            note = (
+                                f"[spotify_artist_query {datetime.utcnow().date()}] "
+                                f"artist={artist.name!r} variant={variant!r} "
+                                f"why={(cand.get('why_relevant') or '')[:120]}"
+                            )
+                            db.add(LLMSource(
+                                url=url,
+                                state="trial",
+                                runs_total=0,
+                                events_seen_total=0,
+                                events_saved_total=0,
+                                notes=note,
+                                discovered_via="spotify_artist_query",
+                                spotify_artist_id=artist.id,
+                            ))
+                            new_sources_this_variant += 1
+
+                    # Record the attempt — even on zero-hit so the A/B
+                    # mean is computed on the full denominator.
+                    db.add(SpotifyBraveAttempt(
+                        spotify_artist_id=artist.id,
+                        query_variant=variant,
+                        attempted_at=datetime.utcnow(),
+                        brave_results_count=len(hits),
+                        new_llm_sources_registered=new_sources_this_variant,
+                    ))
+                    new_sources_this_artist += new_sources_this_variant
+                    db.commit()
+
+                artist.brave_attempt_count = (artist.brave_attempt_count or 0) + attempts_this_artist
+                artist.new_websites_found = (artist.new_websites_found or 0) + new_sources_this_artist
+                artist.match_status = "brave_done"
+                db.commit()
+
+                artists_processed += 1
+                total_attempts += attempts_this_artist
+                total_new_sources += new_sources_this_artist
+                # Re-check A/B winner if we're still in the trial phase —
+                # could flip mid-batch as the 100th attempt of either
+                # variant lands.
+                if not winner:
+                    winner = _compute_ab_winner(db)
+                    if winner:
+                        variants_to_run = [winner]
+                        _AB_WINNER_CACHE["winner"] = winner
+                        logger.info(
+                            f"spotify_brave_query_job: A/B winner determined "
+                            f"mid-run: {winner!r} — switching to winner-only"
+                        )
+
+                gc.collect()
+
+            log.status = "success"
+            log.events_found = total_attempts
+            log.events_saved = total_new_sources
+            log.notes = (
+                f"artists={artists_processed} attempts={total_attempts} "
+                f"new_sources={total_new_sources} winner={winner or 'tbd'}"
+            )
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            logger.info(
+                f"spotify_brave_query_job done: artists={artists_processed} "
+                f"attempts={total_attempts} new_sources={total_new_sources} "
+                f"winner={winner or 'tbd'}"
+            )
+        except Exception as e:
+            logger.exception(f"spotify_brave_query_job failed: {e}")
+            db.rollback()
+            log.status = "failed"
+            log.notes = f"error: {type(e).__name__}: {e}"[:255]
+            log.finished_at = datetime.utcnow()
+            db.commit()
+        finally:
             db.close()
 
 
@@ -1944,7 +2313,14 @@ async def llm_extract_recurring_job(
                         )
                     else:
                         try:
-                            saved = registry._save_events(result.events, city, db)
+                            # Pass src.id so every Event row knows which
+                            # LLMSource it came from — closes the funnel
+                            # SpotifyArtist → LLMSource → Event → Performer
+                            # used by the Spotify stats endpoint.
+                            saved = registry._save_events(
+                                result.events, city, db,
+                                llm_source_id=src.id,
+                            )
                         except Exception as e:
                             logger.warning(
                                 f"llm_extract_recurring: persist error for "

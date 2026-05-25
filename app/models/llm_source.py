@@ -112,6 +112,19 @@ class LLMSource(Base):
     drift_score = Column(Float, nullable=True)
     drift_flag = Column(Boolean, default=False)
 
+    # ── Provenance ───────────────────────────────────────────────────────
+    # Which discovery channel registered this row. Existing rows get
+    # backfilled to 'cadence_b' (the only writer before this column
+    # landed). New values: 'spotify_artist_query' for the
+    # spotify_brave_query_job, 'manual_seed' for the CLI seeder,
+    # 'zero_result_seed' for seed_brave_from_zero_results.
+    discovered_via = Column(String(40), nullable=True, index=True)
+    # When discovered_via='spotify_artist_query': which Spotify artist's
+    # Brave query surfaced this URL. FK into spotify_artists; let us
+    # close the funnel back to a specific artist for stats. NULL for
+    # any other discovery channel.
+    spotify_artist_id = Column(String(40), nullable=True, index=True)
+
     # ── Operational ──────────────────────────────────────────────────────
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())

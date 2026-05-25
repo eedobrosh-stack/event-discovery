@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, enrich_spotify_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job
 
 scheduler = AsyncIOScheduler()
 
@@ -426,11 +426,24 @@ def _run_migrations():
         # docstring and scripts/backfill_event_tournament.py for the
         # source of truth on which values get populated.
         "tournament":  "TEXT",
+        # llm_source_id: FK into llm_sources for events extracted by
+        # Cadence A. NULL for Route 2 collectors. Closes the funnel
+        # spotify_artist → llm_source → event → performer so the
+        # stats card can attribute new performers back to the Brave
+        # query that discovered the source they live on.
+        "llm_source_id": "INTEGER",
     }
     with engine.connect() as conn:
         for col, coltype in sports_cols.items():
             if col not in existing_event_cols:
                 conn.execute(text(f"ALTER TABLE events ADD COLUMN {col} {coltype}"))
+        conn.commit()
+    # Single-column index on llm_source_id powers the funnel-attribution
+    # query in the Spotify stats endpoint (events joined back to source).
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_events_llm_source ON events(llm_source_id)"
+        ))
         conn.commit()
     # Index on tournament — small enum-like cardinality (one entry per
     # named competition), supports the cheap WHERE tournament = X path
@@ -527,6 +540,12 @@ def _run_migrations():
             "url_template":              "TEXT",
             "url_template_range_months": "INTEGER",
             "url_template_values":       "TEXT",   # JSON list under the hood
+            # Provenance: which discovery channel registered the row.
+            # Backfilled to 'cadence_b' for all pre-existing rows since
+            # that was the only writer in the project until the Spotify
+            # funnel landed.
+            "discovered_via":            "TEXT",
+            "spotify_artist_id":         "TEXT",
         }
         with engine.connect() as conn:
             for col, coltype in llm_incremental_cols.items():
@@ -534,6 +553,34 @@ def _run_migrations():
                     conn.execute(text(
                         f"ALTER TABLE llm_sources ADD COLUMN {col} {coltype}"
                     ))
+            conn.commit()
+
+        # One-time backfill of discovered_via='cadence_b' for any row that
+        # pre-dates the column. The only historical writers were
+        # discover_via_search (Cadence B) and the manual seeder; the
+        # seeder population is small enough that mis-classifying them as
+        # 'cadence_b' is acceptable noise — operators can re-tag those
+        # by hand if they care.
+        if "discovered_via" not in existing_llm_cols:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "UPDATE llm_sources SET discovered_via='cadence_b' "
+                    "WHERE discovered_via IS NULL"
+                ))
+                conn.commit()
+
+        # Composite-free indexes on the two provenance columns so the
+        # stats endpoint can group/filter by discovered_via without a
+        # full scan once spotify_artist_query rows start landing.
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_llm_sources_discovered_via ON llm_sources(discovered_via)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_llm_sources_spotify_artist_id ON llm_sources(spotify_artist_id)"
+            ))
             conn.commit()
 
         # One-time cleanup: block any LLMSource on a domain we already
@@ -839,35 +886,26 @@ async def lifespan(app: FastAPI):
         id="collect_platform_venues",
         replace_existing=True,
     )
-    # --- Async enrichment trio: staggered so only one is alive at a time ----
-    # Each of these holds an httpx.AsyncClient open for the whole run and
-    # iterates 100-150 artists against a third-party API. Running them
-    # concurrently was the primary driver of the 2GB OOM restarts observed
-    # on 2026-04-21 (10:08 PM) and 2026-04-22 (02:29 AM, 06:32 AM).
+    # --- Async enrichment + Spotify funnel ----------------------------------
+    # Staggered so only one is alive at a time. Each holds an
+    # httpx.AsyncClient open for its whole run; concurrent fires were
+    # the primary driver of the 2GB OOM restarts observed on
+    # 2026-04-21 / 2026-04-22.
     #
     # Timeline after boot (minutes):
-    #   +25  bandsintown  (~25 min,  ends +50)
-    #   +60  enrich_spotify      (~15 min, ends +75)   [was +140]
-    #   +90  enrich_performers   (~10 min, ends +100)  [was +125]
-    #   +120 enrich_youtube      (~5 min, ends +125)
-    #     batch 300 → 100 (Apr 22 OOMs) → 50 (May 4 OOM at 06:22).
-    #     re-fire 2h → 4h to reduce collision risk with the 24h jobs.
+    #   +25  bandsintown            (~25 min, ends +50)
+    #   +90  enrich_performers      (~10 min, ends +100)
+    #   +120 enrich_youtube         (~5 min,  4h re-fire cycle)
+    #   +300 spotify_scan           (~15 min, daily — walks Spotify
+    #                                editorial surfaces for 10
+    #                                markets/day on rotation)
+    #   +330 spotify_brave_query    (~10 min, 2h re-fire cycle —
+    #                                A/B brave query for each
+    #                                pending_brave SpotifyArtist)
     #
-    # enrich_youtube re-fires on a 4h cycle (+240, +480, …); at batch=50
-    # each subsequent run is ~5min and never collides with a 24h job.
-    # enrich_spotify — bumped from once-daily / batch=150 (113-day full
-    # enrichment) to twice-daily / batch=500 (~17-day full enrichment).
-    # Spotify's documented rate limit is ~180 requests / minute / app;
-    # batch=500 with the lookup pacing currently in lookup_spotify_artist
-    # stays comfortably below that. Halving the interval to 12h doubles
-    # nightly throughput without overlap risk (the heavy-job lock
-    # serialises against collect_events / enrich_youtube anyway).
-    scheduler.add_job(
-        enrich_spotify_job,
-        IntervalTrigger(hours=12, start_date=_t + _td(minutes=60)),
-        id="enrich_spotify",
-        replace_existing=True,
-    )
+    # The old enrich_spotify_job (Performer-side lookup) was removed on
+    # 2026-05-25 — Spotify's API gutting in late 2024 had been making
+    # it write popularity=0 / genres=[] for every row.
     scheduler.add_job(
         enrich_performers_job,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=90)),
@@ -890,6 +928,29 @@ async def lifespan(app: FastAPI):
         discover_venues_job,
         IntervalTrigger(hours=48, start_date=_t + _td(minutes=185)),
         id="discover_venues",
+        replace_existing=True,
+    )
+    # spotify_scan — daily walk through Spotify's editorial surfaces
+    # (Top 50 / Viral 50 / Featured Playlists / New Releases / Browse
+    # Categories) to harvest "artists who matter". Rotates through 10
+    # markets/day so the full 75-market sweep happens every 7-8 days,
+    # well below the rolling rate-limit that hit the old enrich job.
+    scheduler.add_job(
+        spotify_scan_job,
+        IntervalTrigger(hours=24, start_date=_t + _td(minutes=300)),
+        id="spotify_scan",
+        replace_existing=True,
+    )
+    # spotify_brave_query — for every SpotifyArtist with
+    # match_status='pending_brave', fire one (or, during the A/B phase,
+    # both) Brave queries to find event-listing pages we don't already
+    # have. Registered LLMSources carry discovered_via='spotify_artist_query'
+    # so Cadence A picks them up on the next tick and the funnel closes
+    # naturally.
+    scheduler.add_job(
+        spotify_brave_query_job,
+        IntervalTrigger(hours=2, start_date=_t + _td(minutes=330)),
+        id="spotify_brave_query",
         replace_existing=True,
     )
     # llm_discover_sources — Cadence B. Daily Brave-Search-driven per-city

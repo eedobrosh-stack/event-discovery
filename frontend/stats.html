@@ -1047,6 +1047,76 @@
                     <tbody id="guide-body"></tbody>
                 </table>
             </div>
+
+            <hr class="section-divider">
+            <p class="section-title">🎧 Spotify Funnel
+              <span style="font-weight:400; color:#666; font-size:.78rem;">
+                editorial-surface scan → Brave → new sources → new artists
+              </span>
+            </p>
+            <div id="spotify-loading" style="color:#aaa; font-size:.85rem; padding:4px 0 16px;">Loading…</div>
+            <div id="spotify-wrap" hidden>
+                <!-- Coverage row -->
+                <div class="summary-cards" style="margin-bottom:18px;">
+                    <div class="card">
+                        <div class="card-num" id="sp-seen">0</div>
+                        <div class="card-label">Spotify artists seen</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-num" id="sp-coverage-pct">0%</div>
+                        <div class="card-label">Already in our DB</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-num" id="sp-unmatched">0</div>
+                        <div class="card-label">New artists (unmatched)</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-num" id="sp-new-sites">0</div>
+                        <div class="card-label">New websites discovered</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-num" id="sp-new-artists-via">0</div>
+                        <div class="card-label">New artists via new sites</div>
+                    </div>
+                </div>
+
+                <!-- A/B test row -->
+                <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px;">
+                    <div class="breakdown-card" style="flex:1; min-width:300px;">
+                        <h4 style="margin:0 0 10px;">A/B query test
+                          <span id="sp-ab-winner" style="font-weight:400; color:#7c6af7; font-size:.85rem;"></span>
+                        </h4>
+                        <table style="width:100%; font-size:.85rem;">
+                          <thead>
+                            <tr style="text-align:left; color:#888;">
+                              <th>Variant</th>
+                              <th class="num">Trials</th>
+                              <th class="num">Avg new sources</th>
+                              <th class="num">Avg Brave hits</th>
+                            </tr>
+                          </thead>
+                          <tbody id="sp-ab-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recent runs -->
+                <div class="source-table-wrap">
+                    <table class="source-table">
+                        <thead>
+                            <tr>
+                                <th>Job</th>
+                                <th>Status</th>
+                                <th>Started</th>
+                                <th class="num">Found</th>
+                                <th class="num">Saved</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sp-runs-body"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <hr class="section-divider">
@@ -1293,6 +1363,72 @@
         }
     }
     loadGuides();
+
+    // ── Spotify funnel ─────────────────────────────────────────────────────
+    async function loadSpotify() {
+        try {
+            const res = await fetch('/api/stats/spotify');
+            const d = await res.json();
+            const cov = d.coverage || {};
+            const fun = d.funnel || {};
+            const ab  = d.ab_test || {};
+
+            document.getElementById('sp-seen').textContent = (cov.seen || 0).toLocaleString();
+            document.getElementById('sp-coverage-pct').textContent = (cov.coverage_pct || 0).toFixed(1) + '%';
+            document.getElementById('sp-unmatched').textContent = (cov.unmatched || 0).toLocaleString();
+            document.getElementById('sp-new-sites').textContent = (fun.new_websites_registered || 0).toLocaleString();
+            document.getElementById('sp-new-artists-via').textContent = (fun.new_artists_via_websites || 0).toLocaleString();
+
+            const winner = ab.winner;
+            const threshold = ab.threshold || 100;
+            const winnerLabel = document.getElementById('sp-ab-winner');
+            if (winner) {
+                winnerLabel.textContent = ` — winner: "${winner}"`;
+            } else {
+                const sA = (ab.variants?.shows?.trials || 0);
+                const sB = (ab.variants?.upcoming_performances?.trials || 0);
+                winnerLabel.textContent = ` — A/B in progress (${sA}/${threshold}, ${sB}/${threshold})`;
+            }
+            const variants = ab.variants || {};
+            const variantOrder = ['shows', 'upcoming_performances'];
+            const abRows = variantOrder.map(v => {
+                const r = variants[v] || {};
+                const isWinner = winner === v;
+                return `<tr ${isWinner ? 'style="font-weight:600; color:#7c6af7;"' : ''}>
+                    <td>${esc(v.replace('_', ' '))}${isWinner ? ' ✓' : ''}</td>
+                    <td class="num">${(r.trials || 0).toLocaleString()}</td>
+                    <td class="num">${(r.avg_new_sources || 0).toFixed(3)}</td>
+                    <td class="num">${(r.avg_brave_hits || 0).toFixed(2)}</td>
+                </tr>`;
+            });
+            document.getElementById('sp-ab-body').innerHTML = abRows.join('');
+
+            const runs = d.recent_runs || [];
+            document.getElementById('sp-runs-body').innerHTML = runs.map(r => {
+                const started = r.started_at
+                    ? new Date(r.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
+                    : '–';
+                const statusColor = r.status === 'success' ? '#4caf50'
+                                  : r.status === 'failed' ? '#e53935'
+                                  : '#aaa';
+                const notes = (r.notes || '').slice(0, 220);
+                return `<tr>
+                    <td style="font-family:monospace; font-size:.78rem;">${esc(r.job)}</td>
+                    <td style="color:${statusColor};">${esc(r.status)}</td>
+                    <td style="color:#aaa; font-size:.8rem;">${esc(started)}</td>
+                    <td class="num">${(r.events_found ?? 0).toLocaleString()}</td>
+                    <td class="num">${(r.events_saved ?? 0).toLocaleString()}</td>
+                    <td style="color:#888; font-size:.78rem;">${esc(notes)}</td>
+                </tr>`;
+            }).join('');
+
+            document.getElementById('spotify-loading').hidden = true;
+            document.getElementById('spotify-wrap').hidden = false;
+        } catch (e) {
+            document.getElementById('spotify-loading').textContent = 'Failed to load Spotify funnel: ' + e.message;
+        }
+    }
+    loadSpotify();
 
     // ── Daily Pulse ────────────────────────────────────────────────────────
     async function loadPulse() {
