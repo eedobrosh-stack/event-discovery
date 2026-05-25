@@ -19,7 +19,7 @@ The Brave A/B + funnel counters live here so the stats endpoint can group
 by match_status without joining other tables.
 """
 from sqlalchemy import (
-    Column, Integer, String, DateTime, ForeignKey, Index, Text,
+    Column, Integer, String, DateTime, ForeignKey, Text,
 )
 from sqlalchemy.sql import func
 
@@ -47,7 +47,13 @@ class SpotifyArtist(Base):
     # Match against Performer.normalized_name on first encounter. Two-step
     # workflow drives this: scan_job classifies as matched/pending_brave;
     # brave_query_job flips pending_brave → brave_done after running.
-    match_status = Column(String(20), nullable=False, default="pending", index=True)
+    # Indexes for match_status and last_seen_at are created in
+    # _run_migrations (IF NOT EXISTS) — keeping them out of __table_args__
+    # avoids the duplicate-name collision that broke the first deploy
+    # (Column(..., index=True) auto-generates the same name as an
+    # explicit Index(...) declaration would, so create_all emitted two
+    # CREATE INDEX statements with the same name).
+    match_status = Column(String(20), nullable=False, default="pending")
     matched_performer_id = Column(Integer, ForeignKey("performers.id"), nullable=True)
 
     # Comma-list of Spotify market codes ("US,GB,IL,…") this artist has
@@ -71,8 +77,3 @@ class SpotifyArtist(Base):
     new_artists_via_websites = Column(Integer, default=0)
 
     notes = Column(Text, nullable=True)
-
-    __table_args__ = (
-        Index("ix_spotify_artists_match_status", "match_status"),
-        Index("ix_spotify_artists_last_seen", "last_seen_at"),
-    )

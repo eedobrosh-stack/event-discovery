@@ -583,6 +583,25 @@ def _run_migrations():
             ))
             conn.commit()
 
+    # spotify_artists indexes — kept out of the model's __table_args__
+    # because Column(..., index=True) auto-generates a same-name index
+    # and the two collide in create_all. IF NOT EXISTS here covers both
+    # the fresh-DB case (table created by create_all without indexes)
+    # AND the partial-state recovery case (first deploy failed mid-way
+    # through index creation, leaving the table with one index and not
+    # the other).
+    if "spotify_artists" in insp.get_table_names():
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_spotify_artists_match_status ON spotify_artists(match_status)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_spotify_artists_last_seen ON spotify_artists(last_seen_at)"
+            ))
+            conn.commit()
+
         # One-time cleanup: block any LLMSource on a domain we already
         # cover with a hand-coded collector. Prevents the recurring job
         # from spending Gemini tokens to re-extract events the existing
