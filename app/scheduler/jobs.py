@@ -1770,6 +1770,15 @@ async def spotify_brave_query_job(batch: int = SPOTIFY_BRAVE_BATCH):
                             f"mid-run: {winner!r} — switching to winner-only"
                         )
 
+                # Pace classifier calls. The brave_query job fires the
+                # Gemini classifier twice per artist (one per A/B
+                # variant) — 25 artists × 2 = 50 calls per scheduled
+                # tick. Burst-fired they blow through the per-minute
+                # quota and every classification returns [] (the bug
+                # that left new_sources=0 on the first prod run).
+                # 2.5s here keeps us under ~25 calls/min, well within
+                # gemini-2.5-flash-lite's free-tier RPM.
+                await asyncio.sleep(2.5)
                 gc.collect()
 
             log.status = "success"

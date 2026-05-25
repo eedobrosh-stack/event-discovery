@@ -499,7 +499,7 @@ Example:
 def filter_artist_tour_pages_via_llm(
     hits: list[SearchHit],
     artist: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-2.5-flash-lite",
 ) -> list[dict]:
     """Same shape as ``filter_candidates_via_llm`` but framed for the
     artist-driven Brave query in spotify_brave_query_job.
@@ -507,6 +507,13 @@ def filter_artist_tour_pages_via_llm(
     Accepts tour-date pages, venue calendars, ticketing sites, and city
     event hubs that surfaced for the artist query. Rejects single-artist
     bio/news/social pages and aggregators we already cover.
+
+    Model defaults to ``gemini-2.5-flash-lite`` rather than the heavier
+    ``flash`` used by the city classifier — this job fires the
+    classifier 50× per scheduled tick (25 artists × 2 A/B variants),
+    far exceeding the per-minute quota of standard flash. Lite has
+    10× the RPM allowance and is more than capable for URL/snippet
+    classification.
     """
     if not hits:
         return []
@@ -551,7 +558,16 @@ def filter_artist_tour_pages_via_llm(
             break
         except Exception as e:
             msg = str(e).lower()
-            transient = ("503" in msg or "unavailable" in msg
+            # "429" / "too many" / "quota" cover the per-minute rate
+            # limit that bit the first prod run — 50 classifier calls
+            # per brave_query tick blew through gemini-2.5-flash's RPM
+            # cap and the message-string match wasn't catching it as
+            # transient, so every artist silently classified as []. Now
+            # uses flash-lite (10x RPM) AND treats 429 as transient
+            # with a longer backoff than the 503 path uses.
+            transient = ("503" in msg or "429" in msg
+                         or "unavailable" in msg
+                         or "too many" in msg or "quota" in msg
                          or "timeout" in msg or "deadline" in msg
                          or "resource_exhausted" in msg)
             if not transient or attempt == 2:
@@ -561,7 +577,14 @@ def filter_artist_tour_pages_via_llm(
                     f"{type(e).__name__}: {e}"
                 )
                 return []
-            time.sleep(2 ** attempt * 2)
+            # 429 / quota needs a longer wait than 503 — the former
+            # only clears when the per-minute window rolls over, so
+            # 2s/4s isn't enough. 10s / 20s / 40s gives the rolling
+            # window a chance to actually free up.
+            base = 2 ** attempt * 2          # 2s, 4s, 8s
+            if "429" in msg or "too many" in msg or "quota" in msg:
+                base *= 5                    # 10s, 20s, 40s
+            time.sleep(base)
     if resp is None:
         return []
 
