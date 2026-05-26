@@ -2115,7 +2115,7 @@ async def llm_extract_recurring_job(
     (incrementing the demotion counter), never both.
     """
     import gc
-    from sqlalchemy import or_
+    from sqlalchemy import and_, case, or_
     from app.models import LLMSource, City
 
     if _heavy_job_lock.locked():
@@ -2141,6 +2141,26 @@ async def llm_extract_recurring_job(
             from app.services.collectors.registry import CollectorRegistry
 
             cutoff = datetime.utcnow() - timedelta(hours=min_hours_since_last)
+
+            # Priority lane for never-run sources discovered by the
+            # Spotify funnel (`spotify_brave_query_job` registers them
+            # with `discovered_via='spotify_artist_query'`). Without
+            # this, the spotify cohort sits at the back of the
+            # never-run queue ordered by id ASC — at 150 sources/run
+            # the existing ~2K-row backlog of older never-run sources
+            # would defer the funnel's closing step by ~1.8 days.
+            # Limited to FIRST-RUN only (last_run_at IS NULL) so the
+            # priority lane doesn't permanently dominate Cadence A
+            # after the cohort has been extracted at least once —
+            # subsequent re-extractions go through the normal rotation.
+            spotify_first_run_priority = case(
+                (and_(
+                    LLMSource.discovered_via == "spotify_artist_query",
+                    LLMSource.last_run_at.is_(None),
+                ), 0),
+                else_=1,
+            )
+
             sources = (
                 db.query(LLMSource)
                 .filter(
@@ -2150,10 +2170,14 @@ async def llm_extract_recurring_job(
                         LLMSource.last_run_at < cutoff,
                     ),
                 )
-                # Run never-run-before sources first; among those that have
-                # run, prioritize the longest-untouched. Stable ordering
-                # also helps reproducibility when debugging a slow cycle.
-                .order_by(LLMSource.last_run_at.asc().nullsfirst(), LLMSource.id.asc())
+                # Priority lane first, then never-run-before sources,
+                # then longest-untouched among run sources. Stable id
+                # tiebreaker for reproducibility.
+                .order_by(
+                    spotify_first_run_priority.asc(),
+                    LLMSource.last_run_at.asc().nullsfirst(),
+                    LLMSource.id.asc(),
+                )
                 .limit(max_sources_per_run)
                 .all()
             )
