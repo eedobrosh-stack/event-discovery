@@ -1121,6 +1121,56 @@
 
         <hr class="section-divider">
 
+        <!-- Index Graduation Candidates -->
+        <div class="source-section">
+            <p class="section-title">🎓 Index Graduation Candidates
+              <span style="font-weight:400; color:#666; font-size:.78rem;">
+                which Route 1 indexes are worth a bespoke Route 2 collector
+              </span>
+            </p>
+            <div id="grad-loading" style="color:#aaa; font-size:.85rem; padding:4px 0 16px;">Loading…</div>
+            <div id="grad-wrap" hidden>
+                <div id="grad-summary" style="color:#aaa; font-size:.82rem; margin-bottom:14px;"></div>
+
+                <p style="font-weight:600; margin:0 0 8px; color:#7c6af7;">⬆ Promote to Route 2 (top domains — one collector covers all paths)</p>
+                <div class="source-table-wrap" style="margin-bottom:22px;">
+                    <table class="source-table">
+                        <thead>
+                            <tr>
+                                <th>Domain</th>
+                                <th class="num">Score</th>
+                                <th class="num">Paths</th>
+                                <th class="num">Events/wk</th>
+                                <th class="num">Saved</th>
+                                <th class="num">Reliab.</th>
+                                <th>Method</th>
+                                <th>Dev</th>
+                            </tr>
+                        </thead>
+                        <tbody id="grad-promo-body"></tbody>
+                    </table>
+                </div>
+
+                <p style="font-weight:600; margin:0 0 8px; color:#e0823a;">⬇ Block candidates (burning cycles, no payoff)</p>
+                <div class="source-table-wrap">
+                    <table class="source-table">
+                        <thead>
+                            <tr>
+                                <th>Index URL</th>
+                                <th class="num">Runs</th>
+                                <th class="num">Empty streak</th>
+                                <th class="num">Saved</th>
+                                <th>Method</th>
+                            </tr>
+                        </thead>
+                        <tbody id="grad-block-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <hr class="section-divider">
+
         <!-- Add Venue Events -->
         <div class="add-venue-section">
             <h3>➕ Add Events from Venue Website</h3>
@@ -1429,6 +1479,62 @@
         }
     }
     loadSpotify();
+
+    // ── Index graduation candidates ────────────────────────────────────────
+    async function loadGraduation() {
+        try {
+            const res = await fetch('/api/stats/graduation');
+            const d = await res.json();
+            const s = d.summary || {};
+
+            const mb = s.method_breakdown || {};
+            const mbStr = Object.entries(mb)
+                .sort((a, b) => b[1] - a[1])
+                .map(([k, v]) => `${esc(k)}: ${v.toLocaleString()}`)
+                .join(' · ');
+            document.getElementById('grad-summary').innerHTML =
+                `<strong>${(s.active_indexes || 0).toLocaleString()}</strong> active indexes · `
+                + `<strong>${(s.scored_pool || 0).toLocaleString()}</strong> LLM-extracted candidates scored · `
+                + `<strong>${(s.jsonld_already_optimal || 0).toLocaleString()}</strong> JSON-LD sources already optimal on Route 1 (excluded) · `
+                + `method mix → ${mbStr}`;
+
+            const methodColor = (m) => m === 'jsonld' ? '#5a9' : m === 'html' ? '#7c6af7' : m === 'error' ? '#e53935' : '#aaa';
+            const devColor = (e) => e === 'easy' ? '#5a9' : e === 'hard' ? '#e0823a' : '#aaa';
+
+            const promo = d.promotion || [];
+            document.getElementById('grad-promo-body').innerHTML = promo.length ? promo.map(r => {
+                const primaryMethod = (r.methods || '').split(',')[0] || '';
+                return `<tr>
+                    <td><a href="${esc(r.sample_url)}" target="_blank" rel="noopener" style="color:#7c6af7; text-decoration:none;" title="${esc(r.sample_url)}">${esc(r.domain)}</a></td>
+                    <td class="num"><strong>${r.score.toLocaleString()}</strong></td>
+                    <td class="num">${r.path_count.toLocaleString()}</td>
+                    <td class="num">${r.events_per_week.toLocaleString()}</td>
+                    <td class="num">${r.events_saved_total.toLocaleString()}</td>
+                    <td class="num">${r.reliability}</td>
+                    <td style="color:${methodColor(primaryMethod)}; font-size:.78rem;">${esc(r.methods || '–')}</td>
+                    <td style="color:${devColor(r.est_dev)}; font-size:.78rem;">${esc(r.est_dev)}</td>
+                </tr>`;
+            }).join('') : '<tr><td colspan="8" style="color:#777; padding:10px;">No sources mature enough to graduate yet.</td></tr>';
+
+            const block = d.block || [];
+            document.getElementById('grad-block-body').innerHTML = block.length ? block.map(r => {
+                const domain = r.url.replace(/^https?:\/\//, '').split('/')[0];
+                return `<tr>
+                    <td><a href="${esc(r.url)}" target="_blank" rel="noopener" style="color:#999; text-decoration:none;" title="${esc(r.url)}">${esc(domain)}</a></td>
+                    <td class="num">${r.runs_total}</td>
+                    <td class="num">${r.consecutive_empty_runs}</td>
+                    <td class="num">${r.events_saved_total.toLocaleString()}</td>
+                    <td style="color:${methodColor(r.last_method)}; font-size:.78rem;">${esc(r.last_method || '–')}</td>
+                </tr>`;
+            }).join('') : '<tr><td colspan="5" style="color:#777; padding:10px;">No block candidates.</td></tr>';
+
+            document.getElementById('grad-loading').hidden = true;
+            document.getElementById('grad-wrap').hidden = false;
+        } catch (e) {
+            document.getElementById('grad-loading').textContent = 'Failed to load graduation candidates: ' + e.message;
+        }
+    }
+    loadGraduation();
 
     // ── Daily Pulse ────────────────────────────────────────────────────────
     async function loadPulse() {

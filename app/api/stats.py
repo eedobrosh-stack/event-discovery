@@ -1,8 +1,9 @@
+import math
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import case, func, text
+from sqlalchemy import and_, case, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -14,6 +15,19 @@ from app.models.scan_log import ScanLog
 from app.services.collectors.scrapers.city_guides import CITY_GUIDES
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
+
+
+def _registered_domain_simple(url: str) -> str:
+    """Bare hostname (leading 'www.' stripped, lowercased), '' on parse
+    failure. Local copy so the stats module doesn't import from the
+    scheduler. Used to aggregate graduation candidates by site — a
+    Route 2 collector targets a domain, not a URL path."""
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
 
 
 @router.get("/cities")
@@ -961,4 +975,246 @@ def spotify_funnel(db: Session = Depends(get_db)):
             "new_artists_via_websites": new_artists_via_websites,
         },
         "recent_runs": recent_runs,
+    }
+
+
+# Methods eligible for Route 2 graduation. JSON-LD is deliberately
+# excluded (not just down-weighted): Route 1's JSON-LD path already
+# extracts those at ~100% accuracy with ZERO marginal cost — it's pure
+# schema.org parsing, no Gemini call at all. A bespoke Route 2 collector
+# for a JSON-LD source would be strictly worse: more code, more
+# maintenance, identical output. The graduation candidates are the
+# sources Route 1 extracts via the costly+imperfect LLM path — `html`
+# (Gemini call per fire, 80-95% accuracy) and `url_context`. Those are
+# where a hand-coded collector pays back in both dollars and quality.
+# 'error' sources are broken, not candidates.
+_GRADUATION_ELIGIBLE_METHODS = {"html", "url_context"}
+_GRADUATION_METHOD_MULT = {
+    "html": 1.0,
+    "url_context": 0.8,
+}
+
+
+def _graduation_score(s: LLMSource, now: datetime) -> dict:
+    """Compute a Route-2-promotion score + its components for one LLMSource.
+
+    score = events_per_week × reliability × longevity × confidence × method_mult
+
+    Each factor is in [0,1] except events_per_week (unbounded), so the
+    score reads as "quality-adjusted events/week, weighted by how much
+    a bespoke collector would actually help." Higher = stronger
+    candidate for graduating to a Route 2 collector.
+    """
+    created = s.created_at or now
+    days_alive = max((now - created).days, 1)
+    weeks_alive = days_alive / 7.0
+    saved = s.events_saved_total or 0
+    events_per_week = saved / weeks_alive
+
+    # reliability — drift_score is (prior_avg - last)/prior_avg, so ≤0
+    # means events held or grew (great), >0 means shrinking. 1 - drift
+    # clamped to [0,1]; neutral 0.7 when we have no drift reading yet.
+    if s.drift_score is not None:
+        reliability = max(0.0, min(1.0, 1.0 - s.drift_score))
+    else:
+        reliability = 0.7
+    # Empty-run streak erodes confidence in the source's stability.
+    empties = s.consecutive_empty_runs or 0
+    reliability *= max(0.0, 1.0 - 0.25 * empties)
+
+    # longevity — ramp to 1.0 over ~6 weeks so we don't graduate a
+    # source we've only watched for a few days.
+    longevity = min(1.0, days_alive / 45.0)
+
+    # confidence — needs a handful of runs before we trust the
+    # per-week rate; a single huge first extraction shouldn't top the
+    # list on its own.
+    confidence = min(1.0, (s.runs_total or 0) / 5.0)
+
+    method = (s.last_method or "").lower()
+    method_mult = _GRADUATION_METHOD_MULT.get(method, 0.0)
+
+    score = events_per_week * reliability * longevity * confidence * method_mult
+    # JSON-LD / error / unrun sources score 0 — they're filtered from
+    # the promotion pool in the endpoint, but score 0 here too so they
+    # can't sneak in via the score>0 gate.
+
+    # Qualitative dev-effort estimate for the Route 2 build, so the
+    # card can show "is this worth the engineering" at a glance.
+    if s.has_pagination:
+        est_dev = "hard"
+    elif method == "jsonld":
+        est_dev = "easy"
+    else:
+        est_dev = "medium"
+
+    return {
+        "url": s.url,
+        "score": round(score, 2),
+        "events_saved_total": saved,
+        "events_per_week": round(events_per_week, 1),
+        "reliability": round(reliability, 2),
+        "longevity": round(longevity, 2),
+        "confidence": round(confidence, 2),
+        "last_method": s.last_method,
+        "method_mult": method_mult,
+        "runs_total": s.runs_total or 0,
+        "days_alive": days_alive,
+        "drift_score": round(s.drift_score, 2) if s.drift_score is not None else None,
+        "discovered_via": s.discovered_via,
+        "est_dev": est_dev,
+        "country": s.country,
+    }
+
+
+@router.get("/graduation")
+def graduation_candidates(db: Session = Depends(get_db), limit: int = 20):
+    """Rank active LLMSources (indexes) as Route 2 promotion candidates.
+
+    Implements the decision mechanism for the two-route strategy: most
+    sources stay on Route 1 (generic LLM extraction); the top few by
+    quality-adjusted volume earn a bespoke Route 2 collector. Also
+    surfaces block candidates — sources burning extraction cycles with
+    nothing to show — for the demote side of the decision.
+
+    Score is computed in Python (see _graduation_score) over the
+    trial+recurring set with at least one saved event; the candidate
+    pool is small enough (~4K rows) that an in-process scan is simpler
+    and cheaper than expressing the formula in SQLite.
+    """
+    now = datetime.utcnow()
+
+    # Promotion pool: extracted at least one event, currently active,
+    # AND extracted via the LLM path (html / url_context). JSON-LD is
+    # excluded at the query level — see _GRADUATION_ELIGIBLE_METHODS.
+    active = (
+        db.query(LLMSource)
+        .filter(
+            LLMSource.state.in_(["trial", "recurring"]),
+            LLMSource.events_saved_total > 0,
+            func.lower(LLMSource.last_method).in_(list(_GRADUATION_ELIGIBLE_METHODS)),
+        )
+        .all()
+    )
+    scored = [_graduation_score(s, now) for s in active]
+
+    # Aggregate by registered domain — a Route 2 collector targets a
+    # SITE, not a single URL path. conferencenext.com showing up as 8
+    # separate /conferences/{city}/{topic} rows is one graduation
+    # decision (write conferencenext.py), not eight. Domain score is
+    # the sum of per-path scores (total quality-adjusted events/week
+    # the collector would cover); volume + path count sum; reliability
+    # is path-count-weighted; est_dev escalates to "hard" if ANY path
+    # paginates (the collector has to handle it).
+    by_domain: dict[str, dict] = {}
+    for d in scored:
+        if d["score"] <= 0:
+            continue
+        dom = _registered_domain_simple(d["url"])
+        if not dom:
+            continue
+        agg = by_domain.setdefault(dom, {
+            "domain": dom,
+            "score": 0.0,
+            "events_saved_total": 0,
+            "events_per_week": 0.0,
+            "path_count": 0,
+            "reliability_sum": 0.0,
+            "max_runs": 0,
+            "max_days_alive": 0,
+            "methods": set(),
+            "est_dev": "medium",
+            "country": d["country"],
+            "sample_url": d["url"],
+        })
+        agg["score"] += d["score"]
+        agg["events_saved_total"] += d["events_saved_total"]
+        agg["events_per_week"] += d["events_per_week"]
+        agg["path_count"] += 1
+        agg["reliability_sum"] += d["reliability"]
+        agg["max_runs"] = max(agg["max_runs"], d["runs_total"])
+        agg["max_days_alive"] = max(agg["max_days_alive"], d["days_alive"])
+        agg["methods"].add(d["last_method"])
+        if d["est_dev"] == "hard":
+            agg["est_dev"] = "hard"
+
+    promotion = []
+    for agg in by_domain.values():
+        agg["reliability"] = round(agg["reliability_sum"] / agg["path_count"], 2)
+        agg["score"] = round(agg["score"], 2)
+        agg["events_per_week"] = round(agg["events_per_week"], 1)
+        agg["methods"] = ",".join(sorted(m for m in agg["methods"] if m))
+        del agg["reliability_sum"]
+        promotion.append(agg)
+    promotion.sort(key=lambda d: d["score"], reverse=True)
+    promotion = promotion[:limit]
+
+    # How many high-volume JSON-LD sources are NOT graduation candidates
+    # precisely because Route 1 already handles them for free — a
+    # headline that explains why the promotion list is shorter than the
+    # raw "top by volume" list would suggest.
+    jsonld_already_optimal = (
+        db.query(func.count(LLMSource.id))
+        .filter(
+            LLMSource.state.in_(["trial", "recurring"]),
+            func.lower(LLMSource.last_method) == "jsonld",
+            LLMSource.events_saved_total > 0,
+        )
+        .scalar()
+    ) or 0
+
+    # Block pool: active sources that keep getting scanned but produce
+    # nothing — either a stale empty-run streak or runs with zero saves.
+    block_rows = (
+        db.query(LLMSource)
+        .filter(
+            LLMSource.state.in_(["trial", "recurring"]),
+            or_(
+                LLMSource.consecutive_empty_runs >= 3,
+                and_(
+                    LLMSource.runs_total >= 4,
+                    func.coalesce(LLMSource.events_saved_total, 0) == 0,
+                ),
+            ),
+        )
+        .order_by(LLMSource.consecutive_empty_runs.desc(), LLMSource.runs_total.desc())
+        .limit(limit)
+        .all()
+    )
+    block = [
+        {
+            "url": s.url,
+            "runs_total": s.runs_total or 0,
+            "consecutive_empty_runs": s.consecutive_empty_runs or 0,
+            "events_saved_total": s.events_saved_total or 0,
+            "last_method": s.last_method,
+            "discovered_via": s.discovered_via,
+        }
+        for s in block_rows
+    ]
+
+    # Portfolio summary for the card header.
+    method_breakdown = dict(
+        db.query(LLMSource.last_method, func.count(LLMSource.id))
+        .filter(LLMSource.state.in_(["trial", "recurring"]))
+        .group_by(LLMSource.last_method)
+        .all()
+    )
+    total_active = (
+        db.query(func.count(LLMSource.id))
+        .filter(LLMSource.state.in_(["trial", "recurring"]))
+        .scalar()
+    ) or 0
+
+    return {
+        "summary": {
+            "active_indexes": total_active,
+            "scored_pool": len(scored),
+            "promotion_candidates": len(promotion),
+            "block_candidates": len(block),
+            "jsonld_already_optimal": jsonld_already_optimal,
+            "method_breakdown": {(k or "unrun"): v for k, v in method_breakdown.items()},
+        },
+        "promotion": promotion,
+        "block": block,
     }
