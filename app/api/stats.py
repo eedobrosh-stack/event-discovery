@@ -1007,7 +1007,13 @@ def _graduation_score(s: LLMSource, now: datetime) -> dict:
     """
     created = s.created_at or now
     days_alive = max((now - created).days, 1)
-    weeks_alive = days_alive / 7.0
+    # Floor weeks_alive at 1.0 — a source that's only existed 2 days
+    # shouldn't have its rate annualized as if it sustains that pace
+    # weekly (that made a 3-day-old 3.2K-event domain read as 20K
+    # events/wk). Flooring reports "events in its first week-ish",
+    # which is honest; the longevity factor below still discounts the
+    # score for immaturity separately.
+    weeks_alive = max(days_alive / 7.0, 1.0)
     saved = s.events_saved_total or 0
     events_per_week = saved / weeks_alive
 
