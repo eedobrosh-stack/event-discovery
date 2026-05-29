@@ -18,6 +18,27 @@ from __future__ import annotations
 
 import json
 import re
+
+
+# Schema.org @type names we've observed leaking into JSON-LD `performer`
+# slots as bare strings (rather than as the @type field of a performer
+# dict). Used by jsonld_to_raw_event to reject those leaks before they
+# reach Event.artist_name — see the in-function comment for the
+# downstream cascade these caused. Conservative: only include the
+# specific @type names known to be used as performer wrappers. Adding
+# more (e.g. "Place", "Movie") would risk over-rejecting legitimate
+# performer strings that happen to share a schema.org name.
+_JSONLD_SCHEMA_TYPE_LEAKS: frozenset[str] = frozenset({
+    "Organization",
+    "Person",
+    "MusicGroup",
+    "PerformingGroup",
+    "TheaterGroup",
+    "DanceGroup",
+    "Thing",
+    "Event",
+    "MusicEvent",
+})
 from datetime import date
 from typing import Iterator, Optional
 from urllib.parse import urljoin
@@ -238,6 +259,20 @@ def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str):
         artist_name = (performer.get("name") or "").strip() or None
     elif isinstance(performer, str):
         artist_name = performer.strip() or None
+    # Reject schema.org @type values that some sites mistakenly publish
+    # as a bare string in the performer slot (bigevent.io et al. emit
+    # `"performer": "Organization"` because they confused themselves
+    # between the @type and the actual performer dict). Trusting these
+    # leaked-metadata strings as artist names cascades badly: the
+    # enrich_performers MusicBrainz job will eventually match a real
+    # obscure band literally named "Organization" / "Person" / etc.,
+    # which then propagates a music event_type to every other event
+    # using the same bogus artist_name — exactly the bug that surfaced
+    # on 2026-05-29 when 1,148 casino / dining / dance events showed up
+    # tagged as Jazz Concert via Performer id=13025 ("Organization",
+    # acid jazz, sourced from MusicBrainz).
+    if artist_name in _JSONLD_SCHEMA_TYPE_LEAKS:
+        artist_name = None
 
     image = ev.get("image")
     if isinstance(image, list):
