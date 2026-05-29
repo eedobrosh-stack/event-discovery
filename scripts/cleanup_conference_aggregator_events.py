@@ -24,18 +24,13 @@ from sqlalchemy import or_
 
 from app.database import SessionLocal
 from app.models import Event
+from app.scheduler.jobs import _BLOCKED_BY_POLICY_DOMAINS
 
-JUNK_DOMAINS = [
-    "internationalconferencealerts.com",
-    "conferenceindex.org",
-    "allconferencealert.com",
-    "allconferencealert.net",
-    "conferencenext.com",
-    "k12conferences.com",
-    "freeconferencealerts.com",
-    "10times.com",
-    "vendelux.com",
-]
+# Single source of truth lives in jobs.py — the same set that drives
+# the discovery filter. Keeping them in lockstep avoids the drift bug
+# where someone adds a domain to the runtime filter but forgets the
+# cleanup script.
+JUNK_DOMAINS = sorted(_BLOCKED_BY_POLICY_DOMAINS)
 
 
 def _matching_filter():

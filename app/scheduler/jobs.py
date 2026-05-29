@@ -2487,8 +2487,11 @@ _RESERVED_DISCOVERY_DOMAINS: frozenset[str] = frozenset({
     # API-based collectors
     "ticketmaster.com", "ticketmaster.co.uk", "ticketmaster.de",
     "seatgeek.com", "bandsintown.com", "predicthq.com",
-    # Global web scrapers
+    # Global web scrapers. eventbrite.ca / .com.au added 2026-05-30
+    # after the graduation-candidate audit caught 214 + 142 events
+    # leaking in via those TLDs — our Eventbrite collector covers them.
     "eventbrite.com", "eventbrite.co.uk", "eventbrite.de",
+    "eventbrite.ca", "eventbrite.com.au",
     "lu.ma", "meetup.com", "ra.co", "dice.fm",
     "songkick.com", "skiddle.com", "xceed.me",
     "concreteplayground.com", "allevents.in", "venuepilot.com",
@@ -2503,9 +2506,54 @@ _RESERVED_DISCOVERY_DOMAINS: frozenset[str] = frozenset({
 })
 
 
+# Domains we've decided NOT to ingest as a content-policy call —
+# distinct from _RESERVED (which is "we have a Route 2 collector for
+# this"). Conference-aggregator hosts template-generate one event row
+# per city for the same underlying conference series; the Gemini
+# classifier sees the structured-event markup and accepts them, but
+# the rows represent zero unique experiences (the canonical example
+# being Malala Yousafzai's "Leadership Conference" replicated across
+# 4 city-pair titles, all dated the same day, all geo-tagged Brussels).
+#
+# Timeline:
+#   cbe9f19 (2026-05-18): blocked the original 9 hosts after a QA
+#       review showed 59% of LLM events came from these aggregators.
+#   3778320 (2026-05-18): reverted the block — softer-touch
+#       query-taxonomy rebalance (45e9f14) was supposed to handle
+#       it. It didn't.
+#   2026-05-30: re-blocked + expanded after the graduation-candidate
+#       view showed these domains right back at the top of the
+#       Route-2-promotion ranking. Re-added the original 9 plus 7
+#       new aggregators that accumulated since the revert.
+_BLOCKED_BY_POLICY_DOMAINS: frozenset[str] = frozenset({
+    # Original 9 from cbe9f19
+    "internationalconferencealerts.com",
+    "conferenceindex.org",
+    "allconferencealert.com",
+    "allconferencealert.net",
+    "conferencenext.com",
+    "k12conferences.com",
+    "freeconferencealerts.com",
+    "10times.com",
+    "vendelux.com",
+    # Accumulated since 2026-05-18 — same templated-aggregator pattern
+    "techspo.co",
+    "conferenceinusa.com",
+    "clocate.com",
+    "globalconference.ca",
+    "infosec-conferences.com",
+    "conferenceineurope.net",
+    "conferencealerts.co.in",
+})
+
+
 def _is_reserved_discovery_url(url: str) -> bool:
-    """True when ``url``'s host is (a subdomain of) a domain we already
-    cover with a hand-coded collector. Discovery filters these out."""
+    """True when ``url``'s host is excluded from discovery — either
+    reserved (we have a Route 2 collector for it) or blocked by policy
+    (content category we've decided not to ingest, e.g. conference
+    aggregators). The startup migration in app/main.py uses this same
+    predicate to auto-block existing LLMSource rows on next deploy.
+    """
     from urllib.parse import urlsplit
     try:
         host = (urlsplit(url).hostname or "").lower()
@@ -2515,11 +2563,12 @@ def _is_reserved_discovery_url(url: str) -> bool:
         return False
     if host.startswith("www."):
         host = host[4:]
-    if host in _RESERVED_DISCOVERY_DOMAINS:
+    excluded = _RESERVED_DISCOVERY_DOMAINS | _BLOCKED_BY_POLICY_DOMAINS
+    if host in excluded:
         return True
     parts = host.split(".")
     for i in range(1, len(parts) - 1):
-        if ".".join(parts[i:]) in _RESERVED_DISCOVERY_DOMAINS:
+        if ".".join(parts[i:]) in excluded:
             return True
     return False
 
