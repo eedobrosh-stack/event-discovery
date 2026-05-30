@@ -3642,6 +3642,7 @@ async def categorize_new_events_job(hours_back: int = 48):
             f"scanned={stats.get('scanned',0)} applied={stats.get('applied',0)} "
             f"perf={stats.get('performer_hit',0)} music_default={stats.get('music_default',0)} "
             f"keyword={stats.get('keyword_hit',0)} no_match={stats.get('no_match',0)} "
+            f"themes={stats.get('themes_assigned',0)} "
             f"hours_back={hours_back}"
         )
         logger.info(f"categorize_new_events_job: {log.notes}")

@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import SessionLocal
-from app.models import Event, EventType, Performer
+from app.models import Event, EventType, Performer, EventTheme
 from app.services.performer_lookup import normalize
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +116,74 @@ def keyword_match(text: str):
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Theme classifier (orthogonal to event_type — see app/models/theme.py).
+#
+# Themes are CONTENT classification; an event can carry multiple themes
+# (e.g. an "AI in FinTech" conference would match both AI and FinTech).
+# Distinct from event_type assignment, which picks exactly one type per
+# event.
+#
+# Keyword sets are conservative — broad terms like "ai" alone would
+# trigger on every "Saturday at AI Bar" or "AI Brothers" event; the
+# keys here require disambiguating context ("ai conference", "ai
+# summit", "machine learning") to avoid false positives.
+# ─────────────────────────────────────────────────────────────────────────────
+THEME_KEYWORDS: dict[str, list[str]] = {
+    "AI":                   ["ai conference", "ai summit", "artificial intelligence",
+                             "machine learning", "deep learning", "genai", "generative ai",
+                             "neural network", "data science", "llm summit", "ml summit"],
+    "Cybersecurity":        ["cybersecurity", "cyber security", "infosec", "info-sec",
+                             "ethical hacking", "pentest", "threat intel", "zero trust",
+                             "security conference", "security summit"],
+    "Startup":              ["startup conf", "startup summit", "founders conf",
+                             "founders summit", "demo day", "pitch night", "venture capital",
+                             "vc summit", "accelerator demo", "y combinator",
+                             "tech startup", "startup pitch"],
+    "Crypto":               ["crypto", "blockchain", "web3", "web 3.0", "nft summit",
+                             "bitcoin conference", "ethereum conference", "defi summit",
+                             "consensus 2", "token2049"],
+    "Consumer Electronics": ["consumer electronics", "ces 20", "ces 21", "ces 22", "ces 23",
+                             "ces 24", "ces 25", "ces 26",
+                             "gadget expo", "iot expo", "electronics show"],
+    "DevOps":               ["devops", "kubecon", "kubernetes conference",
+                             "site reliability", "ci/cd conf", "platform engineering",
+                             "cloud native conference", "sre conference"],
+    "FinTech":              ["fintech", "fin-tech", "payments summit", "banking summit",
+                             "open banking", "regtech", "neobank", "money 20/20"],
+    "Healthcare":           ["healthtech", "health-tech", "medtech", "med-tech",
+                             "medical conference", "biotech conference", "life sciences summit",
+                             "pharma summit", "digital health"],
+    "Marketing":            ["marketing summit", "marketing conference", "growth hacking",
+                             "growth marketing", "seo conference", "advertising week",
+                             "cmo summit", "content marketing world"],
+    "Career":               ["career fair", "job fair", "career expo", "recruiting expo",
+                             "professional networking", "hiring summit"],
+}
+
+_sorted_theme_kw = sorted(
+    THEME_KEYWORDS.items(),
+    key=lambda x: -max(len(k) for k in x[1]),
+)
+
+
+def theme_match(text: str) -> list[str]:
+    """Return the list of themes whose keywords appear in `text`.
+
+    Unlike keyword_match, returns ALL matches (events can carry multiple
+    themes — an "AI in FinTech" conference matches both). Order is by
+    longest-keyword-first sort, which corresponds roughly to "most
+    specific theme first" — not load-bearing for correctness but nice
+    for the audit log.
+    """
+    tl = text.lower()
+    out: list[str] = []
+    for theme, kws in _sorted_theme_kw:
+        if any(kw in tl for kw in kws):
+            out.append(theme)
+    return out
+
+
 def _classify(event, performer_map, et_by_name):
     """Pick the best EventType for `event`. Returns (et_or_None, stats_key).
 
@@ -197,7 +265,8 @@ def run_incremental(*, hours_back: int = 48, dry_run: bool = False) -> dict:
             .all()
         )
 
-        stats = {"performer_hit": 0, "music_default": 0, "keyword_hit": 0, "no_match": 0}
+        stats = {"performer_hit": 0, "music_default": 0, "keyword_hit": 0,
+                 "no_match": 0, "themes_assigned": 0}
         applied = 0
         for ev in pending:
             assigned, key = _classify(ev, performer_map, et_by_name)
@@ -205,6 +274,23 @@ def run_incremental(*, hours_back: int = 48, dry_run: bool = False) -> dict:
             if assigned and not dry_run:
                 ev.event_types = [assigned]
                 applied += 1
+
+            # Theme assignment is orthogonal to event_type — runs on
+            # every pending event regardless of whether _classify
+            # picked a type. Themes are sparse (most events match 0);
+            # idempotent because we only insert (event_id, theme) pairs
+            # that don't already exist.
+            if not dry_run:
+                themes = theme_match(" ".join([ev.name or "", ev.description or ""]))
+                if themes:
+                    existing = {
+                        et.theme_name for et in
+                        db.query(EventTheme).filter(EventTheme.event_id == ev.id).all()
+                    }
+                    for theme in themes:
+                        if theme not in existing:
+                            db.add(EventTheme(event_id=ev.id, theme_name=theme))
+                            stats["themes_assigned"] += 1
 
         if not dry_run:
             db.commit()
@@ -232,7 +318,8 @@ def run(dry_run: bool = False):
         print(f"Loaded {len(et_by_name)} event types, {len(performer_map)} performers")
 
         events = db.query(Event).all()
-        stats = {"performer_hit": 0, "keyword_hit": 0, "music_default": 0, "no_match": 0}
+        stats = {"performer_hit": 0, "keyword_hit": 0, "music_default": 0,
+                 "no_match": 0, "themes_assigned": 0}
 
         for event in events:
             assigned, key = _classify(event, performer_map, et_by_name)
@@ -240,6 +327,20 @@ def run(dry_run: bool = False):
             if assigned and not dry_run:
                 event.event_types = [assigned]
             # no_match: leave existing assignment untouched
+
+            # Theme assignment (parallel to event_type — see THEME_KEYWORDS
+            # and the matching block in run_incremental for rationale).
+            if not dry_run:
+                themes = theme_match(" ".join([event.name or "", event.description or ""]))
+                if themes:
+                    existing = {
+                        et.theme_name for et in
+                        db.query(EventTheme).filter(EventTheme.event_id == event.id).all()
+                    }
+                    for theme in themes:
+                        if theme not in existing:
+                            db.add(EventTheme(event_id=event.id, theme_name=theme))
+                            stats["themes_assigned"] += 1
 
         if not dry_run:
             db.commit()
