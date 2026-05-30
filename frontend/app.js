@@ -1198,6 +1198,7 @@ function applyFiltersFromURL(params) {
     };
     pushChips("tournaments",  "tournament", "Tournament");
     pushChips("genres",       "genre",     "Genre");
+    pushChips("themes",       "theme",     "Theme");
     pushChips("artist_exact", "performer", "Artist");
     pushChips("type_search",  "freetext",  "Search");
 
@@ -1313,6 +1314,7 @@ async function _runLookahead({ typeSearch, artistExact, genres, tournaments, cit
     // the anchor, hiding peer events that exist further out.
     if (anchorArtist)       lp.set("anchor_artist", anchorArtist);
     if (genres.length)      lp.set("genres", genres.join(","));
+    if (themes.length)      lp.set("themes", themes.join(","));
     if (tournaments && tournaments.length)
                             lp.set("tournaments", tournaments.join(","));
     if (cityId)             lp.set("city_ids", cityId);
@@ -1446,8 +1448,11 @@ function getFilters() {
     const genres = selectedTypeFilters
         .filter(f => f.kind === "genre")
         .map(f => f.value);
+    const themes = selectedTypeFilters
+        .filter(f => f.kind === "theme")
+        .map(f => f.value);
     const chipTerms = selectedTypeFilters
-        .filter(f => f.kind !== "performer" && f.kind !== "genre" && f.kind !== "tournament")
+        .filter(f => f.kind !== "performer" && f.kind !== "genre" && f.kind !== "tournament" && f.kind !== "theme")
         .map(f => f.value);
     // Also pick up any uncommitted text still in the input (≥3 chars)
     const rawText = document.getElementById("type-search-input").value.trim();
@@ -1457,7 +1462,7 @@ function getFilters() {
     const startDate = document.getElementById("start-date").value;
     const endDate   = document.getElementById("end-date").value;
     const search    = document.getElementById("search").value;
-    return { typeSearch: chipTerms, artistExact, genres, tournaments, cityId, startDate, endDate, search };
+    return { typeSearch: chipTerms, artistExact, genres, themes, tournaments, cityId, startDate, endDate, search };
 }
 
 let totalEvents = null; // total matching count from /api/events/count
@@ -1550,7 +1555,7 @@ async function searchEvents() {
     // worldwide and flood the results, but the underlying issue is the
     // city-input lifecycle, not peer expansion itself.
     _resolveCityInputIfNeeded();
-    const { typeSearch, artistExact, genres, tournaments, cityId, startDate, endDate, search } = getFilters();
+    const { typeSearch, artistExact, genres, themes, tournaments, cityId, startDate, endDate, search } = getFilters();
 
     // Peer-expansion state: arm/disarm based on current filter shape.
     // Reset _peerExpansionActive whenever the anchor changes — a fresh
@@ -1585,6 +1590,7 @@ async function searchEvents() {
     // refresh/shared link doesn't get rehydrated as N individual chips.
     if (artistExact.length) params.set("artist_exact", artistExact.join(","));
     if (genres.length) params.set("genres", genres.join(","));
+    if (themes.length) params.set("themes", themes.join(","));
     if (tournaments.length) params.set("tournaments", tournaments.join(","));
     if (cityId) params.set("city_ids", cityId);
     if (country) params.set("country", country);
@@ -1673,6 +1679,7 @@ async function searchEvents() {
             if (typeSearch.length)  adoptedUrlParams.set("type_search", typeSearch.join(","));
             if (artistExact.length) adoptedUrlParams.set("artist_exact", artistExact.join(","));
             if (genres.length)      adoptedUrlParams.set("genres", genres.join(","));
+            if (themes.length)      adoptedUrlParams.set("themes", themes.join(","));
             if (tournaments.length) adoptedUrlParams.set("tournaments", tournaments.join(","));
             if (cityId)             adoptedUrlParams.set("city_ids", cityId);
             if (country)            adoptedUrlParams.set("country", country);
@@ -2147,11 +2154,12 @@ function updateStats(shown) {
 }
 
 async function exportICS() {
-    const { typeSearch, artistExact, genres, tournaments, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, artistExact, genres, themes, tournaments, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (artistExact.length) body.artist_exact = artistExact.join(",");
     if (genres.length) body.genres = genres.join(",");
+    if (themes.length) body.themes = themes.join(",");
     if (tournaments.length) body.tournaments = tournaments.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     const country = getSelectedCountry();
@@ -2179,11 +2187,12 @@ async function exportCSV() {
     btn.disabled = true;
     btn.textContent = "Downloading...";
     try {
-        const { typeSearch, artistExact, genres, tournaments, cityId, startDate, endDate } = getFilters();
+        const { typeSearch, artistExact, genres, themes, tournaments, cityId, startDate, endDate } = getFilters();
         const body = {};
         if (typeSearch.length) body.type_search = typeSearch.join(",");
         if (artistExact.length) body.artist_exact = artistExact.join(",");
         if (genres.length) body.genres = genres.join(",");
+        if (themes.length) body.themes = themes.join(",");
         if (tournaments.length) body.tournaments = tournaments.join(",");
         if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
         const country = getSelectedCountry();
@@ -2212,11 +2221,12 @@ async function exportCSV() {
 }
 
 async function exportSheets() {
-    const { typeSearch, artistExact, genres, tournaments, cityId, startDate, endDate } = getFilters();
+    const { typeSearch, artistExact, genres, themes, tournaments, cityId, startDate, endDate } = getFilters();
     const body = {};
     if (typeSearch.length) body.type_search = typeSearch.join(",");
     if (artistExact.length) body.artist_exact = artistExact.join(",");
     if (genres.length) body.genres = genres.join(",");
+    if (themes.length) body.themes = themes.join(",");
     if (tournaments.length) body.tournaments = tournaments.join(",");
     if (cityId) body.city_ids = cityId.split(",").map(Number).filter(Boolean);
     const country = getSelectedCountry();
@@ -2347,11 +2357,12 @@ function esc(str) {
 }
 
 function buildSubscribeUrl() {
-    const { typeSearch, artistExact, genres, tournaments, cityId } = getFilters();
+    const { typeSearch, artistExact, genres, themes, tournaments, cityId } = getFilters();
     const params = new URLSearchParams();
     if (typeSearch.length) params.set("type_search", typeSearch.join(","));
     if (artistExact.length) params.set("artist_exact", artistExact.join(","));
     if (genres.length) params.set("genres", genres.join(","));
+    if (themes.length) params.set("themes", themes.join(","));
     if (tournaments.length) params.set("tournaments", tournaments.join(","));
     if (cityId) params.set("city_ids", cityId);
     // Date range is intentionally excluded — subscriptions always show upcoming

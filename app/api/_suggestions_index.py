@@ -194,6 +194,9 @@ class SuggestionsIndex:
     parent_genres: list[tuple[str, str]] = field(default_factory=list)
     # (sub_lower, sub, parent)
     sub_genres: list[tuple[str, str, str]] = field(default_factory=list)
+    # (name_lower, name) — themes are flat (parent_theme always NULL
+    # in V1), so a 2-tuple is sufficient. Mirrors parent_genres shape.
+    themes: list[tuple[str, str]] = field(default_factory=list)
     # (name_lower, name, physical_city)
     venues: list[tuple[str, str, Optional[str]]] = field(default_factory=list)
     event_names: list[tuple[str, str]] = field(default_factory=list)
@@ -310,6 +313,20 @@ def build_index(db: Session) -> SuggestionsIndex:
         WHERE sub_genre IS NOT NULL AND parent_genre IS NOT NULL
     """)).fetchall()
     idx.sub_genres = [(r[0].lower(), r[0], r[1]) for r in rows]
+
+    # Themes — flat in V1 (parent_theme always NULL). Loaded as
+    # (name_lower, name) for case-insensitive match with original-case
+    # display. Themes go through `filter_themes` and surface in the
+    # autocomplete cascade just below sub-genres.
+    try:
+        rows = db.execute(text("""
+            SELECT name FROM themes WHERE name IS NOT NULL
+        """)).fetchall()
+        idx.themes = [(r[0].lower(), r[0]) for r in rows]
+    except Exception:
+        # Table may not exist yet on first boot after deploy — guard
+        # so the index build doesn't fail entirely.
+        idx.themes = []
 
     # Venues — name + physical_city for label hint.
     rows = db.execute(text("""
@@ -496,6 +513,16 @@ def filter_parent_genres(idx: SuggestionsIndex, q: str, limit: int) -> list[dict
         idx.parent_genres, q, limit,
         lambda it: {"kind": "genre", "value": it[1], "label": it[1],
                     "badge": "Genre"},
+    )
+
+
+def filter_themes(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
+    """Theme chip — kind='theme' so the frontend filter handler can
+    route it to /api/events?themes=… alongside genres."""
+    return _take_matches(
+        idx.themes, q, limit,
+        lambda it: {"kind": "theme", "value": it[1], "label": it[1],
+                    "badge": "Theme"},
     )
 
 

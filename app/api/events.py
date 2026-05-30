@@ -40,10 +40,10 @@ _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 # app/api/_search_filters.py and are reused by suggestions.py too.
 
 
-def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None, tournaments=None):
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None, tournaments=None, themes=None):
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, and_, func, select
-    from app.models import City
+    from app.models import City, EventTheme
 
     # Tournament filter — set when the user clicked a Tournament chip
     # in autocomplete (slot 0). Strict equality on the indexed
@@ -269,6 +269,23 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             .filter(City.country.ilike(country))
         )
 
+    # Theme filter — matches events linked to ANY of the requested
+    # themes via the event_themes association table. Distinct from
+    # genres (which flow through artist_genre) — themes are bound
+    # directly to the event and exist for non-music content
+    # (conferences, workshops, etc.) where there's no headliner
+    # artist to derive a genre from. See app/models/theme.py.
+    if themes:
+        theme_list = [t.strip() for t in themes.split(",") if t.strip()]
+        if theme_list:
+            query = query.filter(
+                Event.id.in_(
+                    select(EventTheme.event_id).where(
+                        EventTheme.theme_name.in_(theme_list)
+                    )
+                )
+            )
+
     query = query.filter(Event.start_date >= date.today())
     if start_date:
         query = query.filter(Event.start_date >= start_date)
@@ -360,6 +377,7 @@ def count_events(
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names (Rock, Electronic, …); expanded to all sub-genres' artists."),
     tournaments: Optional[str] = Query(None, description="Comma-separated tournament labels (e.g. 'FIFA World Cup'); strict equality on Event.tournament."),
+    themes: Optional[str] = Query(None, description="Comma-separated theme names (AI, Cybersecurity, …); matches events via event_themes association."),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import func, case as _case, exists, select
@@ -421,6 +439,7 @@ def count_events(
         db, base,
         categories, type_search, city_ids, start_date, end_date, search, country,
         artist_exact=artist_exact, genres=genres, tournaments=tournaments,
+        themes=themes,
     )
     row = query.first()
     if not row or not row.total:
@@ -455,6 +474,7 @@ def list_events(
     artist_exact: Optional[str] = Query(None, description="Comma-separated exact artist names (case-insensitive)"),
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names; expanded to all sub-genres' artists."),
     tournaments: Optional[str] = Query(None, description="Comma-separated tournament labels (e.g. 'FIFA World Cup'); strict equality on Event.tournament."),
+    themes: Optional[str] = Query(None, description="Comma-separated theme names (AI, Cybersecurity, …); matches events via event_themes association."),
     anchor_artist: Optional[str] = Query(None, description="When set, events whose artist differs from this name are flagged is_peer_added=true. Used by the 'Include artists like X' UI to visually distinguish peer-expanded rows."),
     limit: int = Query(50, le=500),
     offset: int = 0,
@@ -467,6 +487,7 @@ def list_events(
     query = _build_filter_query(
         db, base_query, categories, type_search, city_ids, start_date, end_date, search, country,
         artist_exact=artist_exact, genres=genres, tournaments=tournaments,
+        themes=themes,
     )
 
     events = (

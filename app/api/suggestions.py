@@ -136,6 +136,13 @@ def get_suggestions(
     if not genres_results:
         sub_genres_results = idx_mod.filter_sub_genres(idx, q_stripped, PER_TYPE)
 
+    # ── Themes ──────────────────────────────────────────────────
+    # Themes are flat (no parent/sub distinction); for non-music
+    # content (conferences, eventually workshops/festivals). Slot
+    # them just below sub-genres in the cascade — they carry the
+    # same "topic" semantics as genres but bind to events directly.
+    themes_results = idx_mod.filter_themes(idx, q_stripped, PER_TYPE)
+
     # ── Artists / Venues / Event names ──────────────────────────
     artists = idx_mod.filter_artists(idx, q_stripped, PER_TYPE + 2)
 
@@ -157,6 +164,7 @@ def get_suggestions(
         tournaments               # 0 (top)
         + sub_genres_results      # 1
         + genres_results          # 2
+        + themes_results          # 2.5 — same "topic" semantics, non-music
         + artists                 # 3a
         + sport_teams             # 3b
         + event_types             # 4 (Format)
