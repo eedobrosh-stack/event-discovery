@@ -1,20 +1,21 @@
-"""One-off migration: collapse the 5 conference-specific event_types into
-a single 'Conference' type + per-event theme assignment.
+"""One-off migration: collapse the conference-specific event_types into
+the existing 'Tech Conference' type + per-event theme assignment.
 
 Before  (event_type bakes the topic into the name):
-  Tech Conference                108 events
-  AI Tech Conferences            364
-  Startup Showcases              131
-  Cybersecurity Conferences        1
-  Consumer Electronics Shows       6
+  Tech Conference                108 events   (canonical — stays)
+  AI Tech Conferences            364          (merge → Tech Conference + AI theme)
+  Startup Showcases              131          (merge → Tech Conference + Startup theme)
+  Cybersecurity Conferences        1          (merge → Tech Conference + Cybersecurity theme)
+  Consumer Electronics Shows       6          (merge → Tech Conference + Consumer Electronics theme)
 
 After:
-  Conference (category=Business) 610 events
+  Tech Conference                ~610 events  (one canonical type)
   + theme association via event_themes (AI, Cybersecurity, Startup,
     Consumer Electronics, …) where the keyword classifier matches
-    the event name + description.
+    the event name + description, with a per-retired-type fallback
+    theme when no keyword hits.
 
-The 5 old event_types are deleted at the end since nothing should
+The 4 retired event_types are deleted at the end since nothing should
 reference them post-migration (cascade via event_event_types).
 
 Per the project convention: dry-run by default, --apply to commit.
@@ -49,11 +50,17 @@ from app.models import Event, EventType, EventTheme  # noqa: E402
 from scripts.categorize_events import theme_match  # noqa: E402
 
 
-# The 5 event_types we're collapsing. If any of these don't exist (they
-# were already cleaned up in an earlier run), the migration is still
-# valid — the loop just skips missing names.
+# Canonical type — 'Tech Conference' stays as the umbrella event_type
+# for all conference-shaped events. Per the operator's call on
+# 2026-05-30, this is preferred over creating a new generic 'Conference'
+# type: 'Tech Conference' already exists with 108 events, integrating
+# with the existing autocomplete + classifier surface; the topic
+# specialization moves to themes.
+CANONICAL_TYPE_NAME = "Tech Conference"
+
+# Event types being merged into the canonical. Loop skips any name not
+# present (idempotent on re-runs and tolerant of earlier cleanups).
 RETIRED_TYPES = [
-    "Tech Conference",
     "AI Tech Conferences",
     "Startup Showcases",
     "Cybersecurity Conferences",
@@ -70,9 +77,6 @@ FALLBACK_THEME_BY_TYPE = {
     "Startup Showcases":          "Startup",
     "Cybersecurity Conferences":  "Cybersecurity",
     "Consumer Electronics Shows": "Consumer Electronics",
-    # "Tech Conference" is generic — no specific fallback theme. Events
-    # tagged as a generic Tech Conference without keyword hits stay
-    # theme-less (type=Conference is still set).
 }
 
 
@@ -84,16 +88,19 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        # ── Step 1: ensure the Conference type exists ────────────────
-        conf_type = db.query(EventType).filter_by(name="Conference").first()
-        if conf_type is None:
-            log.info("Creating EventType 'Conference' (category=Business)…")
-            if args.apply:
-                conf_type = EventType(name="Conference", category="Business")
-                db.add(conf_type)
-                db.flush()
-            else:
-                log.info("  (dry-run — would insert)")
+        # ── Step 1: ensure the canonical type exists ─────────────────
+        # 'Tech Conference' should already be in the table (108 events
+        # link to it pre-migration). This is a safety check + a way to
+        # keep the script idempotent if it gets re-run on a system
+        # where the row was somehow dropped.
+        canonical = db.query(EventType).filter_by(name=CANONICAL_TYPE_NAME).first()
+        if canonical is None:
+            log.warning(
+                f"Canonical type {CANONICAL_TYPE_NAME!r} doesn't exist — "
+                f"this is unexpected. Aborting; please seed it first."
+            )
+            return 1
+        log.info(f"Canonical type: #{canonical.id} {canonical.name} ({canonical.category})")
 
         # ── Step 2: find all events whose only / primary event_type is
         # one of the retired set. We migrate them by stripping the
@@ -145,15 +152,13 @@ def main() -> int:
                 stats[f"from:{rn}"] += 1
 
             # New event_types list: everything that wasn't retired, plus
-            # Conference (avoid dupe if Conference already attached).
+            # the canonical Tech Conference (avoid dupe if it's already
+            # attached — common when an event was previously tagged with
+            # both AI Tech Conferences AND Tech Conference).
             new_types = [t for t in ev.event_types if t.id not in set(retired_ids)]
-            if conf_type is None:
-                # dry-run path — synthesize a placeholder for logging
-                pass
-            else:
-                if conf_type not in new_types:
-                    new_types.append(conf_type)
-            if args.apply and conf_type is not None:
+            if canonical not in new_types:
+                new_types.append(canonical)
+            if args.apply:
                 ev.event_types = new_types
 
             # Theme assignment: run keyword classifier; fall back to
