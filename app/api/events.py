@@ -249,8 +249,16 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
 
     if city_ids:
         ids = [int(x.strip()) for x in city_ids.split(",") if x.strip().isdigit()]
+        # Expand to canonical-resolved IDs + all descendants via
+        # parent_city_id. Until the consolidation pass populates the
+        # canonical_city_id / parent_city_id links, expand_city_ids
+        # returns the input set unchanged — behavior identical to
+        # before. See app/api/_search_filters.py and app/models/city.py
+        # for the full semantics.
+        from app.api._search_filters import expand_city_ids
+        expanded = expand_city_ids(db, ids) or ids
         query = query.join(Venue, Event.venue_id == Venue.id).filter(
-            Venue.city_id.in_(ids)
+            Venue.city_id.in_(expanded)
         )
     elif country:
         # Country filter — join through venue→city and match country name

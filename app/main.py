@@ -583,6 +583,29 @@ def _run_migrations():
             ))
             conn.commit()
 
+    # cities consolidation columns — canonical_city_id (alias rows
+    # point here) + parent_city_id (sub-areas point to their containing
+    # city). NULLable so existing rows have no behavior change until a
+    # consolidation pass sets the links. See app/models/city.py for the
+    # full semantics. The two indexes back the recursive-CTE descent
+    # used by the events query expansion.
+    existing_city_cols = [c["name"] for c in insp.get_columns("cities")]
+    city_consolidation_cols = {
+        "canonical_city_id": "INTEGER",
+        "parent_city_id":    "INTEGER",
+    }
+    with engine.connect() as conn:
+        for col, coltype in city_consolidation_cols.items():
+            if col not in existing_city_cols:
+                conn.execute(text(f"ALTER TABLE cities ADD COLUMN {col} {coltype}"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_cities_canonical ON cities(canonical_city_id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_cities_parent ON cities(parent_city_id)"
+        ))
+        conn.commit()
+
     # spotify_artists indexes — kept out of the model's __table_args__
     # because Column(..., index=True) auto-generates a same-name index
     # and the two collide in create_all. IF NOT EXISTS here covers both

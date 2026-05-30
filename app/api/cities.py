@@ -31,10 +31,20 @@ def _build_city_list(db: Session) -> List:
     stores 2-letter codes (with two known full-name outliers); the
     frontend should never have to know about either format.
     """
+    # `canonical_city_id IS NULL` hides alias rows from the autocomplete.
+    # A user-typed selection of an alias by URL would still resolve
+    # downstream via expand_city_ids in the events query, but the
+    # autocomplete itself only surfaces canonical rows so the user
+    # doesn't see "Tel Aviv" + "Tel Aviv-Yafo" side by side (that was
+    # the visible-duplicate bug we're consolidating against). Sub-area
+    # rows (parent_city_id IS NOT NULL) stay visible — they're still
+    # legitimate selectable cities, just nested under their parent for
+    # events-expansion purposes.
     rows = db.execute(text("""
         SELECT c.id, c.name, c.country, c.state, c.timezone, c.latitude, c.longitude
         FROM cities c
-        WHERE c.id IN (
+        WHERE c.canonical_city_id IS NULL
+          AND c.id IN (
             SELECT DISTINCT v.city_id
             FROM venues v
             WHERE v.city_id IS NOT NULL

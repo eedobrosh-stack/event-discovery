@@ -342,3 +342,61 @@ def build_classified_artists_subquery(db: Session):
         )
         .scalar_subquery()
     )
+
+
+def expand_city_ids(db: Session, ids: list[int]) -> list[int]:
+    """Expand a user-selected city_id list to include canonical-row
+    rewrites + every descendant sub-area.
+
+    Two consolidation links live on the cities table:
+      canonical_city_id  — alias of another city; selecting either
+                           ID should match both. Aliased rows are
+                           hidden from the autocomplete (the user
+                           never selects them directly), but legacy
+                           Venue.city_id values still point at them,
+                           so the expansion catches both directions.
+      parent_city_id     — sub-area of a larger city. Selecting the
+                           PARENT expands to include all descendants;
+                           selecting a sub-area filters tightly.
+
+    Algorithm: resolve each input id to its canonical (or itself if
+    no alias), then run a recursive descent through parent_city_id to
+    collect all sub-areas. Return the union as the final id set the
+    events query should match Venue.city_id against.
+
+    SQLite supports WITH RECURSIVE so this is one round trip. The
+    candidate set is bounded (tens of rows in the worst case — a
+    metro with deeply-nested sub-areas) so we don't paginate.
+    """
+    if not ids:
+        return []
+
+    from sqlalchemy import text
+    # Build the seed: resolve aliases. A row's canonical is itself when
+    # canonical_city_id IS NULL. We also include rows that ARE canonical
+    # but happen to be in the input by id (they self-resolve).
+    placeholders = ",".join(str(int(i)) for i in ids if isinstance(i, int) or str(i).isdigit())
+    if not placeholders:
+        return []
+
+    # Single recursive CTE. The seed is the canonical-resolved set;
+    # the recursive step walks parent_city_id downward. UNION (not
+    # UNION ALL) so a diamond-shaped graph wouldn't loop forever, and
+    # so duplicate descendants are deduped naturally.
+    sql = text(f"""
+        WITH RECURSIVE seed AS (
+            SELECT COALESCE(c.canonical_city_id, c.id) AS id
+            FROM cities c
+            WHERE c.id IN ({placeholders})
+        ),
+        descent(id) AS (
+            SELECT id FROM seed
+            UNION
+            SELECT c.id
+            FROM cities c
+            JOIN descent d ON c.parent_city_id = d.id
+        )
+        SELECT id FROM descent;
+    """)
+    rows = db.execute(sql).fetchall()
+    return [r[0] for r in rows]
