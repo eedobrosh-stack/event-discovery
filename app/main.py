@@ -625,6 +625,23 @@ def _run_migrations():
             ))
             conn.commit()
 
+    # Seed the themes taxonomy if empty. New table introduced 2026-05-30
+    # to support per-event topic classification for non-music content
+    # (conferences first, eventually workshops / festivals / etc.).
+    # Idempotent: only inserts themes that aren't already there, so
+    # operator-added themes between deploys aren't clobbered.
+    if "themes" in insp.get_table_names():
+        from app.models.theme import INITIAL_THEMES
+        with engine.connect() as conn:
+            existing = {row[0] for row in conn.execute(text("SELECT name FROM themes")).fetchall()}
+            missing = [t for t in INITIAL_THEMES if t not in existing]
+            for name in missing:
+                conn.execute(
+                    text("INSERT INTO themes (name, parent_theme) VALUES (:n, NULL)"),
+                    {"n": name},
+                )
+            conn.commit()
+
         # One-time cleanup: block any LLMSource on a domain we already
         # cover with a hand-coded collector. Prevents the recurring job
         # from spending Gemini tokens to re-extract events the existing
