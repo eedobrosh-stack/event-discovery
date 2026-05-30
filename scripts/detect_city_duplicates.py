@@ -95,7 +95,9 @@ _NESTED_PREFIXES = (
 )
 
 # Alias patterns: regex → replacement. First match wins. The replacement
-# is the BARE-form name we expect to find as the canonical row.
+# is the BARE-form name we expect to find as the canonical row. These
+# patterns mean "same physical city, different label" — NOT a sub-area.
+# Sub-area patterns live in _NESTED_SUFFIX_PATTERNS below.
 _ALIAS_PATTERNS = [
     (re.compile(r"^city of (.+)$", re.I),          r"\1"),
     (re.compile(r"^(.+) city$",     re.I),         r"\1"),
@@ -104,6 +106,29 @@ _ALIAS_PATTERNS = [
     (re.compile(r"^tower of (.+)$", re.I),         r"\1"),
     (re.compile(r"^old (.+)$",      re.I),         r"\1"),
     (re.compile(r"^the (.+)$",      re.I),         r"\1"),
+    # Formal-name suffixes — Newcastle-upon-Tyne ≡ Newcastle,
+    # Southend-on-Sea ≡ Southend, Stratford-on-Avon ≡ Stratford,
+    # Stoke-on-Trent ≡ Stoke. These are the city's full ceremonial
+    # name and a shortened common name — same place, different label.
+    (re.compile(r"^(.+?)[- ]upon[- ].+$", re.I),   r"\1"),
+    (re.compile(r"^(.+?)[- ]on[- ]sea$",  re.I),   r"\1"),
+    (re.compile(r"^(.+?)[- ]on[- ].+$",   re.I),   r"\1"),
+    (re.compile(r"^(.+?)[- ]in[- ].+$",   re.I),   r"\1"),
+    (re.compile(r"^(.+?)[- ]by[- ].+$",   re.I),   r"\1"),
+]
+
+# Sub-area suffix / prefix patterns — these LOOK like the same city
+# but are actually neighborhoods / districts / specific zones WITHIN
+# a larger city. Direction prefixes ("North London") are handled
+# separately by _NESTED_PREFIXES; these are the non-direction shapes.
+_NESTED_SUFFIX_PATTERNS = [
+    (re.compile(r"^(.+) peninsula$",   re.I),  r"\1"),
+    (re.compile(r"^(.+) downtown$",    re.I),  r"\1"),
+    (re.compile(r"^downtown (.+)$",    re.I),  r"\1"),
+    (re.compile(r"^(.+) city centre$", re.I),  r"\1"),
+    (re.compile(r"^(.+) city center$", re.I),  r"\1"),
+    (re.compile(r"^(.+) district$",    re.I),  r"\1"),
+    (re.compile(r"^(.+) borough$",     re.I),  r"\1"),
 ]
 
 # "Greater X" looks alias-y but in this codebase it's already covered
@@ -174,6 +199,34 @@ def strip_nested_prefix(name: str) -> Optional[str]:
     return None
 
 
+def strip_nested_suffix(name: str) -> Optional[str]:
+    """Return the bare name if `name` matches a sub-area suffix/prefix
+    pattern like 'X Peninsula' / 'Downtown X' / 'X District'. Distinct
+    from alias patterns: these are sub-areas of the bare-name city,
+    not alternative labels for it. None when no pattern matches."""
+    n = normalize_name(name)
+    for pat, repl in _NESTED_SUFFIX_PATTERNS:
+        m = pat.match(n)
+        if m:
+            return normalize_name(pat.sub(repl, n))
+    return None
+
+
+def is_typography_variant(a: str, b: str) -> bool:
+    """True when two names differ only by punctuation / apostrophes /
+    case / Saint-vs-St style abbreviation. Useful as a `flag` value so
+    the operator can scan typography-only fixes in one go.
+
+    Strips: punctuation, multiple spaces; normalizes 'saint' → 'st'.
+    """
+    def collapse(s: str) -> str:
+        s = s.lower().strip()
+        s = re.sub(r"\bsaint\b", "st", s)
+        s = re.sub(r"[^a-z0-9]", "", s)
+        return s
+    return collapse(a) == collapse(b)
+
+
 def load_cities(db) -> list[CityRow]:
     """Pull all cities + their upcoming event counts in one go."""
     log.info("Loading cities + event counts …")
@@ -233,21 +286,51 @@ def detect_pairs(cities: list[CityRow]) -> list[dict]:
         seen_pairs: set[tuple[int, int]] = set()
 
         def emit(a: CityRow, b: CityRow, rel: str, score: float, signal: str):
-            canonical, alias = pick_canonical(a, b)
-            key = (min(canonical.id, alias.id), max(canonical.id, alias.id))
+            # For nested rows, pick_canonical's "alias" slot is the
+            # sub-area and "canonical" is the parent — emit_nested
+            # bypasses pick_canonical's event-count tie-break (the
+            # parent should always be canonical for nesting purposes).
+            if rel == "nested":
+                # Caller passes (parent, sub_area) directly.
+                canonical, sub = a, b
+            else:
+                canonical, sub = pick_canonical(a, b)
+            key = (min(canonical.id, sub.id), max(canonical.id, sub.id))
             if key in seen_pairs:
                 return
             seen_pairs.add(key)
-            dist = haversine_km(canonical, alias)
+            dist = haversine_km(canonical, sub)
+
+            # Compute diagnostic flag for the reviewer.
+            flag = ""
+            if is_typography_variant(canonical.name, sub.name):
+                flag = "typography-only"
+            elif rel == "alias" and dist is not None and dist > 2.0:
+                flag = "geo-far"
+            elif rel == "nested" and sub.upcoming_events >= max(canonical.upcoming_events // 4, 5):
+                # Sub-area has comparable event volume → likely a
+                # separate city, not a true sub-area. Surface for review.
+                flag = "likely-separate"
+            elif rel == "alias" and (
+                normalize_name(sub.name) in normalize_name(canonical.name)
+                or normalize_name(canonical.name) in normalize_name(sub.name)
+            ) and abs(len(canonical.name) - len(sub.name)) > 6:
+                # One name contains the other and they're significantly
+                # different in length → likely a borough vs city
+                # granularity mismatch (Cheshire West And Chester ↔
+                # Chester). Worth a human look.
+                flag = "ambiguous-granularity"
+
             candidates.append({
                 "relationship": rel,
                 "confidence": round(score, 2),
+                "flag": flag,
                 "canonical_id": canonical.id,
                 "canonical_label": canonical.label,
                 "canonical_events": canonical.upcoming_events,
-                "alias_id": alias.id,
-                "alias_label": alias.label,
-                "alias_events": alias.upcoming_events,
+                "alias_id": sub.id,
+                "alias_label": sub.label,
+                "alias_events": sub.upcoming_events,
                 "distance_km": round(dist, 2) if dist is not None else None,
                 "signal": signal,
             })
@@ -337,6 +420,26 @@ def detect_pairs(cities: list[CityRow]) -> list[dict]:
                 emit(parent, c, "nested", score,
                      signal=f"direction-prefix ({c.name} → {parent.name})")
 
+        # ── Pass 5: nested (suffix sub-areas) ──────────────────────
+        # Peninsula, Downtown, City Centre, District, Borough — these
+        # are sub-areas, not aliases. Previously caught by the alias
+        # prefix-match pass via geo proximity; classifying them as
+        # nested is more accurate (selecting the parent expands to
+        # include them; the sub-area stays independently selectable).
+        for c in group:
+            bare = strip_nested_suffix(c.name)
+            if not bare:
+                continue
+            for parent in by_name.get(bare, []):
+                if parent.id == c.id:
+                    continue
+                dist = haversine_km(c, parent)
+                if dist is not None and dist > NESTED_GEO_KM:
+                    continue
+                score = 0.75 if (dist is not None and dist < 10.0) else 0.6
+                emit(parent, c, "nested", score,
+                     signal=f"suffix sub-area ({c.name} → {parent.name})")
+
     candidates.sort(key=lambda d: (-d["confidence"], d["relationship"]))
     return candidates
 
@@ -361,12 +464,15 @@ def main() -> int:
         from collections import Counter
         rel_counts = Counter(c["relationship"] for c in kept)
         log.info(f"  relationships: {dict(rel_counts)}")
+        flag_counts = Counter(c["flag"] for c in kept if c["flag"])
+        if flag_counts:
+            log.info(f"  flags: {dict(flag_counts)}")
 
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=[
-                "relationship", "confidence", "approved",
+                "relationship", "confidence", "flag", "approved",
                 "canonical_id", "canonical_label", "canonical_events",
                 "alias_id", "alias_label", "alias_events",
                 "distance_km", "signal",
