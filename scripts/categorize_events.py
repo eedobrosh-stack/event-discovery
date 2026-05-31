@@ -79,18 +79,14 @@ KEYWORD_INDEX: dict[str, list[str]] = {
     "Marathons":                    ["marathon", "half marathon", " 5k", " 10k", "fun run"],
     "Yoga Retreats":                ["yoga class", "pilates", "meditation retreat"],
     "Cycling Races":                ["cycling race", "bike race"],
-    # ── Technology (Conference) ──
-    # Post-2026-05-30 the 4 retired conference subtypes (AI Tech
-    # Conferences, Startup Showcases, Cybersecurity Conferences,
-    # Consumer Electronics Shows) all roll up into 'Tech Conference'
-    # with topic specialization carried by themes (see THEME_KEYWORDS
-    # below). Keywords here drive the EVENT_TYPE assignment only —
-    # the conference-shape signals ("conference", "summit", etc.).
-    # The topic-specific keywords ("ai conference", "machine
-    # learning", "startup", "demo day") still appear because they
-    # also imply the conference shape; the theme matcher catches the
-    # topic separately.
-    "Tech Conference":              ["tech conference", "ai conference", "ai summit",
+    # ── Conference (the format) ──
+    # Renamed from 'Tech Conference' on 2026-05-31 — the type name
+    # should describe FORMAT, not TOPIC (the 5-conference-types-bug
+    # we'd just finished unwinding). Tech / Psychology / Medicine /
+    # etc. now live entirely in the theme dimension. Keywords here
+    # drive only the event_type assignment; theme_match (below)
+    # catches the topic separately.
+    "Conference":                   ["tech conference", "ai conference", "ai summit",
                                      "cybersecurity conference", "security summit",
                                      "machine learning", "artificial intelligence",
                                      "startup conf", "startup summit", "demo day",
@@ -177,6 +173,75 @@ THEME_KEYWORDS: dict[str, list[str]] = {
                              "cmo summit", "content marketing world"],
     "Career":               ["career fair", "job fair", "career expo", "recruiting expo",
                              "professional networking", "hiring summit"],
+    # 2026-05-31 — broader topical themes covering non-tech conferences.
+    # Each keyword set requires disambiguating context (e.g. "psychology
+    # conference", "psychology summit") rather than the bare topic
+    # word, to avoid false positives on event names that happen to
+    # contain a topic substring.
+    "Psychology":           ["psychology conference", "psychology summit",
+                             "psychology congress", "psychological association",
+                             "occupational health psychology", "clinical psychology",
+                             "positive psychology", "neuropsychology"],
+    "Education":            ["education conference", "education summit",
+                             "edtech conference", "edtech summit", "k12 conference",
+                             "k-12 education", "higher education conference",
+                             "teaching conference", "pedagogical congress",
+                             "academic conference"],
+    "Mental Health":        ["mental health conference", "mental health summit",
+                             "psychiatry conference", "psychiatry summit",
+                             "psychotherapy conference", "wellbeing conference",
+                             "well-being forum"],
+    "Medicine":             ["medicine conference", "medical conference",
+                             "medical congress", "clinical conference",
+                             "clinical congress", "cardiology conference",
+                             "oncology conference", "pediatrics conference",
+                             "surgery conference", "radiology conference"],
+    "Pharmaceutical":       ["pharmaceutical conference", "pharma conference",
+                             "pharma summit", "drug development summit",
+                             "clinical trials summit"],
+    "Sustainability":       ["sustainability conference", "sustainability summit",
+                             "esg conference", "esg summit", "circular economy"],
+    "Climate":              ["climate conference", "climate summit", "cop summit",
+                             "climate tech conference", "climate action forum"],
+    "Energy":               ["energy conference", "energy summit",
+                             "renewable energy summit", "solar conference",
+                             "wind energy summit", "oil & gas conference",
+                             "utilities conference"],
+    "Real Estate":          ["real estate conference", "real estate summit",
+                             "proptech conference", "proptech summit",
+                             "commercial real estate forum"],
+    "Legal":                ["legal conference", "law conference", "legaltech",
+                             "law firm summit", "in-house counsel forum",
+                             "litigation summit"],
+    "Compliance":           ["compliance conference", "compliance summit",
+                             "risk & compliance", "aml conference", "gdpr summit",
+                             "audit conference"],
+    "Manufacturing":        ["manufacturing conference", "manufacturing summit",
+                             "industry 4.0 conference", "smart manufacturing",
+                             "factory automation summit"],
+    "Retail":               ["retail conference", "retail summit", "shoptalk",
+                             "ecommerce summit", "nrf big show", "retail innovation"],
+    "Media":                ["media conference", "media summit",
+                             "broadcasting conference", "journalism conference",
+                             "advertising week", "creator economy summit"],
+    "Hospitality":          ["hospitality conference", "hospitality summit",
+                             "travel conference", "travel summit", "hotel investment",
+                             "tourism conference"],
+    "Logistics":            ["logistics conference", "logistics summit",
+                             "supply chain conference", "supply chain summit",
+                             "freight conference", "warehouse conference"],
+    "Government":           ["government conference", "government summit",
+                             "public sector conference", "policy summit",
+                             "gov tech summit", "civic tech conference"],
+    "Architecture":         ["architecture conference", "architecture summit",
+                             "design conference", "design summit", "aia conference",
+                             "urban planning conference"],
+    "Agriculture":          ["agriculture conference", "agriculture summit",
+                             "agtech conference", "agtech summit", "farming conference",
+                             "food systems conference"],
+    "Insurance":            ["insurance conference", "insurance summit",
+                             "insurtech conference", "insurtech summit",
+                             "underwriting summit"],
 }
 
 _sorted_theme_kw = sorted(
@@ -305,6 +370,16 @@ def run_incremental(*, hours_back: int = 48, dry_run: bool = False) -> dict:
             if assigned and not dry_run:
                 ev.event_types = [assigned]
                 applied += 1
+                # Speaker names extracted into artist_name by the
+                # JSON-LD performer-field pass are misleading for
+                # conferences — the "artist" of a conference is the
+                # conference itself, not its keynote(s). Clear the
+                # field at categorize-time so the column in the
+                # results table renders empty for conferences.
+                # (2026-05-31 — EAOHP case: 'Jari Hakanen, Sabine
+                # Sonnentag' shouldn't render as the event's artist.)
+                if assigned.name == "Conference" and ev.artist_name:
+                    ev.artist_name = None
 
             # Theme assignment is orthogonal to event_type — runs on
             # every pending event regardless of whether _classify
@@ -357,6 +432,9 @@ def run(dry_run: bool = False):
             stats[key] += 1
             if assigned and not dry_run:
                 event.event_types = [assigned]
+                if assigned.name == "Conference" and event.artist_name:
+                    # Same rationale as run_incremental — see comment there.
+                    event.artist_name = None
             # no_match: leave existing assignment untouched
 
             # Theme assignment (parallel to event_type — see THEME_KEYWORDS

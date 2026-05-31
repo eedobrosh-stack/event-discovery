@@ -65,9 +65,13 @@ class EventTheme(Base):
 
 
 # Initial theme set seeded at startup (see _seed_themes in app/main.py).
-# Tight conference-relevant set for V1; expand as other categories
-# (workshops, festivals, etc.) start needing themes.
+# Broadened on 2026-05-31 from the original 10 (all tech/business
+# conference topics) to ~30, after a "psychology conference" search
+# surfaced 0 themed events and the user noted the seed set was
+# tech-tilted. New additions cover non-tech conference verticals:
+# Psychology / Education / Medicine / Sustainability / Climate / etc.
 INITIAL_THEMES = (
+    # Original tech-business themes
     "AI",
     "Cybersecurity",
     "Startup",
@@ -78,4 +82,25 @@ INITIAL_THEMES = (
     "Healthcare",
     "Marketing",
     "Career",
+    # 2026-05-31 additions — broader topical themes
+    "Psychology",
+    "Education",
+    "Mental Health",
+    "Medicine",
+    "Pharmaceutical",
+    "Sustainability",
+    "Climate",
+    "Energy",
+    "Real Estate",
+    "Legal",
+    "Compliance",
+    "Manufacturing",
+    "Retail",
+    "Media",
+    "Hospitality",
+    "Logistics",
+    "Government",
+    "Architecture",
+    "Agriculture",
+    "Insurance",
 )
