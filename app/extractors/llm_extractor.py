@@ -603,7 +603,16 @@ def _gemini_call_with_retry(call, *, max_attempts: int = 3, base_delay: float = 
     """Tiny exponential-backoff wrapper for transient 5xx. Three attempts at
     1.5s / 4.5s / 13.5s — total 19s budget before giving up. Anything
     non-transient bubbles immediately.
+
+    Spend-cap aware: if the circuit breaker is already open when called,
+    raise GeminiCircuitOpen immediately without making the network call.
+    On caught exceptions, check if the error indicates a hard spend
+    cap; if so, trip the breaker and re-raise so callers know to bail.
     """
+    from app.services import gemini_circuit_breaker as _cb
+    if _cb.is_open():
+        raise _cb.GeminiCircuitOpen()
+
     import time
     last: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -611,6 +620,12 @@ def _gemini_call_with_retry(call, *, max_attempts: int = 3, base_delay: float = 
             return call()
         except Exception as e:
             last = e
+            # Hard spend-cap → trip the breaker and raise without
+            # burning the remaining retries (every retry would hit
+            # the same wall). The breaker prevents subsequent callers
+            # in this process from re-tripping the same exception.
+            if _cb.maybe_trip(str(e)):
+                raise _cb.GeminiCircuitOpen(str(e)) from e
             if not _is_transient(e) or attempt == max_attempts:
                 raise
             wait = base_delay * (3 ** (attempt - 1))

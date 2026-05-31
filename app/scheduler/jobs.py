@@ -2122,6 +2122,19 @@ async def llm_extract_recurring_job(
         logger.info("llm_extract_recurring: another heavy job is running — skipping this run")
         return
 
+    # Gemini spend-cap breaker: if a prior call (Cadence B, conference
+    # classifier, etc.) already tripped the breaker in this process,
+    # the LLM path is dead until restart. JSON-LD sources would still
+    # work but we lose the LLM-fallback for HTML-only sources — for
+    # simplicity, skip the whole run rather than half-process it.
+    from app.services import gemini_circuit_breaker as _cb
+    if _cb.is_open():
+        logger.info(
+            f"llm_extract_recurring: Gemini circuit breaker is open — "
+            f"skipping run (reason: {_cb.trip_reason()})"
+        )
+        return
+
     async with _heavy_job_lock:
         db = SessionLocal()
         log = ScanLog(job_name="llm_extract_recurring", status="running")
@@ -2198,6 +2211,17 @@ async def llm_extract_recurring_job(
                 # If the extractor was unconfigured on a previous source,
                 # skip the rest — they'd all fail the same way.
                 if extractor_unavailable:
+                    break
+                # If a mid-run source tripped the Gemini spend-cap
+                # breaker, every remaining source's LLM path would
+                # error the same way. Bail the run cleanly so we don't
+                # log 100+ identical warnings.
+                if _cb.is_open():
+                    logger.warning(
+                        f"llm_extract_recurring: Gemini breaker tripped "
+                        f"mid-run after {_src_idx - 1}/{len(sources)} sources; "
+                        f"bailing rest of the batch"
+                    )
                     break
 
                 src_url = src.url
@@ -3567,6 +3591,14 @@ async def llm_classify_conferences_job(batch: int = _CONFERENCE_PER_RUN):
         logger.info("llm_classify_conferences: another heavy job is running — skipping")
         return
 
+    from app.services import gemini_circuit_breaker as _cb
+    if _cb.is_open():
+        logger.info(
+            f"llm_classify_conferences: Gemini circuit breaker is open — skipping "
+            f"(reason: {_cb.trip_reason()})"
+        )
+        return
+
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         logger.info("llm_classify_conferences: GEMINI_API_KEY not set — skipping")
@@ -3668,6 +3700,24 @@ async def llm_classify_conferences_job(batch: int = _CONFERENCE_PER_RUN):
                         )
                         break
                     except Exception as e:
+                        # Hard spend-cap → trip the breaker AND bail
+                        # the whole job (every remaining batch would
+                        # hit the same wall).
+                        if _cb.maybe_trip(str(e)):
+                            logger.warning(
+                                f"llm_classify_conferences: hit Gemini monthly "
+                                f"spending cap mid-run — breaker tripped, "
+                                f"bailing after {n_classified} classified"
+                            )
+                            log.status = "failed"
+                            log.notes = (
+                                f"halted=gemini_spend_cap classified={n_classified} "
+                                f"stripped={n_stripped} themed={n_themed}"
+                            )
+                            log.finished_at = datetime.utcnow()
+                            db.commit()
+                            db.close()
+                            return
                         msg = str(e).lower()
                         transient = ("503" in msg or "429" in msg
                                      or "unavailable" in msg or "too many" in msg

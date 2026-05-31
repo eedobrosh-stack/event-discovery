@@ -255,6 +255,17 @@ def filter_candidates_via_llm(
     city: str,
     model: str = "gemini-2.5-flash",
 ) -> list[dict]:
+    # Circuit-breaker bail: when the Gemini spend cap has tripped
+    # earlier in this process, every subsequent call would return the
+    # same hard-429. Skip cleanly instead of looping retries.
+    from app.services import gemini_circuit_breaker as _cb
+    if _cb.is_open():
+        logger.info(
+            f"filter_candidates_via_llm({city!r}): "
+            f"Gemini circuit breaker is open — skipping classifier "
+            f"(reason: {_cb.trip_reason()})"
+        )
+        return []
     """Classify which search hits are real event-listing pages for ``city``.
 
     Returns candidate dicts in the same shape as discover_via_gemini():
@@ -316,12 +327,22 @@ def filter_candidates_via_llm(
             break
         except Exception as e:
             last_err = e
+            msg = str(e)
+            # Hard billing-cap → trip the circuit breaker so subsequent
+            # callers in this process bail without retrying.
+            if _cb.maybe_trip(msg):
+                logger.warning(
+                    f"filter_candidates_via_llm({city!r}): "
+                    f"hit Gemini monthly spending cap — circuit breaker "
+                    f"tripped, aborting this run"
+                )
+                return []
             # Only retry on transient classes — 503 / quota / timeout.
             # Bad-request / unauthorized errors won't recover.
-            msg = str(e).lower()
-            transient = ("503" in msg or "unavailable" in msg
-                         or "timeout" in msg or "deadline" in msg
-                         or "resource_exhausted" in msg)
+            lowered = msg.lower()
+            transient = ("503" in lowered or "unavailable" in lowered
+                         or "timeout" in lowered or "deadline" in lowered
+                         or "resource_exhausted" in lowered)
             if not transient or attempt == 2:
                 logger.warning(
                     f"filter_candidates_via_llm({city!r}): "
@@ -518,6 +539,16 @@ def filter_artist_tour_pages_via_llm(
     if not hits:
         return []
 
+    # Circuit-breaker bail before doing any network setup.
+    from app.services import gemini_circuit_breaker as _cb
+    if _cb.is_open():
+        logger.info(
+            f"filter_artist_tour_pages_via_llm({artist!r}): "
+            f"Gemini circuit breaker is open — skipping classifier "
+            f"(reason: {_cb.trip_reason()})"
+        )
+        return []
+
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise DiscoveryError(
@@ -557,6 +588,14 @@ def filter_artist_tour_pages_via_llm(
             )
             break
         except Exception as e:
+            # Hard billing-cap → trip the circuit breaker.
+            if _cb.maybe_trip(str(e)):
+                logger.warning(
+                    f"filter_artist_tour_pages_via_llm({artist!r}): "
+                    f"hit Gemini monthly spending cap — circuit breaker "
+                    f"tripped, aborting"
+                )
+                return []
             msg = str(e).lower()
             # "429" / "too many" / "quota" cover the per-minute rate
             # limit that bit the first prod run — 50 classifier calls
