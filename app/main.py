@@ -18,7 +18,7 @@ from app.api import metro_areas
 from app.api import version as version_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job, llm_classify_conferences_job
 
 scheduler = AsyncIOScheduler()
 
@@ -1172,6 +1172,19 @@ async def lifespan(app: FastAPI):
         categorize_new_events_job,
         IntervalTrigger(hours=1, start_date=_t + _td(minutes=18)),
         id="categorize_new_events",
+        replace_existing=True,
+    )
+    # llm_classify_conferences — Gemini-based per-event classifier for
+    # Conference-typed events. Catches what the keyword-based theme_match
+    # misses (semantic understanding) AND filters out false-positive
+    # conferences (volleyball meetups / speed dating events that the
+    # broad "conference"/"summit" keyword swept in). Hourly cadence,
+    # 200 events/run = ~$0.50/day at Flash-Lite pricing. See the job's
+    # docstring for the cost-gate math.
+    scheduler.add_job(
+        llm_classify_conferences_job,
+        IntervalTrigger(hours=1, start_date=_t + _td(minutes=42)),
+        id="llm_classify_conferences",
         replace_existing=True,
     )
     scheduler.start()

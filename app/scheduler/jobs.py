@@ -3472,6 +3472,303 @@ async def classify_new_artists_job(
             db.close()
 
 
+# ===========================================================================
+# Conference LLM classifier — Gemini-based theme + validity check
+# ===========================================================================
+# Companion to the keyword-based theme_match in scripts/categorize_events.py.
+# That path catches the obvious cases (event name explicitly mentions
+# "ai conference" / "psychology conference" / etc.) but misses:
+#   1. Conferences whose theme isn't lexically obvious from the title
+#      ("European Academy of Occupational Health Psychology" → keyword
+#      hit only because the phrase "occupational health psychology" was
+#      one of the Psychology keywords; many real psychology conferences
+#      won't trip that specific phrase).
+#   2. False-positive "conferences" the broad "conference" / "summit"
+#      keyword on KEYWORD_INDEX swept up — volleyball meetups, speed
+#      dating events, book clubs, etc. whose names don't actually
+#      describe a professional conference.
+#
+# The LLM classifier solves both: per-event semantic understanding of
+# whether the event is actually a conference, plus the right theme(s)
+# from the 30 seeded themes.
+
+_CONFERENCE_BATCH_SIZE = 10
+_CONFERENCE_PER_RUN = 200
+
+
+_CONFERENCE_LLM_PROMPT = """\
+You are classifying events for a global events calendar.
+
+For each event, decide:
+
+  is_conference  — TRUE only when this is a real professional conference,
+                   summit, symposium, congress, or convention. FALSE for
+                   meetups, social events, classes, sport gatherings,
+                   dating events, music festivals, ticketed concerts,
+                   pub quizzes, book clubs, religious services, fairs,
+                   markets, hackathons-as-social-events, etc.
+
+  themes         — pick ZERO or MORE from EXACTLY this list (no other
+                   strings allowed). Multiple themes are fine for
+                   cross-topic events (e.g. "AI in FinTech" → both AI
+                   and FinTech). Empty list when no theme fits — DON'T
+                   force a match.
+
+      AI, Cybersecurity, Startup, Crypto, Consumer Electronics, DevOps,
+      FinTech, Healthcare, Marketing, Career, Psychology, Education,
+      Mental Health, Medicine, Pharmaceutical, Sustainability, Climate,
+      Energy, Real Estate, Legal, Compliance, Manufacturing, Retail,
+      Media, Hospitality, Logistics, Government, Architecture,
+      Agriculture, Insurance
+
+Events to classify (1-indexed):
+
+{events_block}
+
+Return ONLY a JSON array of length {n}, one object per event in order,
+with these exact keys:
+
+  [{{"is_conference": true, "themes": ["Psychology"]}},
+   {{"is_conference": false, "themes": []}},
+   ...]
+
+No markdown fences, no commentary, no extra keys.
+"""
+
+
+async def llm_classify_conferences_job(batch: int = _CONFERENCE_PER_RUN):
+    """Gemini-based per-event classification for Conference-typed events.
+
+    Picks Conference events that have NO theme assigned yet, batches
+    them, and asks Gemini Flash-Lite to:
+      - confirm they're actually professional conferences (not
+        meetups / social events / etc. that the broad "conference"
+        keyword swept up)
+      - assign zero-or-more themes from the 30-theme catalog
+
+    On the response:
+      - is_conference=false  → strip Conference event_type. Event still
+                               exists; it just no longer lives under
+                               the Conference filter. (Future
+                               categorize_new_events tick may reassign
+                               another type if name/desc keywords fit.)
+      - is_conference=true   → insert event_themes rows for each named
+                               theme (skip any name not in our catalog
+                               — Gemini occasionally returns a synonym).
+
+    Cost gate:
+      _CONFERENCE_BATCH_SIZE = 10   events per Gemini call
+      _CONFERENCE_PER_RUN    = 200  events per scheduled fire
+                              → 20 Gemini calls/run × ~$0.001/call
+                              ≈ $0.02/run
+                              ≈ $0.50/day at hourly cadence
+    """
+    if _heavy_job_lock.locked():
+        logger.info("llm_classify_conferences: another heavy job is running — skipping")
+        return
+
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        logger.info("llm_classify_conferences: GEMINI_API_KEY not set — skipping")
+        return
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="llm_classify_conferences", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+
+        from app.models import EventTheme, EventType
+        from sqlalchemy import select, not_, exists
+
+        try:
+            conf_type = db.query(EventType).filter_by(name="Conference").first()
+            if conf_type is None:
+                logger.warning("llm_classify_conferences: Conference event_type missing — abort")
+                log.status = "failed"
+                log.notes = "no Conference event_type"
+                log.finished_at = datetime.utcnow()
+                db.commit()
+                db.close()
+                return
+
+            # Pool: Conference events with NO event_themes row yet.
+            # NOT EXISTS via the m2m, mirrors the pattern in
+            # categorize_new_events_job. Stable order so re-runs cycle
+            # the backlog instead of re-processing the same set.
+            no_theme = ~exists(
+                select(1).where(EventTheme.event_id == Event.id)
+            )
+            from app.models import event_event_types as _eet
+            has_conf_type = exists(
+                select(1).where(
+                    _eet.c.event_id == Event.id,
+                    _eet.c.event_type_id == conf_type.id,
+                )
+            )
+            pool = (
+                db.query(Event)
+                .filter(has_conf_type, no_theme)
+                .order_by(Event.id.asc())
+                .limit(batch)
+                .all()
+            )
+            if not pool:
+                log.status = "success"
+                log.notes = "no Conference events pending classification"
+                log.finished_at = datetime.utcnow()
+                db.commit()
+                db.close()
+                logger.info("llm_classify_conferences: nothing to do")
+                return
+
+            logger.info(f"llm_classify_conferences: {len(pool)} events to classify")
+
+            # Late import — avoids loading google-genai at scheduler-
+            # init time.
+            from google import genai
+            from google.genai import types as gtypes
+            import json as _json
+
+            client = genai.Client(api_key=api_key)
+            model = "gemini-2.5-flash-lite"
+            n_classified = 0
+            n_stripped = 0
+            n_themed = 0
+            n_batches_failed = 0
+
+            for i in range(0, len(pool), _CONFERENCE_BATCH_SIZE):
+                chunk = pool[i:i + _CONFERENCE_BATCH_SIZE]
+                events_block = []
+                for idx, ev in enumerate(chunk, start=1):
+                    desc = (ev.description or "")[:280].replace("\n", " ")
+                    events_block.append(
+                        f"[{idx}] name: {ev.name!r}\n    description: {desc!r}"
+                    )
+                prompt = _CONFERENCE_LLM_PROMPT.format(
+                    events_block="\n\n".join(events_block),
+                    n=len(chunk),
+                )
+
+                # Same retry pattern as filter_artist_tour_pages_via_llm
+                # — 429 / 503 transient; longer backoff for quota.
+                import time
+                resp = None
+                for attempt in range(3):
+                    try:
+                        resp = await asyncio.to_thread(
+                            client.models.generate_content,
+                            model=model,
+                            contents=prompt,
+                            config=gtypes.GenerateContentConfig(
+                                temperature=0.0,
+                                response_mime_type="application/json",
+                            ),
+                        )
+                        break
+                    except Exception as e:
+                        msg = str(e).lower()
+                        transient = ("503" in msg or "429" in msg
+                                     or "unavailable" in msg or "too many" in msg
+                                     or "quota" in msg or "timeout" in msg
+                                     or "resource_exhausted" in msg)
+                        if not transient or attempt == 2:
+                            logger.warning(
+                                f"llm_classify_conferences: batch failed "
+                                f"(attempt {attempt + 1}/3): {type(e).__name__}: {e}"
+                            )
+                            resp = None
+                            break
+                        backoff = 2 ** attempt * 2
+                        if "429" in msg or "quota" in msg or "too many" in msg:
+                            backoff *= 5
+                        await asyncio.sleep(backoff)
+
+                if resp is None:
+                    n_batches_failed += 1
+                    continue
+
+                # Parse the JSON array
+                try:
+                    decisions = _json.loads(resp.text or "[]")
+                except Exception as e:
+                    logger.warning(
+                        f"llm_classify_conferences: JSON parse failed "
+                        f"({type(e).__name__}); skipping batch"
+                    )
+                    n_batches_failed += 1
+                    continue
+                if not isinstance(decisions, list) or len(decisions) != len(chunk):
+                    logger.warning(
+                        f"llm_classify_conferences: response shape mismatch "
+                        f"(got {len(decisions) if isinstance(decisions, list) else type(decisions).__name__} "
+                        f"for {len(chunk)} events); skipping batch"
+                    )
+                    n_batches_failed += 1
+                    continue
+
+                # Apply
+                from app.models import Theme
+                valid_themes = {
+                    t.name for t in db.query(Theme.name).all()
+                }
+                for ev, decision in zip(chunk, decisions):
+                    if not isinstance(decision, dict):
+                        continue
+                    n_classified += 1
+                    is_conf = bool(decision.get("is_conference"))
+                    themes = decision.get("themes") or []
+
+                    if not is_conf:
+                        # Strip the Conference type. Other event_types
+                        # this event might carry (rare) are left alone.
+                        ev.event_types = [
+                            t for t in ev.event_types if t.id != conf_type.id
+                        ]
+                        n_stripped += 1
+                        continue
+
+                    # Theme assignment — only themes in our seeded set.
+                    if isinstance(themes, list):
+                        existing = {
+                            et.theme_name for et in
+                            db.query(EventTheme).filter(EventTheme.event_id == ev.id).all()
+                        }
+                        for theme in themes:
+                            if not isinstance(theme, str):
+                                continue
+                            if theme not in valid_themes:
+                                continue
+                            if theme in existing:
+                                continue
+                            db.add(EventTheme(event_id=ev.id, theme_name=theme))
+                            n_themed += 1
+
+                db.commit()
+                # Pace — same logic as spotify_brave_query: avoid bursting
+                # the per-minute Gemini quota.
+                await asyncio.sleep(2.0)
+
+            log.status = "success"
+            log.events_found = len(pool)
+            log.events_saved = n_themed
+            log.notes = (
+                f"classified={n_classified} stripped_conference={n_stripped} "
+                f"themes_added={n_themed} batches_failed={n_batches_failed}"
+            )
+            logger.info(f"llm_classify_conferences: {log.notes}")
+        except Exception as e:
+            logger.exception(f"llm_classify_conferences failed: {e}")
+            log.status = "failed"
+            log.notes = f"error: {type(e).__name__}: {e}"[:255]
+            db.rollback()
+        finally:
+            log.finished_at = datetime.utcnow()
+            db.commit()
+            db.close()
+
+
 async def enrich_youtube_via_brave_job(max_per_run: int = 500):
     """Brave-search fallback for artist YouTube channel URLs.
 
