@@ -427,7 +427,19 @@ def count_events(
             else_=0,
         )).label("youtube"),
         func.sum(_case((Event.price.isnot(None), 1), else_=0)).label("price"),
-        func.sum(_case((Event.tv_channels.isnot(None), 1), else_=0)).label("tv"),
+        # TV presence — true only when tv_channels has at least one
+        # entry. Collectors default tv_channels to [] (empty JSON
+        # array, NOT NULL) on every event, so the previous
+        # `IS NOT NULL` check counted 100% of events as having TV
+        # data, keeping the column permanently visible even when zero
+        # rows actually carry broadcaster info (2026-05-31 — user
+        # flagged TV column appearing on conference search). Use
+        # json_array_length so empty arrays score 0; NULL inputs
+        # return NULL which evaluates as false in the comparison.
+        func.sum(_case(
+            (func.json_array_length(Event.tv_channels) > 0, 1),
+            else_=0,
+        )).label("tv"),
         func.sum(_case(
             (Event.purchase_link.isnot(None) & (Event.purchase_link != ""), 1),
             else_=0,

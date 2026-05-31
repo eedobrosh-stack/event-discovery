@@ -79,9 +79,27 @@ KEYWORD_INDEX: dict[str, list[str]] = {
     "Marathons":                    ["marathon", "half marathon", " 5k", " 10k", "fun run"],
     "Yoga Retreats":                ["yoga class", "pilates", "meditation retreat"],
     "Cycling Races":                ["cycling race", "bike race"],
-    # ── Technology ──
-    "AI Tech Conferences":          ["ai conference", "machine learning", "artificial intelligence"],
-    "Startup Showcases":            ["startup", "demo day", "pitch night", "hackathon"],
+    # ── Technology (Conference) ──
+    # Post-2026-05-30 the 4 retired conference subtypes (AI Tech
+    # Conferences, Startup Showcases, Cybersecurity Conferences,
+    # Consumer Electronics Shows) all roll up into 'Tech Conference'
+    # with topic specialization carried by themes (see THEME_KEYWORDS
+    # below). Keywords here drive the EVENT_TYPE assignment only —
+    # the conference-shape signals ("conference", "summit", etc.).
+    # The topic-specific keywords ("ai conference", "machine
+    # learning", "startup", "demo day") still appear because they
+    # also imply the conference shape; the theme matcher catches the
+    # topic separately.
+    "Tech Conference":              ["tech conference", "ai conference", "ai summit",
+                                     "cybersecurity conference", "security summit",
+                                     "machine learning", "artificial intelligence",
+                                     "startup conf", "startup summit", "demo day",
+                                     "pitch night", "hackathon",
+                                     "consumer electronics",
+                                     # Generic conference-shape signals — last so
+                                     # specific patterns above win first.
+                                     "conference", "summit", "symposium", "congress",
+                                     "convention"],
     # ── Literature ──
     "Author Talks":                 ["author talk", "book talk", "author reading"],
     "Poetry Slams":                 ["poetry slam", "spoken word"],
@@ -199,12 +217,16 @@ def _classify(event, performer_map, et_by_name):
             et = et_by_name.get(type_name)
             if et:
                 return et, "performer_hit"
-        # Artist exists but not in the performers map → safe Music default.
-        et = et_by_name.get("Concert") or et_by_name.get("Pop Concert")
-        if et:
-            return et, "music_default"
 
     # ── Pass 2: keyword matching on event-side text ───────────────
+    # MUST come before the music_default fallback below — the 2026-05-31
+    # bug: LLM-extracted conference events like "European Academy of
+    # Occupational Health Psychology Conference" carry artist_name='Jari
+    # Hakanen, Sabine Sonnentag' (speaker names from JSON-LD), which
+    # pre-fix immediately routed them to music_default ('Concert') and
+    # skipped keyword classification entirely. Surfacing keyword_match
+    # first lets the 'conference' / 'summit' / 'symposium' patterns
+    # win over the artist-implies-music heuristic.
     search_text = " ".join(filter(None, [
         event.name or "",
         event.venue_name or "",
@@ -215,6 +237,15 @@ def _classify(event, performer_map, et_by_name):
         et = et_by_name.get(type_name)
         if et:
             return et, "keyword_hit"
+
+    # ── Pass 3: artist exists but unknown → safe Music default ────
+    # Only fires when no keyword matched, so non-music events with
+    # speaker-names-as-artist_name (conferences, lectures, workshops)
+    # are no longer caught here.
+    if event.artist_name and event.artist_name.strip():
+        et = et_by_name.get("Concert") or et_by_name.get("Pop Concert")
+        if et:
+            return et, "music_default"
 
     return None, "no_match"
 
