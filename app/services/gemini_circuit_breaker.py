@@ -49,6 +49,15 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+# How long the breaker stays tripped before probing again. The Gemini
+# billing cap is monthly, so 6h is a conservative re-probe interval
+# that covers the typical end-of-month → start-of-month rollover
+# without sitting stale forever waiting for a manual restart. If the
+# cap is still exhausted at the probe, the next failed call re-trips
+# the breaker with a fresh timestamp; if the cap was raised or rolled
+# over, the call succeeds and the breaker stays closed.
+_AUTO_RESET_HOURS = 6
+
 # Module-level state — protected by a lock for write paths so concurrent
 # Gemini callers don't race on the trip flag. Reads are unlocked
 # (boolean read is atomic; worst case we make one extra doomed call
@@ -72,8 +81,41 @@ class GeminiCircuitOpen(Exception):
 
 
 def is_open() -> bool:
-    """True when the breaker has tripped. Callers should bail in that case."""
-    return _is_open
+    """True when the breaker has tripped. Callers should bail in that case.
+
+    Self-healing: if the trip is older than _AUTO_RESET_HOURS, this call
+    transitions the breaker back to closed (under lock) and returns
+    False so the caller can probe. The next failed call with the
+    spend-cap signature will re-trip the breaker with a fresh
+    timestamp; a successful call leaves the breaker closed.
+    """
+    global _is_open, _tripped_at, _trip_reason
+    if not _is_open:
+        return False
+    # Outside the lock first (fast path — boolean compare).
+    if _tripped_at is None:
+        return True
+    elapsed = (datetime.utcnow() - _tripped_at).total_seconds()
+    if elapsed <= _AUTO_RESET_HOURS * 3600:
+        return True
+    # Eligible for auto-reset — re-verify inside the lock to handle the
+    # race where multiple threads cross the threshold simultaneously.
+    with _lock:
+        if not _is_open or _tripped_at is None:
+            return False
+        elapsed2 = (datetime.utcnow() - _tripped_at).total_seconds()
+        if elapsed2 <= _AUTO_RESET_HOURS * 3600:
+            return True
+        logger.info(
+            "Gemini circuit breaker AUTO-RESET after %.1f hours — probing "
+            "fresh. If the cap is still exhausted, the next failed call "
+            "will re-trip the breaker.",
+            elapsed2 / 3600,
+        )
+        _is_open = False
+        _tripped_at = None
+        _trip_reason = ""
+        return False
 
 
 def tripped_at() -> Optional[datetime]:
