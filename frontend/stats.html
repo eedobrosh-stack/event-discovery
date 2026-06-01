@@ -974,6 +974,28 @@
             </details>
         </div>
 
+        <!-- ── Conference Themes ───────────────────────────────────────────── -->
+        <hr class="section-divider">
+        <p class="section-title">🎓 Conference Themes
+            <span style="font-weight:400; color:#555; font-size:.75rem;" id="theme-cov-sub"></span>
+        </p>
+        <div id="theme-cov-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
+        <div id="theme-cov-wrap" hidden>
+            <!-- KPI strip — analog to the genre KPI grid -->
+            <div class="genre-kpi-grid">
+                <div class="genre-kpi"><div class="kpi-label">Upcoming conferences</div><div class="kpi-value" id="kpi-confs">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">With theme</div><div class="kpi-value" id="kpi-themed">—</div><div class="kpi-sub" id="kpi-themed-pct">—</div></div>
+                <div class="genre-kpi"><div class="kpi-label">Without theme</div><div class="kpi-value" id="kpi-unthemed">—</div><div class="kpi-sub" id="kpi-unthemed-pct">— gap to close</div></div>
+                <div class="genre-kpi"><div class="kpi-label">Multi-themed</div><div class="kpi-value" id="kpi-multi">—</div><div class="kpi-sub" id="kpi-multi-pct">—</div></div>
+            </div>
+
+            <!-- Full theme catalog -->
+            <details class="taxonomy-details">
+                <summary>📚 Full theme catalog <span class="tax-summary" id="theme-cat-summary"></span></summary>
+                <div class="taxonomy-grid" id="theme-grid"></div>
+            </details>
+        </div>
+
         <!-- ── Source Contribution Matrix ──────────────────────────────────── -->
         <hr class="section-divider">
         <p class="section-title">🗂️ Source Contribution
@@ -1886,6 +1908,62 @@
         }
     }
     loadGenreCoverage();
+
+    // ── Conference Themes ──────────────────────────────────────────────────
+    async function loadThemeCoverage() {
+        try {
+            const res = await fetch('/api/stats/theme-coverage');
+            const d = await res.json();
+
+            const fmt = n => (n || 0).toLocaleString();
+
+            // KPI strip
+            document.getElementById('kpi-confs').textContent       = fmt(d.upcoming_conferences);
+            document.getElementById('kpi-themed').textContent      = fmt(d.upcoming_with_theme);
+            document.getElementById('kpi-themed-pct').textContent  = `${d.coverage_pct}% coverage`;
+            document.getElementById('kpi-unthemed').textContent    = fmt(d.upcoming_without_theme);
+            document.getElementById('kpi-unthemed-pct').textContent =
+                `${(100 - d.coverage_pct).toFixed(1)}% gap to close`;
+            document.getElementById('kpi-multi').textContent       = fmt(d.multi_themed);
+            document.getElementById('kpi-multi-pct').textContent   =
+                `${d.multi_themed_pct}% of themed (co-tagged)`;
+
+            // Header subtitle
+            document.getElementById('theme-cov-sub').textContent =
+                `${fmt(d.upcoming_with_theme)} / ${fmt(d.upcoming_conferences)} conferences themed`;
+
+            // Full theme catalog — V1 themes are flat (no parent_theme),
+            // so render as a single "Conference" block with every theme
+            // as a sub-chip. Mirrors the .tax-parent + .tax-sub structure
+            // used by the music taxonomy view for visual consistency.
+            const themes = d.themes || [];
+            const nonEmpty = themes.filter(t => t.events > 0).length;
+            document.getElementById('theme-cat-summary').textContent =
+                `(${d.theme_count} themes · ${nonEmpty} populated)`;
+
+            const totalEvents = themes.reduce((a, t) => a + (t.events || 0), 0);
+            const subs = themes.map(t => {
+                const empty = (t.events || 0) === 0;
+                const cls = empty ? 'tax-sub empty' : 'tax-sub';
+                const n = empty ? '' : `<span class="tax-n">${fmt(t.events)}</span>`;
+                return `<span class="${cls}" title="${esc(t.name)} — ${fmt(t.events)} upcoming conferences">${esc(t.name)}${n}</span>`;
+            }).join('');
+            document.getElementById('theme-grid').innerHTML = `
+                <div class="tax-parent">
+                    <div class="tax-parent-head">
+                        <span>Conference</span>
+                        <span class="tax-events">${fmt(totalEvents)} theme-tags · ${themes.length} themes</span>
+                    </div>
+                    <div class="tax-subs">${subs}</div>
+                </div>`;
+
+            document.getElementById('theme-cov-loading').hidden = true;
+            document.getElementById('theme-cov-wrap').hidden = false;
+        } catch (e) {
+            document.getElementById('theme-cov-loading').textContent = 'Failed to load theme coverage: ' + e.message;
+        }
+    }
+    loadThemeCoverage();
 
     // ── Source drill-down ──────────────────────────────────────────────────
     async function toggleSourceDetail(row, source, panelId) {

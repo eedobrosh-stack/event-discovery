@@ -452,6 +452,116 @@ def genre_coverage(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/theme-coverage")
+def theme_coverage(db: Session = Depends(get_db)):
+    """Conference theme classification snapshot.
+
+    The non-music analog to /genre-coverage. Where genres flow through
+    artist_name → artist_genre → genre_taxonomy, themes are bound
+    directly to events via the event_themes association table — built
+    for content (conferences, eventually workshops/festivals) with no
+    headliner artist to derive a topic from.
+
+    Surfaces:
+      1. Coverage — how many upcoming Conference events have at least
+         one theme. The gap is the LLM-classifier backlog; the keyword
+         path runs hourly but only catches obvious cases, and the LLM
+         path bails when the Gemini circuit breaker is open.
+      2. Multi-themed — events carrying ≥2 themes. Co-tagging is the
+         whole point of moving topic OFF the event_type and ONTO
+         themes; this surfaces how often it actually fires.
+      3. Catalog — every theme in the seed set, with its upcoming-
+         Conference event count. Empty themes render dimmed (mirrors
+         the empty sub-genre treatment in /genre-coverage).
+    """
+    from app.models.theme import Theme, EventTheme
+
+    today = date.today()
+    upcoming = Event.start_date >= today
+
+    # All upcoming Conference events. Joined through event_event_types
+    # exactly like /upcoming-breakdown so the numbers line up with the
+    # "Conference" row in the by_format card.
+    conference_event_ids = (
+        db.query(Event.id)
+        .join(event_event_types, event_event_types.c.event_id == Event.id)
+        .join(EventType, EventType.id == event_event_types.c.event_type_id)
+        .filter(upcoming, EventType.name == "Conference")
+        .distinct()
+        .subquery()
+    )
+
+    upcoming_conferences = (
+        db.query(func.count()).select_from(conference_event_ids).scalar() or 0
+    )
+
+    # Conference events that carry at least one theme row.
+    with_theme = (
+        db.query(func.count(func.distinct(EventTheme.event_id)))
+        .filter(EventTheme.event_id.in_(db.query(conference_event_ids.c.id)))
+        .scalar() or 0
+    )
+
+    # Conference events with ≥2 themes — the co-tagging payoff.
+    multi_themed_subq = (
+        db.query(EventTheme.event_id)
+        .filter(EventTheme.event_id.in_(db.query(conference_event_ids.c.id)))
+        .group_by(EventTheme.event_id)
+        .having(func.count(EventTheme.theme_name) >= 2)
+        .subquery()
+    )
+    multi_themed = (
+        db.query(func.count()).select_from(multi_themed_subq).scalar() or 0
+    )
+
+    # Per-theme event count, restricted to upcoming Conference events.
+    theme_event_counts = dict(
+        db.query(EventTheme.theme_name, func.count(func.distinct(EventTheme.event_id)))
+        .filter(EventTheme.event_id.in_(db.query(conference_event_ids.c.id)))
+        .group_by(EventTheme.theme_name)
+        .all()
+    )
+
+    # All themes from the catalog (every seeded theme appears, even if
+    # 0 events carry it — same UX as empty sub-genre chips in the
+    # music taxonomy view).
+    theme_rows = (
+        db.query(Theme.name, Theme.parent_theme)
+        .order_by(Theme.name)
+        .all()
+    )
+    themes = [
+        {
+            "name": name,
+            "parent_theme": parent,
+            "events": int(theme_event_counts.get(name, 0) or 0),
+        }
+        for name, parent in theme_rows
+    ]
+    # Sort by event count desc, ties alphabetical — matches the
+    # by_genre breakdown ranking in /upcoming-breakdown.
+    themes.sort(key=lambda t: (-t["events"], t["name"]))
+
+    coverage_pct = (
+        round(with_theme * 100 / upcoming_conferences, 1)
+        if upcoming_conferences else 0.0
+    )
+    multi_pct = (
+        round(multi_themed * 100 / with_theme, 1) if with_theme else 0.0
+    )
+
+    return {
+        "upcoming_conferences": upcoming_conferences,
+        "upcoming_with_theme": with_theme,
+        "upcoming_without_theme": max(upcoming_conferences - with_theme, 0),
+        "coverage_pct": coverage_pct,
+        "multi_themed": multi_themed,
+        "multi_themed_pct": multi_pct,
+        "theme_count": len(themes),
+        "themes": themes,
+    }
+
+
 @router.get("/source-detail")
 def source_detail(source: str, db: Session = Depends(get_db)):
     """City breakdown for a given scrape source over the last 24h."""
