@@ -80,10 +80,17 @@
         .logo-super { color: #ffffff; }
         .logo-caly  { color: #7c6af7; }
 
-        /* ── Google-style search pill ── */
+        /* ── Search row — pill input + action button side-by-side ── */
+        .v2-search-row {
+            display: flex;
+            gap: 10px;
+            align-items: stretch;
+            margin-bottom: 0.8rem;
+        }
         .v2-search {
             position: relative;
-            margin-bottom: 0.8rem;
+            flex: 1;
+            min-width: 0;
         }
         .v2-search-input {
             width: 100%;
@@ -194,7 +201,7 @@
         .v2-geo {
             font-size: 0.92rem;
             color: rgba(255,255,255,0.55);
-            margin-bottom: 1.8rem;
+            margin-bottom: 3rem;
             transition: opacity 0.18s;
         }
         .v2-geo strong { color: rgba(255,255,255,0.88); font-weight: 600; }
@@ -211,42 +218,25 @@
         }
         .v2-geo[hidden] { display: none !important; }
 
-        /* ── Buttons ── */
-        .v2-buttons {
-            display: flex;
-            gap: 12px;
-            justify-content: center;
-            flex-wrap: wrap;
-            margin-bottom: 2.5rem;
-        }
+        /* ── Action button (sits to the right of the pill) ── */
         .v2-btn {
-            background: rgba(255,255,255,0.06);
-            color: rgba(255,255,255,0.92);
-            border: 1px solid rgba(255,255,255,0.11);
-            border-radius: 10px;
-            padding: 11px 22px;
-            font-size: 0.92rem;
+            background: #7c6af7;
+            color: #fff;
+            border: 1px solid transparent;
+            border-radius: 28px;
+            padding: 0 28px;
+            font-size: 0.95rem;
+            font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s, border-color 0.2s, transform 0.1s, box-shadow 0.2s;
-            font-weight: 500;
+            white-space: nowrap;
+            transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+            box-shadow: 0 4px 22px rgba(124,106,247,0.36);
         }
         .v2-btn:hover {
-            background: rgba(124,106,247,0.16);
-            border-color: rgba(124,106,247,0.45);
-        }
-        .v2-btn:active { transform: scale(0.97); }
-        .v2-btn--primary {
-            background: #7c6af7;
-            border-color: transparent;
-            color: #fff;
-            box-shadow: 0 4px 22px rgba(124,106,247,0.36);
-            font-weight: 600;
-        }
-        .v2-btn--primary:hover {
             background: #6b58f0;
-            border-color: transparent;
             box-shadow: 0 6px 28px rgba(124,106,247,0.52);
         }
+        .v2-btn:active { transform: scale(0.97); }
 
         /* ── Footer links ── */
         .home-links {
@@ -268,7 +258,8 @@
             .logo-subtitle { font-size: 0.78rem; padding-bottom: 0.32rem; }
             .v2-search-input { padding-left: 46px; font-size: 1rem; }
             .v2-search-icon { left: 18px; }
-            .v2-btn { padding: 11px 16px; font-size: 0.88rem; }
+            .v2-search-row { flex-direction: column; }
+            .v2-btn { padding: 14px 22px; font-size: 0.95rem; }
         }
     </style>
 </head>
@@ -286,12 +277,15 @@
         <p class="logo-subtitle">The Super Calendar</p>
     </div>
 
-    <!-- Single Google-style search pill -->
-    <div class="v2-search">
-        <span class="v2-search-icon">🔍</span>
-        <input type="text" id="home-type-input" class="v2-search-input"
-               placeholder="Search artist, genre, format…" autocomplete="off" autofocus>
-        <ul id="home-type-suggestions" class="suggestions-list" hidden></ul>
+    <!-- Search pill + action button (button sits to the right) -->
+    <div class="v2-search-row">
+        <div class="v2-search">
+            <span class="v2-search-icon">🔍</span>
+            <input type="text" id="home-type-input" class="v2-search-input"
+                   placeholder="Search artist, genre, format…" autocomplete="off" autofocus>
+            <ul id="home-type-suggestions" class="suggestions-list" hidden></ul>
+        </div>
+        <button id="home-search-btn" class="v2-btn" type="button">Supercaly Search</button>
     </div>
 
     <!-- Geo location strip — default visible, replaced by city input on "change location" -->
@@ -307,12 +301,6 @@
         <button type="button" id="home-city-clear" class="v2-city-clear" hidden>×</button>
         <ul id="home-city-suggestions" class="suggestions-list" hidden></ul>
         <input type="hidden" id="home-city-id">
-    </div>
-
-    <!-- Action buttons (Google parallel: primary + secondary) -->
-    <div class="v2-buttons">
-        <button id="home-search-btn" class="v2-btn v2-btn--primary" type="button">Supercaly Search</button>
-        <button id="v2-browse-all" class="v2-btn" type="button">Browse All Events</button>
     </div>
 
     <!-- Footer links -->
@@ -345,13 +333,6 @@
     const cityWrap = document.getElementById('v2-city-wrap');
     const cityIn   = document.getElementById('home-city-input');
     const cityIdIn = document.getElementById('home-city-id');
-    const browse   = document.getElementById('v2-browse-all');
-
-    // Secondary action: skip filters, jump straight to results page.
-    browse.addEventListener('click', () => {
-        sessionStorage.removeItem('supercaly_search');
-        window.location.href = '/results.html';
-    });
 
     function renderGeoLine(label, ok) {
         if (ok) {
