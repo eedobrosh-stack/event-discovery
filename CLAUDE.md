@@ -90,6 +90,43 @@ Seed bundle at `app/seed/artist_classifications.json.gz` — dumped by
 `_seed_artist_classifications()` in `main.py` on every startup.
 Loader supports both inserts AND upgrades-of-UNKNOWN (`fa375a3`).
 
+## Themes (per-event topic classification)
+
+Parallel to the artist-bound genre system above, but bound directly
+to events — for non-music content (conferences, eventually workshops,
+festivals) that has no headliner artist to derive a topic from.
+
+- **Schema** (`app/models/theme.py`): `themes` (PK = theme name) +
+  `event_themes` association (event_id, theme_name).
+- **30 themes seeded**: AI / Cybersecurity / Startup / Crypto /
+  Consumer Electronics / DevOps / FinTech / Healthcare / Marketing /
+  Career / Psychology / Education / Mental Health / Medicine /
+  Pharmaceutical / Sustainability / Climate / Energy / Real Estate /
+  Legal / Compliance / Manufacturing / Retail / Media / Hospitality /
+  Logistics / Government / Architecture / Agriculture / Insurance.
+- **Conference event_type**: collapsed 2026-05-30 from 5 redundant
+  subtypes (Tech Conference / AI Tech Conferences / Startup Showcases
+  / Cybersecurity Conferences / Consumer Electronics Shows) into a
+  single `Conference` type. Topic specialization moved entirely to
+  themes. `artist_name` is auto-nulled when assigning Conference type
+  (speakers ≠ artists).
+- **Two-tier classifier**:
+  - **Keyword path** in `scripts/categorize_events.theme_match()` —
+    runs hourly inside `categorize_new_events_job`. Conservative
+    keyword sets per theme.
+  - **LLM path** in `app/scheduler/jobs.llm_classify_conferences_job`
+    — Gemini Flash-Lite, hourly. Picks Conference events with no
+    themes, classifies via LLM. Two outcomes per event:
+      `is_conference=true`  → assigns themes from the catalog.
+      `is_conference=false` → strips Conference event_type (catches
+                              false-positives the broad
+                              "conference"/"summit" keywords swept
+                              in — volleyball meetups, speed dating,
+                              etc.).
+- **API**: `/api/events?themes=AI,Cybersecurity` filters via the
+  event_themes association. `/api/suggestions?q=AI` returns
+  `kind=theme` autocomplete chips.
+
 ## Autocomplete architecture
 
 - **Server**: `app/api/suggestions.py` + `_suggestions_index.py`. The
@@ -137,6 +174,13 @@ shows Tel Aviv before Gush Dan).
   before Cadence A (+240) so the same-night pool gets extracted.
 - **`_heavy_job_lock`** serialises long-running jobs (collect_events,
   enrich_youtube, llm_extract, etc.) so we don't OOM Render's worker.
+- **Gemini spend-cap circuit breaker**
+  (`app/services/gemini_circuit_breaker.py`). All LLM callers check
+  `is_open()` before calling and trip the breaker when the
+  "monthly spending cap" error fires. Auto-resets after 6h so the
+  month-rollover unblocks itself. When LLM jobs mysteriously skip
+  with empty results, first probe the breaker via SSH — don't assume
+  the job is broken.
 - **Render-only ops** for prod-touching scripts. Run them over SSH
   to the Render box for `dedupe_us_cities.py`,
   `backfill_mevalim_artist_name.py`, `improve_genre_via_brave.py`,
