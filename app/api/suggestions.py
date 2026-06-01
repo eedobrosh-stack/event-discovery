@@ -142,12 +142,15 @@ def get_suggestions(
     # them just below sub-genres in the cascade — they carry the
     # same "topic" semantics as genres but bind to events directly.
     #
-    # Higher cap than PER_TYPE because the umbrella aliases
-    # (Tech / Technology in THEME_ALIASES) intentionally fan out
-    # to all 6 tech-business themes — capping at 3 would defeat
-    # the coverage-first design. Single-theme queries still only
-    # return one chip (canonical de-dupe in filter_themes).
-    themes_results = idx_mod.filter_themes(idx, q_stripped, PER_TYPE * 2)
+    # Aliases (THEME_ALIASES) are first-class chips in the index:
+    # typing "Tech" yields ONE "Tech" chip whose multi-theme
+    # expansion happens server-side in /api/events. The PER_TYPE
+    # cap is the right size again — exact-match suppression in
+    # filter_themes means broad queries collapse to a single chip
+    # and only partial-match queries can fan out (e.g. typing
+    # "intelligence" → "artificial intelligence" + "threat
+    # intelligence").
+    themes_results = idx_mod.filter_themes(idx, q_stripped, PER_TYPE)
 
     # ── Artists / Venues / Event names ──────────────────────────
     artists = idx_mod.filter_artists(idx, q_stripped, PER_TYPE + 2)

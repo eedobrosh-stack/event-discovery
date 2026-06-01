@@ -106,20 +106,22 @@ INITIAL_THEMES = (
 )
 
 
-# Search-time aliases — alternative terms a user might type that should
-# surface the canonical theme chip. NOT stored in the themes table:
-# the canonical name is still the only theme rows ever carry, so
-# /api/events?themes=AI keeps working unchanged. Aliases are wired into
-# the autocomplete index at build time (app/api/_suggestions_index.py),
-# which appends each (alias_lower, canonical) tuple to idx.themes so
-# `name_matches` can resolve them. filter_themes de-dupes by canonical
-# so a single theme never appears twice in one dropdown.
+# Search-time aliases — alternative terms a user might type that
+# should surface as their OWN first-class chip in the autocomplete.
+# NOT stored in the themes table: the canonical name is still the
+# only thing event_themes rows ever carry. The events API resolves
+# an alias → canonical theme(s) at query time (see
+# _THEME_ALIAS_LOOKUP in app/api/events.py), so a URL like
+# ?themes=Tech expands server-side to filter by the 6 tech-business
+# themes.
 #
-# Coverage-over-accuracy: when a term plausibly maps to >1 theme it
-# appears under every theme it belongs to (the user gets multiple chips
-# and picks). The headline example is "Tech" / "Technology" — appears
-# under all 6 tech-business themes so a "tech conference" search
-# surfaces the full tech surface.
+# Each unique alias produces ONE chip whose display label is the
+# alias itself and whose filter is the multi-theme bundle of every
+# canonical it appears under in this dict. So typing "Tech" yields
+# the single chip "Tech" (NOT 6 separate canonical chips), and
+# clicking that chip returns events from all 6 tech-business
+# themes. Same for biotech (Healthcare + Pharmaceutical),
+# adtech (Marketing), VC (Startup), wellness (Mental Health), etc.
 #
 # Cross-theme aliases (intentional dual/triple maps — typing the term
 # returns multiple chips):

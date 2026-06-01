@@ -194,9 +194,15 @@ class SuggestionsIndex:
     parent_genres: list[tuple[str, str]] = field(default_factory=list)
     # (sub_lower, sub, parent)
     sub_genres: list[tuple[str, str, str]] = field(default_factory=list)
-    # (name_lower, name) — themes are flat (parent_theme always NULL
-    # in V1), so a 2-tuple is sufficient. Mirrors parent_genres shape.
-    themes: list[tuple[str, str]] = field(default_factory=list)
+    # (search_lower, display, canonical_bundle) — each entry is either
+    # a canonical theme (bundle=(canonical,)) or a search alias
+    # (bundle=tuple of canonicals it expands to). The bundle drives
+    # canonical-bundle dedup in filter_themes so two aliases that
+    # resolve to the same canonical set don't both surface (e.g.
+    # "cyber" word-start matches "cyber security" + "cyber-security"
+    # + canonical "Cybersecurity" — all bundle=("Cybersecurity",)
+    # → only one chip emitted).
+    themes: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)
     # (name_lower, name, physical_city)
     venues: list[tuple[str, str, Optional[str]]] = field(default_factory=list)
     event_names: list[tuple[str, str]] = field(default_factory=list)
@@ -315,35 +321,51 @@ def build_index(db: Session) -> SuggestionsIndex:
     idx.sub_genres = [(r[0].lower(), r[0], r[1]) for r in rows]
 
     # Themes — flat in V1 (parent_theme always NULL). Loaded as
-    # (name_lower, name) for case-insensitive match with original-case
-    # display. Themes go through `filter_themes` and surface in the
-    # autocomplete cascade just below sub-genres.
+    # (search_term_lower, display_value) where each entry is either
+    # a canonical theme name (display = canonical) or a search alias
+    # (display = the alias term itself, so the chip surfaces with the
+    # user-meaningful word and the events API resolves it back to
+    # canonicals at query time — see _THEME_ALIAS_LOOKUP in
+    # app/api/events.py).
     #
-    # Search-time aliases (THEME_ALIASES) are appended as additional
-    # (alias_lower, canonical_name) tuples so name_matches can resolve
-    # search terms a user might type instead of the canonical theme
-    # ("adtech" → Marketing, "Tech" → 6 tech-business themes, etc.).
-    # The chip label/value stays as the canonical name; filter_themes
-    # de-dupes by canonical so each theme appears at most once even
-    # when canonical + multiple aliases all match the query.
+    # This means typing "tech" produces ONE chip labeled "Tech"
+    # (which the events filter expands to the 6 tech-business
+    # themes), not 6 separate canonical chips. Same for "biotech",
+    # "adtech", "VC", etc. Aliases are first-class — they're not
+    # syntactic shorthand for a canonical theme, they're standalone
+    # search surfaces with their own multi-theme expansion.
     try:
         rows = db.execute(text("""
             SELECT name FROM themes WHERE name IS NOT NULL
         """)).fetchall()
-        canonical_themes = [(r[0].lower(), r[0]) for r in rows]
-        canonical_set = {c for _, c in canonical_themes}
-        # Canonical first so they take priority during the linear scan
-        # in `_take_matches` — the de-dupe set means later alias tuples
-        # for the same canonical are silently dropped from the output.
-        idx.themes = list(canonical_themes)
+        canonical_names = [r[0] for r in rows]
+        canonical_lower_set = {c.lower() for c in canonical_names}
+        # Canonical entries first so they iterate ahead of aliases —
+        # the exact-match pass in filter_themes prefers a canonical
+        # over an alias when both lowercase-equal the query.
+        idx.themes = [(c.lower(), c, (c,)) for c in canonical_names]
+        # Collect aliases first so an alias that appears under N
+        # canonicals (e.g. "Tech" → 6 tech-business themes) collapses
+        # into ONE tuple with a 6-canonical bundle, not 6 separate
+        # one-canonical tuples.
         from app.models.theme import THEME_ALIASES
+        alias_bundle: dict[str, list[str]] = {}
+        alias_display: dict[str, str] = {}
         for canonical, aliases in THEME_ALIASES.items():
-            if canonical not in canonical_set:
-                # Skip aliases for themes that haven't been seeded yet
-                # (idempotent against deploy/seed races).
+            if canonical not in canonical_names:
+                # Skip aliases for themes that haven't been seeded
+                # yet (idempotent against deploy/seed races).
                 continue
             for alias in aliases:
-                idx.themes.append((alias.lower(), canonical))
+                key = alias.lower()
+                if key in canonical_lower_set:
+                    # Alias has the same text as a canonical — skip;
+                    # the canonical entry already covers it.
+                    continue
+                alias_bundle.setdefault(key, []).append(canonical)
+                alias_display.setdefault(key, alias)
+        for key, canonicals in alias_bundle.items():
+            idx.themes.append((key, alias_display[key], tuple(canonicals)))
     except Exception:
         # Table may not exist yet on first boot after deploy — guard
         # so the index build doesn't fail entirely.
@@ -541,23 +563,53 @@ def filter_themes(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
     """Theme chip — kind='theme' so the frontend filter handler can
     route it to /api/events?themes=… alongside genres.
 
-    idx.themes carries both canonical (name_lower, name) tuples and
-    alias (alias_lower, canonical_name) tuples for search-time
-    synonyms ("adtech" → Marketing, "Tech" → 6 tech-business themes,
-    etc.). De-dupe by canonical so the same theme never appears
-    twice in one dropdown — canonical entries are loaded first so
-    they win the linear scan, then aliases for already-seen themes
-    are silently skipped.
+    idx.themes carries (search_term_lower, display_value,
+    canonical_bundle) tuples for canonical themes AND search aliases.
+    Aliases are first-class — each alias is its own chip with its
+    own multi-theme expansion resolved server-side by /api/events.
+
+    Two-pass match:
+
+      1. Exact-match suppression. When the user's query exactly
+         equals (case-insensitive) a canonical or alias term, return
+         JUST that one chip — the surrounding fuzzy word-start
+         matches would otherwise drown out the obvious answer. This
+         is the lever that makes typing "tech" yield ONE "Tech"
+         chip instead of also surfacing "health tech",
+         "marketing tech", "ed tech", etc.
+
+      2. Word-start fallback. For partial matches, scan the index
+         with the same word-start semantics used elsewhere in the
+         AC. De-dupe by display string so the same chip never
+         appears twice in one dropdown.
     """
-    seen: set[str] = set()
+    # Pass 1 — exact match wins everything.
+    for low, display, _bundle in idx.themes:
+        if low == q:
+            return [{
+                "kind": "theme",
+                "value": display,
+                "label": display,
+                "badge": "Conference Theme",
+            }]
+
+    # Pass 2 — word-start fallback with canonical-bundle dedup. Two
+    # aliases that resolve to the same canonical set (e.g. "cyber
+    # security" and "cyber-security" both → Cybersecurity) collapse
+    # into one chip since clicking either produces the same event
+    # set. Different bundles legitimately split (e.g. "intelligence"
+    # → "artificial intelligence"→AI + "threat intelligence"→Cyber).
+    seen_bundles: set[tuple[str, ...]] = set()
     out: list[dict] = []
-    for low, canonical in idx.themes:
-        if canonical in seen:
+    for low, display, bundle in idx.themes:
+        if bundle in seen_bundles:
             continue
         if name_matches(low, q):
-            seen.add(canonical)
+            seen_bundles.add(bundle)
             out.append({
-                "kind": "theme", "value": canonical, "label": canonical,
+                "kind": "theme",
+                "value": display,
+                "label": display,
                 "badge": "Conference Theme",
             })
             if len(out) >= limit:

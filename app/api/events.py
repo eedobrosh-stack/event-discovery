@@ -17,6 +17,28 @@ from app.api._search_filters import (
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
+
+# Alias-term → canonical theme(s) lookup. Built once at import from
+# the THEME_ALIASES catalog. Lowercased keys; tuple values preserve
+# the canonical theme names. Used by the themes filter to resolve a
+# chip value like "Tech" or "biotech" (alias) into its canonical
+# multi-theme set (Tech → 6 tech-business themes; biotech → Healthcare
+# + Pharmaceutical; "AI" → just AI since it's not in the alias map and
+# falls through to the canonical path).
+def _build_theme_alias_lookup() -> dict[str, tuple[str, ...]]:
+    from app.models.theme import THEME_ALIASES
+    lookup: dict[str, tuple[str, ...]] = {}
+    for canonical, aliases in THEME_ALIASES.items():
+        for alias in aliases:
+            key = alias.lower()
+            existing = lookup.get(key, ())
+            if canonical not in existing:
+                lookup[key] = existing + (canonical,)
+    return lookup
+
+
+_THEME_ALIAS_LOOKUP = _build_theme_alias_lookup()
+
 # Exact league labels — when a search term matches one of these exactly
 # (case-insensitive), we use a strict prefix match ("NBA - %") instead of
 # a substring match ("%NBA%") to block WNBA, artist names, etc.
@@ -275,13 +297,39 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     # directly to the event and exist for non-music content
     # (conferences, workshops, etc.) where there's no headliner
     # artist to derive a genre from. See app/models/theme.py.
+    #
+    # Token resolution: each comma-separated value is checked against
+    # THEME_ALIASES — if it's an alias term (e.g. "Tech", "biotech",
+    # "adtech") it expands to its mapped canonical theme(s); otherwise
+    # it's treated as a canonical theme name. So the autocomplete can
+    # emit one chip per alias (themes=Tech) and the filter still
+    # resolves to the right multi-theme IN-list at query time.
     if themes:
-        theme_list = [t.strip() for t in themes.split(",") if t.strip()]
-        if theme_list:
+        raw_tokens = [t.strip() for t in themes.split(",") if t.strip()]
+        if raw_tokens:
+            expanded: list[str] = []
+            for tok in raw_tokens:
+                canonicals = _THEME_ALIAS_LOOKUP.get(tok.lower())
+                if canonicals:
+                    expanded.extend(canonicals)
+                else:
+                    # Either a canonical theme name OR an unknown token —
+                    # let the IN-filter decide. Unknown tokens match
+                    # nothing, which is the safe default.
+                    expanded.append(tok)
+            # Order-preserving dedup so the same canonical isn't
+            # listed twice when a user combines an alias with one of
+            # its members (e.g. themes=Tech,AI).
+            seen_canonicals: set[str] = set()
+            canonical_themes: list[str] = []
+            for c in expanded:
+                if c not in seen_canonicals:
+                    seen_canonicals.add(c)
+                    canonical_themes.append(c)
             query = query.filter(
                 Event.id.in_(
                     select(EventTheme.event_id).where(
-                        EventTheme.theme_name.in_(theme_list)
+                        EventTheme.theme_name.in_(canonical_themes)
                     )
                 )
             )
