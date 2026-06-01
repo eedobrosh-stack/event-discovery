@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Google tag (gtag.js) — direct GA4 integration. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-S3CN89KXQQ"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-S3CN89KXQQ');
+    </script>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <title>Supercaly — Find Events Worldwide</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html { overflow-y: scroll; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #08081a;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ── Layout ── */
+        .v2-center {
+            width: 100%;
+            max-width: 600px;
+            padding: 2rem;
+            text-align: center;
+        }
+
+        /* ── Logo (same wordmark as homepage, sized down for the
+              Google-style compact layout) ── */
+        .logo {
+            display: inline-flex;
+            align-items: flex-end;
+            gap: 0.7rem;
+            margin-bottom: 2rem;
+            user-select: none;
+        }
+        .logo-brand {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .logo-subtitle {
+            font-size: 0.92rem;
+            color: rgba(255,255,255,0.42);
+            font-style: italic;
+            padding-bottom: 0.45rem;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .logo-mark {
+            font-size: 1.55rem;
+            color: #7c6af7;
+            line-height: 1;
+            margin-bottom: 0.15rem;
+            filter: drop-shadow(0 0 12px rgba(124,106,247,0.7));
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { filter: drop-shadow(0 0 8px rgba(124,106,247,0.5)); }
+            50%       { filter: drop-shadow(0 0 18px rgba(124,106,247,0.9)); }
+        }
+        .logo-wordmark {
+            font-size: 4rem;
+            font-weight: 800;
+            letter-spacing: -2.5px;
+            line-height: 1;
+        }
+        .logo-super { color: #ffffff; }
+        .logo-caly  { color: #7c6af7; }
+
+        /* ── Google-style search pill ── */
+        .v2-search {
+            position: relative;
+            margin-bottom: 0.8rem;
+        }
+        .v2-search-input {
+            width: 100%;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.13);
+            border-radius: 28px;
+            padding: 14px 24px 14px 52px;
+            font-size: 1.05rem;
+            color: #fff;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+        }
+        .v2-search-input::placeholder { color: rgba(255,255,255,0.3); }
+        .v2-search-input:hover {
+            background: rgba(255,255,255,0.085);
+            border-color: rgba(255,255,255,0.2);
+        }
+        .v2-search-input:focus {
+            border-color: rgba(124,106,247,0.7);
+            background: rgba(124,106,247,0.07);
+            box-shadow: 0 0 0 4px rgba(124,106,247,0.13);
+        }
+        .v2-search-icon {
+            position: absolute;
+            left: 22px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 1.05rem;
+            color: rgba(255,255,255,0.45);
+            pointer-events: none;
+        }
+
+        /* City-input pill — same shape, slightly slimmer, hidden by default */
+        .v2-city-wrap {
+            position: relative;
+            margin-bottom: 1rem;
+        }
+        .v2-city-wrap[hidden] { display: none !important; }
+        .v2-city-clear {
+            position: absolute;
+            right: 18px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.3);
+            font-size: 1.1rem;
+            cursor: pointer;
+            padding: 2px 4px;
+            line-height: 1;
+            transition: color 0.15s;
+        }
+        .v2-city-clear:hover { color: rgba(255,255,255,0.75); }
+
+        /* ── Dropdowns (identical to homepage so home.js's autocomplete
+              renderers drop straight in) ── */
+        .suggestions-list {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0; right: 0;
+            background: #14142a;
+            border: 1px solid rgba(255,255,255,0.09);
+            border-radius: 14px;
+            box-shadow: 0 10px 36px rgba(0,0,0,0.5);
+            list-style: none;
+            padding: 6px 0;
+            z-index: 200;
+            overflow: hidden;
+            text-align: left;
+        }
+        .suggestions-list li {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 0.92rem;
+            color: rgba(255,255,255,0.8);
+            transition: background 0.12s;
+        }
+        .suggestions-list li:hover,
+        .suggestions-list li.active { background: rgba(124,106,247,0.18); }
+        .suggestions-list li.metro-option { font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.07); }
+        .suggestions-list li.metro-option:hover,
+        .suggestions-list li.metro-option.active { background: rgba(124,106,247,0.28); color: #fff; }
+        .suggestions-list li.country-option { font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.07); color: #6ee7b7; }
+        .suggestions-list li.country-option:hover,
+        .suggestions-list li.country-option.active { background: rgba(16,185,129,0.2); color: #a7f3d0; }
+        .suggestions-list li.state-option { font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.07); color: #fcd34d; }
+        .suggestions-list li.state-option:hover,
+        .suggestions-list li.state-option.active { background: rgba(245,158,11,0.2); color: #fde68a; }
+
+        .sugg-badge {
+            font-size: 0.6rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.04em;
+            padding: 1px 5px; border-radius: 8px; flex-shrink: 0;
+        }
+        .sugg-badge--category   { background: #1e3a5f; color: #60a5fa; }
+        .sugg-badge--event_type { background: #3b1f5e; color: #c084fc; }
+        .sugg-badge--performer  { background: #1a3a2a; color: #4ade80; }
+        .sugg-badge--venue      { background: #3f1a2e; color: #f472b6; }
+        .sugg-badge--genre      { background: #1e1f5e; color: #a5b4fc; }
+        .sugg-badge--event      { background: #3a2a1a; color: #fbbf24; }
+        .sugg-badge--sport_team { background: #3a1a1a; color: #fb7185; }
+        .sugg-badge--theme      { background: #1f3a3a; color: #5eead4; }
+
+        /* ── Geo-location strip ── */
+        .v2-geo {
+            font-size: 0.92rem;
+            color: rgba(255,255,255,0.55);
+            margin-bottom: 1.8rem;
+            transition: opacity 0.18s;
+        }
+        .v2-geo strong { color: rgba(255,255,255,0.88); font-weight: 600; }
+        .v2-geo .change-location-link {
+            color: #9d8efa;
+            text-decoration: none;
+            margin-left: 0.55rem;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .v2-geo .change-location-link:hover {
+            text-decoration: underline;
+            color: #b3a6fc;
+        }
+        .v2-geo[hidden] { display: none !important; }
+
+        /* ── Buttons ── */
+        .v2-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 2.5rem;
+        }
+        .v2-btn {
+            background: rgba(255,255,255,0.06);
+            color: rgba(255,255,255,0.92);
+            border: 1px solid rgba(255,255,255,0.11);
+            border-radius: 10px;
+            padding: 11px 22px;
+            font-size: 0.92rem;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s, transform 0.1s, box-shadow 0.2s;
+            font-weight: 500;
+        }
+        .v2-btn:hover {
+            background: rgba(124,106,247,0.16);
+            border-color: rgba(124,106,247,0.45);
+        }
+        .v2-btn:active { transform: scale(0.97); }
+        .v2-btn--primary {
+            background: #7c6af7;
+            border-color: transparent;
+            color: #fff;
+            box-shadow: 0 4px 22px rgba(124,106,247,0.36);
+            font-weight: 600;
+        }
+        .v2-btn--primary:hover {
+            background: #6b58f0;
+            border-color: transparent;
+            box-shadow: 0 6px 28px rgba(124,106,247,0.52);
+        }
+
+        /* ── Footer links ── */
+        .home-links {
+            display: flex;
+            justify-content: center;
+            gap: 1.8rem;
+        }
+        .home-links a {
+            color: rgba(255,255,255,0.3);
+            text-decoration: none;
+            font-size: 0.8rem;
+            transition: color 0.2s;
+        }
+        .home-links a:hover { color: rgba(255,255,255,0.7); }
+
+        /* ── Responsive ── */
+        @media (max-width: 560px) {
+            .logo-wordmark { font-size: 2.8rem; letter-spacing: -1.2px; }
+            .logo-subtitle { font-size: 0.78rem; padding-bottom: 0.32rem; }
+            .v2-search-input { padding-left: 46px; font-size: 1rem; }
+            .v2-search-icon { left: 18px; }
+            .v2-btn { padding: 11px 16px; font-size: 0.88rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="v2-center">
+
+    <!-- Logo -->
+    <div class="logo">
+        <div class="logo-brand">
+            <span class="logo-mark">✦</span>
+            <div class="logo-wordmark">
+                <span class="logo-super">Super</span><span class="logo-caly">caly</span>
+            </div>
+        </div>
+        <p class="logo-subtitle">The Super Calendar</p>
+    </div>
+
+    <!-- Single Google-style search pill -->
+    <div class="v2-search">
+        <span class="v2-search-icon">🔍</span>
+        <input type="text" id="home-type-input" class="v2-search-input"
+               placeholder="Search artist, genre, format…" autocomplete="off" autofocus>
+        <ul id="home-type-suggestions" class="suggestions-list" hidden></ul>
+    </div>
+
+    <!-- Geo location strip — default visible, replaced by city input on "change location" -->
+    <div class="v2-geo" id="v2-geo">
+        Detecting your location…
+    </div>
+
+    <!-- City input (hidden by default; revealed by "change location") -->
+    <div class="v2-city-wrap" id="v2-city-wrap" hidden>
+        <span class="v2-search-icon">📍</span>
+        <input type="text" id="home-city-input" class="v2-search-input"
+               placeholder="City, country, or metro…" autocomplete="off">
+        <button type="button" id="home-city-clear" class="v2-city-clear" hidden>×</button>
+        <ul id="home-city-suggestions" class="suggestions-list" hidden></ul>
+        <input type="hidden" id="home-city-id">
+    </div>
+
+    <!-- Action buttons (Google parallel: primary + secondary) -->
+    <div class="v2-buttons">
+        <button id="home-search-btn" class="v2-btn v2-btn--primary" type="button">Supercaly Search</button>
+        <button id="v2-browse-all" class="v2-btn" type="button">Browse All Events</button>
+    </div>
+
+    <!-- Footer links -->
+    <div class="home-links">
+        <a href="/">Classic Homepage</a>
+        <a href="/stats.html">📡 Coverage Stats</a>
+        <a href="/results.html">Browse</a>
+    </div>
+
+</div>
+
+<div id="build-badge" class="build-badge" aria-hidden="true"></div>
+
+<!-- Shared homepage script: handles autocomplete, geo placeholder,
+     and the submit → results.html handoff via sessionStorage. The
+     element IDs above match what home.js touches so its setup
+     functions wire up without modification. -->
+<script src="/home.js?v=9"></script>
+
+<!-- v2-specific glue. Adds the "Searching in <city> · change location"
+     strip on top of the home.js scaffolding and reveals the city input
+     when the user clicks the link. The hidden city input + city-id
+     are seeded with the geo-detected location (resolved to a Supercaly
+     city / country row) so a default submit — without clicking
+     "change location" — lands on the user's city through the existing
+     navigateToResults() path in home.js. No changes to that path. -->
+<script>
+(function() {
+    const geoEl    = document.getElementById('v2-geo');
+    const cityWrap = document.getElementById('v2-city-wrap');
+    const cityIn   = document.getElementById('home-city-input');
+    const cityIdIn = document.getElementById('home-city-id');
+    const browse   = document.getElementById('v2-browse-all');
+
+    // Secondary action: skip filters, jump straight to results page.
+    browse.addEventListener('click', () => {
+        sessionStorage.removeItem('supercaly_search');
+        window.location.href = '/results.html';
+    });
+
+    function renderGeoLine(label, ok) {
+        if (ok) {
+            geoEl.innerHTML =
+                'Searching events in <strong>' + label + '</strong>' +
+                ' <a class="change-location-link" id="v2-change-location">change location</a>';
+        } else {
+            geoEl.innerHTML =
+                "Couldn't detect your location. " +
+                '<a class="change-location-link" id="v2-change-location">set a location</a>';
+        }
+        document.getElementById('v2-change-location').addEventListener('click', (e) => {
+            e.preventDefault();
+            cityWrap.hidden = false;
+            geoEl.hidden = true;
+            // Focus + select so the user can immediately overwrite the
+            // seeded geo city by typing.
+            cityIn.focus();
+            try { cityIn.select(); } catch {}
+        });
+    }
+
+    // Resolve a geo city/country pair to a Supercaly row. Tries (in
+    // order): exact name match within the geo country → startswith
+    // match (catches "Tel Aviv" → "Tel Aviv-Yafo" where ipapi returns
+    // a shorter form than our canonical) → country-level COUNTRY:<n>
+    // filter → text-only fallback. The same matching ladder mirrors
+    // navigateToResults() in home.js so the URL it produces is
+    // identical to what the original homepage would have submitted.
+    function resolveCity(cities, countries, geoCity, geoCountry) {
+        const gc = geoCity.toLowerCase();
+        const gco = geoCountry.toLowerCase();
+
+        if (geoCity) {
+            // Pass 1 — exact city name match, scoped to the geo country
+            // when both are known (avoids "Cambridge, UK" matching
+            // "Cambridge, MA").
+            let m = cities.find(c =>
+                c.name.toLowerCase() === gc &&
+                (!gco || (c.country || '').toLowerCase() === gco)
+            );
+            if (m) return { kind: 'city', row: m };
+
+            // Pass 2 — exact match anywhere (no country constraint).
+            m = cities.find(c => c.name.toLowerCase() === gc);
+            if (m) return { kind: 'city', row: m };
+
+            // Pass 3 — startswith match scoped to geo country.
+            // "Tel Aviv" → "Tel Aviv-Yafo", "New York" → "New York City".
+            m = cities.find(c => {
+                const cn = c.name.toLowerCase();
+                return (cn.startsWith(gc + '-') || cn.startsWith(gc + ' ')) &&
+                       (!gco || (c.country || '').toLowerCase() === gco);
+            });
+            if (m) return { kind: 'city', row: m };
+        }
+
+        if (geoCountry) {
+            // Country-level fallback. /api/cities/countries returns the
+            // distinct list of countries that have events, so a match
+            // here means "filter to all events in <country>".
+            const cm = countries.find(c => c.name.toLowerCase() === gco);
+            if (cm) return { kind: 'country', row: cm };
+        }
+
+        return null;
+    }
+
+    (async function() {
+        let geo = null;
+        try {
+            const r = await fetch('https://ipapi.co/json/');
+            geo = await r.json();
+        } catch {}
+        if (!geo) { renderGeoLine('', false); return; }
+
+        const geoCity    = (geo.city || '').trim();
+        const geoCountry = (geo.country_name || '').trim();
+        const displayLabel = geoCity && geoCountry
+            ? geoCity + ', ' + geoCountry
+            : (geoCity || geoCountry);
+        if (!displayLabel) { renderGeoLine('', false); return; }
+
+        // Render the strip immediately so the UI doesn't wait on the
+        // city-resolution fetches — the user can already see WHERE
+        // we think they are. The cityId resolution lands a moment
+        // later and silently seeds the hidden inputs.
+        renderGeoLine(displayLabel, true);
+
+        try {
+            const [citiesR, countriesR] = await Promise.all([
+                fetch('/api/cities'),
+                fetch('/api/cities/countries'),
+            ]);
+            const cities = await citiesR.json();
+            const countries = await countriesR.json();
+
+            const resolved = resolveCity(cities, countries, geoCity, geoCountry);
+            if (resolved?.kind === 'city') {
+                cityIn.value   = resolved.row.name;
+                cityIdIn.value = String(resolved.row.id);
+            } else if (resolved?.kind === 'country') {
+                cityIn.value   = resolved.row.name;
+                cityIdIn.value = 'COUNTRY:' + resolved.row.name;
+            } else {
+                // No Supercaly match — best-effort: seed text so
+                // navigateToResults' name-match ladder gets a shot,
+                // even though it'll likely fall through to Global.
+                cityIn.value = geoCity || geoCountry;
+            }
+        } catch {
+            // Network blip resolving cities — keep the geo strip
+            // visible; the user can click "change location" if their
+            // first search returns global results.
+            cityIn.value = geoCity || geoCountry;
+        }
+    })();
+})();
+</script>
+<script src="/build-badge.js?v=1"></script>
+</body>
+</html>
