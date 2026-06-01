@@ -104,3 +104,192 @@ INITIAL_THEMES = (
     "Agriculture",
     "Insurance",
 )
+
+
+# Search-time aliases — alternative terms a user might type that should
+# surface the canonical theme chip. NOT stored in the themes table:
+# the canonical name is still the only theme rows ever carry, so
+# /api/events?themes=AI keeps working unchanged. Aliases are wired into
+# the autocomplete index at build time (app/api/_suggestions_index.py),
+# which appends each (alias_lower, canonical) tuple to idx.themes so
+# `name_matches` can resolve them. filter_themes de-dupes by canonical
+# so a single theme never appears twice in one dropdown.
+#
+# Coverage-over-accuracy: when a term plausibly maps to >1 theme it
+# appears under every theme it belongs to (the user gets multiple chips
+# and picks). The headline example is "Tech" / "Technology" — appears
+# under all 6 tech-business themes so a "tech conference" search
+# surfaces the full tech surface.
+#
+# Cross-theme aliases (intentional dual/triple maps — typing the term
+# returns multiple chips):
+#   Tech / Technology  → AI, Cybersecurity, Crypto, Consumer Electronics,
+#                        DevOps, FinTech            (the 6 tech-business)
+#   biotech            → Healthcare, Pharmaceutical
+#   regtech            → FinTech, Compliance
+#   automation         → DevOps, Manufacturing
+#   robotics           → AI, Manufacturing
+#   metaverse          → Crypto, Consumer Electronics
+#   gaming             → Consumer Electronics, Media
+#   advertising week   → Marketing, Media           (mirrors the
+#                                                    classifier-side
+#                                                    dual-tag)
+THEME_ALIASES: dict[str, tuple[str, ...]] = {
+    "AI": (
+        "artificial intelligence", "machine learning", "ML",
+        "deep learning", "GenAI", "generative AI", "LLM", "LLMs",
+        "large language model", "neural networks", "data science",
+        "MLOps", "AI/ML", "robotics",
+        "Tech", "Technology",
+    ),
+    "Cybersecurity": (
+        "cyber security", "cyber-security", "infosec", "info-sec",
+        "information security", "IT security", "ethical hacking",
+        "pentest", "penetration testing", "zero trust",
+        "threat intel", "threat intelligence", "SOC", "security",
+        "Tech", "Technology",
+    ),
+    "Startup": (
+        "startups", "founders", "VC", "venture capital", "accelerator",
+        "demo day", "pitch night", "Y Combinator", "YC",
+        "entrepreneurship", "entrepreneur", "scaleup", "scale-up",
+    ),
+    "Crypto": (
+        "cryptocurrency", "blockchain", "web3", "web 3.0", "web 3",
+        "bitcoin", "BTC", "ethereum", "ETH", "NFT", "NFTs",
+        "DeFi", "decentralized finance", "DAO", "token", "metaverse",
+        "Tech", "Technology",
+    ),
+    "Consumer Electronics": (
+        "CE", "electronics", "gadgets", "IoT", "internet of things",
+        "CES", "smart home", "wearables", "hardware",
+        "AR/VR", "AR", "VR", "augmented reality", "virtual reality",
+        "metaverse", "gaming",
+        "Tech", "Technology",
+    ),
+    "DevOps": (
+        "dev ops", "dev-ops", "SRE", "site reliability",
+        "platform engineering", "Kubernetes", "K8s", "KubeCon",
+        "cloud native", "cloud", "CI/CD", "infrastructure",
+        "observability", "automation",
+        "Tech", "Technology",
+    ),
+    "FinTech": (
+        "fin-tech", "fin tech", "financial technology", "payments",
+        "banking", "neobank", "open banking", "embedded finance",
+        "regtech", "Money 20/20",
+        "Tech", "Technology",
+    ),
+    "Healthcare": (
+        "healthtech", "health-tech", "health tech", "medtech", "med-tech",
+        "biotech", "biotechnology", "life sciences", "digital health",
+        "telemedicine", "telehealth",
+    ),
+    "Marketing": (
+        "marketing tech", "martech", "mar-tech",
+        "adtech", "ad-tech", "advertising", "advertising tech",
+        "SEO", "SEM", "growth marketing", "growth hacking",
+        "content marketing", "performance marketing", "CMO", "brand",
+        "advertising week", "influencer",
+    ),
+    "Career": (
+        "careers", "jobs", "job fair", "recruiting", "recruitment",
+        "hiring", "talent acquisition", "professional development",
+        "networking event",
+    ),
+    "Psychology": (
+        "psych", "psychological", "psychologist", "cognitive science",
+        "behavioral science", "neuropsychology", "clinical psychology",
+    ),
+    "Education": (
+        "edtech", "ed-tech", "ed tech", "teaching", "schools",
+        "K-12", "k12", "higher ed", "higher education", "university",
+        "academic", "pedagogy", "learning", "e-learning",
+    ),
+    "Mental Health": (
+        "mental wellness", "wellness", "wellbeing", "well-being",
+        "psychiatry", "psychiatric", "psychotherapy", "therapy",
+        "counseling", "mindfulness", "behavioral health",
+    ),
+    "Medicine": (
+        "medical", "clinical", "cardiology", "oncology", "neurology",
+        "surgery", "pediatrics", "radiology", "doctors", "physicians",
+        "hospital",
+    ),
+    "Pharmaceutical": (
+        "pharma", "pharmaceuticals", "drug development",
+        "clinical trials", "big pharma", "drug discovery",
+        "biopharma", "biotech",
+    ),
+    "Sustainability": (
+        "ESG", "environmental social governance", "circular economy",
+        "green", "eco", "sustainable business",
+    ),
+    "Climate": (
+        "climate change", "climate tech", "climatetech",
+        "cleantech", "clean-tech", "clean tech",
+        "decarbonization", "decarbonisation",
+        "net zero", "net-zero", "COP", "climate action",
+    ),
+    "Energy": (
+        "renewable energy", "renewables", "solar", "wind", "hydrogen",
+        "oil and gas", "oil & gas", "utilities", "power", "electricity",
+        "nuclear",
+    ),
+    "Real Estate": (
+        "proptech", "prop-tech", "prop tech", "property", "real-estate",
+        "commercial real estate", "CRE", "property tech", "housing",
+    ),
+    "Legal": (
+        "law", "legaltech", "legal-tech", "legal tech",
+        "lawyers", "attorneys", "litigation", "law firm",
+        "judicial", "in-house counsel",
+    ),
+    "Compliance": (
+        "regulatory", "regulation", "AML", "anti-money laundering",
+        "GDPR", "audit", "risk management", "KYC", "governance",
+        "regtech", "data privacy",
+    ),
+    "Manufacturing": (
+        "industry 4.0", "industry 4", "industrial",
+        "smart manufacturing", "factory", "factory automation",
+        "automation", "robotics",
+    ),
+    "Retail": (
+        "ecommerce", "e-commerce", "e commerce",
+        "retail tech", "retailtech", "retail-tech",
+        "shopping", "omnichannel", "NRF", "Shoptalk",
+        "retail innovation",
+    ),
+    "Media": (
+        "broadcasting", "journalism", "news", "publishing",
+        "creator economy", "streaming", "podcast", "podcasting",
+        "advertising week", "gaming",
+    ),
+    "Hospitality": (
+        "hotel", "hotels", "travel", "tourism", "hotelier",
+        "hospitality industry", "hotel investment", "travel tech",
+    ),
+    "Logistics": (
+        "supply chain", "freight", "shipping", "warehouse",
+        "transportation", "last mile", "last-mile",
+        "fulfillment", "fleet",
+    ),
+    "Government": (
+        "govtech", "gov-tech", "gov tech", "public sector",
+        "civic tech", "civictech", "policy",
+        "government tech", "public administration",
+    ),
+    "Architecture": (
+        "architects", "design", "urban planning", "urban design",
+        "AIA", "built environment", "urbanism",
+    ),
+    "Agriculture": (
+        "agtech", "ag-tech", "ag tech", "farming", "farmers",
+        "food systems", "agribusiness", "agro", "agrotech", "agritech",
+    ),
+    "Insurance": (
+        "insurtech", "insur-tech", "insur tech", "underwriting",
+        "insurance tech", "reinsurance", "claims", "risk transfer",
+    ),
+}

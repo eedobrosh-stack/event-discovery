@@ -141,7 +141,13 @@ def get_suggestions(
     # content (conferences, eventually workshops/festivals). Slot
     # them just below sub-genres in the cascade — they carry the
     # same "topic" semantics as genres but bind to events directly.
-    themes_results = idx_mod.filter_themes(idx, q_stripped, PER_TYPE)
+    #
+    # Higher cap than PER_TYPE because the umbrella aliases
+    # (Tech / Technology in THEME_ALIASES) intentionally fan out
+    # to all 6 tech-business themes — capping at 3 would defeat
+    # the coverage-first design. Single-theme queries still only
+    # return one chip (canonical de-dupe in filter_themes).
+    themes_results = idx_mod.filter_themes(idx, q_stripped, PER_TYPE * 2)
 
     # ── Artists / Venues / Event names ──────────────────────────
     artists = idx_mod.filter_artists(idx, q_stripped, PER_TYPE + 2)

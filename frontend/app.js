@@ -1198,7 +1198,7 @@ function applyFiltersFromURL(params) {
     };
     pushChips("tournaments",  "tournament", "Tournament");
     pushChips("genres",       "genre",     "Genre");
-    pushChips("themes",       "theme",     "Theme");
+    pushChips("themes",       "theme",     "Conference Theme");
     pushChips("artist_exact", "performer", "Artist");
     pushChips("type_search",  "freetext",  "Search");
 

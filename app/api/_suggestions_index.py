@@ -318,11 +318,32 @@ def build_index(db: Session) -> SuggestionsIndex:
     # (name_lower, name) for case-insensitive match with original-case
     # display. Themes go through `filter_themes` and surface in the
     # autocomplete cascade just below sub-genres.
+    #
+    # Search-time aliases (THEME_ALIASES) are appended as additional
+    # (alias_lower, canonical_name) tuples so name_matches can resolve
+    # search terms a user might type instead of the canonical theme
+    # ("adtech" → Marketing, "Tech" → 6 tech-business themes, etc.).
+    # The chip label/value stays as the canonical name; filter_themes
+    # de-dupes by canonical so each theme appears at most once even
+    # when canonical + multiple aliases all match the query.
     try:
         rows = db.execute(text("""
             SELECT name FROM themes WHERE name IS NOT NULL
         """)).fetchall()
-        idx.themes = [(r[0].lower(), r[0]) for r in rows]
+        canonical_themes = [(r[0].lower(), r[0]) for r in rows]
+        canonical_set = {c for _, c in canonical_themes}
+        # Canonical first so they take priority during the linear scan
+        # in `_take_matches` — the de-dupe set means later alias tuples
+        # for the same canonical are silently dropped from the output.
+        idx.themes = list(canonical_themes)
+        from app.models.theme import THEME_ALIASES
+        for canonical, aliases in THEME_ALIASES.items():
+            if canonical not in canonical_set:
+                # Skip aliases for themes that haven't been seeded yet
+                # (idempotent against deploy/seed races).
+                continue
+            for alias in aliases:
+                idx.themes.append((alias.lower(), canonical))
     except Exception:
         # Table may not exist yet on first boot after deploy — guard
         # so the index build doesn't fail entirely.
@@ -518,12 +539,30 @@ def filter_parent_genres(idx: SuggestionsIndex, q: str, limit: int) -> list[dict
 
 def filter_themes(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
     """Theme chip — kind='theme' so the frontend filter handler can
-    route it to /api/events?themes=… alongside genres."""
-    return _take_matches(
-        idx.themes, q, limit,
-        lambda it: {"kind": "theme", "value": it[1], "label": it[1],
-                    "badge": "Theme"},
-    )
+    route it to /api/events?themes=… alongside genres.
+
+    idx.themes carries both canonical (name_lower, name) tuples and
+    alias (alias_lower, canonical_name) tuples for search-time
+    synonyms ("adtech" → Marketing, "Tech" → 6 tech-business themes,
+    etc.). De-dupe by canonical so the same theme never appears
+    twice in one dropdown — canonical entries are loaded first so
+    they win the linear scan, then aliases for already-seen themes
+    are silently skipped.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for low, canonical in idx.themes:
+        if canonical in seen:
+            continue
+        if name_matches(low, q):
+            seen.add(canonical)
+            out.append({
+                "kind": "theme", "value": canonical, "label": canonical,
+                "badge": "Conference Theme",
+            })
+            if len(out) >= limit:
+                break
+    return out
 
 
 def filter_sub_genres(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
