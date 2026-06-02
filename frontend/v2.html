@@ -402,9 +402,16 @@
     }
 
     (async function() {
+        // Same-origin /api/geo instead of hitting ipapi.co directly.
+        // Ad-blockers (uBlock/EasyPrivacy) routinely kill the
+        // third-party IP-lookup call in the browser; routing through
+        // our own backend bypasses that. The backend (app/api/geo.py)
+        // does the actual ipapi lookup server-side, with per-IP
+        // caching so we burn the upstream quota at most once per
+        // user per 24h.
         let geo = null;
         try {
-            const r = await fetch('https://ipapi.co/json/');
+            const r = await fetch('/api/geo');
             geo = await r.json();
         } catch {}
         if (!geo) { renderGeoLine('', false); return; }
