@@ -96,8 +96,8 @@
             width: 100%;
             background: rgba(255,255,255,0.06);
             border: 1px solid rgba(255,255,255,0.13);
-            border-radius: 28px;
-            padding: 14px 24px 14px 52px;
+            border-radius: 8px;
+            padding: 14px 18px 14px 46px;
             font-size: 1.05rem;
             color: #fff;
             outline: none;
@@ -115,10 +115,10 @@
         }
         .v2-search-icon {
             position: absolute;
-            left: 22px;
+            left: 16px;
             top: 50%;
             transform: translateY(-50%);
-            font-size: 1.05rem;
+            font-size: 1rem;
             color: rgba(255,255,255,0.45);
             pointer-events: none;
         }
@@ -218,23 +218,23 @@
         }
         .v2-geo[hidden] { display: none !important; }
 
-        /* ── Action button (sits to the right of the pill) ── */
+        /* ── Action button (sits to the right of the input) ── */
         .v2-btn {
             background: #7c6af7;
             color: #fff;
             border: 1px solid transparent;
-            border-radius: 28px;
-            padding: 0 28px;
-            font-size: 0.95rem;
-            font-weight: 600;
+            border-radius: 8px;
+            padding: 0 16px;
+            font-size: 0.85rem;
+            font-weight: 500;
             cursor: pointer;
             white-space: nowrap;
             transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
-            box-shadow: 0 4px 22px rgba(124,106,247,0.36);
+            box-shadow: 0 2px 12px rgba(124,106,247,0.28);
         }
         .v2-btn:hover {
             background: #6b58f0;
-            box-shadow: 0 6px 28px rgba(124,106,247,0.52);
+            box-shadow: 0 3px 16px rgba(124,106,247,0.42);
         }
         .v2-btn:active { transform: scale(0.97); }
 
@@ -256,10 +256,10 @@
         @media (max-width: 560px) {
             .logo-wordmark { font-size: 2.8rem; letter-spacing: -1.2px; }
             .logo-subtitle { font-size: 0.78rem; padding-bottom: 0.32rem; }
-            .v2-search-input { padding-left: 46px; font-size: 1rem; }
-            .v2-search-icon { left: 18px; }
+            .v2-search-input { padding-left: 42px; font-size: 1rem; }
+            .v2-search-icon { left: 14px; }
             .v2-search-row { flex-direction: column; }
-            .v2-btn { padding: 14px 22px; font-size: 0.95rem; }
+            .v2-btn { padding: 12px 18px; font-size: 0.9rem; }
         }
     </style>
 </head>
