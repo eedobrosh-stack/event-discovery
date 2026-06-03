@@ -7,19 +7,32 @@ directly. Going through our backend buys us three things:
     (and a bunch of other consumer IP-lookup endpoints) in the
     browser because the same endpoints are widely used for ad
     fingerprinting; a same-origin /api/geo call sails through.
-  - We can switch providers without touching the frontend. We've
-    already had to — ipapi.co's 1k/day rate limit is per CLIENT
-    IP, which from a single server means ~1k total Supercaly
-    visits/day share one bucket (worse than per-user!). Moved to
-    ipwho.is (10k/month, HTTPS, no auth) as the actual upstream.
+  - We can switch providers without touching the frontend.
   - Per-IP caching pins each visitor at one upstream call per
-    day, regardless of how many times they reload the page.
+    day regardless of how many times they reload.
+
+Upstream is a cascade: **ipapi.co primary → ipwho.is fallback**.
+The classic homepage hits ipapi.co directly from the browser and
+returns the most accurate city for IL users (reported delta:
+ipapi → Tel Aviv (correct), ipwho.is → Beer Sheva (~100km off).
+Different providers, different MaxMind / IP2Location-vintage DBs).
+So we want ipapi's accuracy when we can have it.
+
+The catch: ipapi.co's free tier is 1k/day per CLIENT IP. From a
+single server that's one bucket shared across all of Supercaly,
+which is why the naive route was burning out fast. With the
+24h per-visitor-IP cache here, we only spend one ipapi call per
+unique visitor per day — comfortably under the limit until we hit
+~1k unique visits/day. Past that, ipapi starts 429-ing and the
+fallback kicks in: ipwho.is (10k/month, HTTPS, no auth, less
+accurate but better than "Couldn't detect"). Visitors past the
+budget get degraded data, not broken geo.
 
 The response shape we hand back mirrors the ipapi.co schema the
 frontend was already consuming (city, country_name, latitude,
 longitude). ipwho.is uses `country` (full name) instead of
-`country_name`, so we normalize that here — keeps v2.html's
-existing geo.country_name lookups working.
+`country_name`; the per-provider parser normalizes to a single
+schema so the caller doesn't need to know which DB it came from.
 """
 from __future__ import annotations
 
@@ -100,18 +113,43 @@ def _cache_put(ip: str, payload: dict) -> None:
     _cache[ip] = (payload, time.time())
 
 
-async def _lookup(ip: str) -> dict:
-    """Hit ipwho.is for one IP. Returns {} on any failure so callers
-    get the same fallback shape regardless of what went wrong
-    upstream — the frontend's "Couldn't detect" branch handles
-    it gracefully.
+async def _lookup_ipapi(ip: str) -> dict:
+    """Primary provider — ipapi.co. Reported as the most accurate
+    geo-DB for our user base (matches what the classic homepage
+    has shown all along, since home.js fetches ipapi.co directly).
+    Returns {} on any failure including 429 rate limits so the
+    cascade can fall through to the secondary."""
+    url = f"https://ipapi.co/{ip}/json/"
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.get(url, headers={"User-Agent": "supercaly/1.0"})
+        if r.status_code != 200:
+            return _EMPTY_GEO
+        data = r.json()
+    except Exception:
+        return _EMPTY_GEO
+    # ipapi.co failure shape: {"error": true, "reason": "...", ...}.
+    if not isinstance(data, dict) or data.get("error"):
+        return _EMPTY_GEO
+    return {
+        "city":         data.get("city") or "",
+        "country_name": data.get("country_name") or "",
+        "country_code": data.get("country_code") or "",
+        "region":       data.get("region") or "",
+        "latitude":     data.get("latitude"),
+        "longitude":    data.get("longitude"),
+        "timezone":     data.get("timezone") or "",
+        "_provider":    "ipapi",
+    }
 
+
+async def _lookup_ipwho(ip: str) -> dict:
+    """Fallback provider — ipwho.is. Less accurate DB (sometimes
+    off by 100km — Tel Aviv → Beer Sheva for our IL users) but
+    much higher free-tier budget (10k/month, no auth) so it can
+    pick up the slack when ipapi.co's per-IP daily cap exhausts.
     Normalizes ipwho.is's `country` (full name) → `country_name`
-    so the response matches the ipapi.co schema the frontend was
-    originally written against. Drops the PII-adjacent fields
-    we don't need (connection.asn, security blob, postal, etc.) —
-    less data on the wire, easier to switch providers later.
-    """
+    so the merged response matches the ipapi.co schema."""
     url = f"https://ipwho.is/{ip}"
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
@@ -121,9 +159,6 @@ async def _lookup(ip: str) -> dict:
         data = r.json()
     except Exception:
         return _EMPTY_GEO
-    # ipwho.is failure shape: {"success": false, "message": "..."}.
-    # Treat anything without success=true as no-geo so the frontend
-    # falls through cleanly.
     if not isinstance(data, dict) or not data.get("success"):
         return _EMPTY_GEO
     return {
@@ -134,7 +169,29 @@ async def _lookup(ip: str) -> dict:
         "latitude":     data.get("latitude"),
         "longitude":    data.get("longitude"),
         "timezone":     (data.get("timezone") or {}).get("id") or "",
+        "_provider":    "ipwho",
     }
+
+
+async def _lookup(ip: str) -> dict:
+    """Provider cascade. ipapi.co → ipwho.is → {}.
+
+    Returns the first non-empty response. ipapi.co goes first
+    because it's measurably more accurate for our user base; the
+    fallback only kicks in once ipapi.co rate-limits us, so
+    most visits get the better DB. Worst case (both providers
+    fail / rate-limit), returns {} and the frontend renders
+    "Couldn't detect your location" cleanly.
+
+    A "good" ipapi response means city is non-empty — empty-city
+    responses still indicate the provider gave us something but
+    we wouldn't render anything useful, so let the secondary
+    have a crack.
+    """
+    primary = await _lookup_ipapi(ip)
+    if primary and primary.get("city"):
+        return primary
+    return await _lookup_ipwho(ip)
 
 
 @router.get("")
