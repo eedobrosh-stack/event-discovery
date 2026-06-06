@@ -492,7 +492,18 @@ def _gemini_client():
         )
     try:
         from google import genai
-        return genai.Client(api_key=api_key)
+        from google.genai import types as gtypes
+        # Client-side timeout (milliseconds). Without it the SDK can block
+        # indefinitely on a stalled generate_content — notably the
+        # url_context server-side fetch+render path against bot-protected
+        # SPAs. On 2026-06-03 exactly that wedged llm_extract_recurring
+        # mid-run (source 45/150, a getyourguide SPA) while it held
+        # _heavy_job_lock, freezing every collector for 3 days. A bounded
+        # timeout turns the hang into a retryable/skippable error instead.
+        return genai.Client(
+            api_key=api_key,
+            http_options=gtypes.HttpOptions(timeout=120_000),
+        )
     except ImportError as e:
         raise ExtractorUnconfigured(
             "google-genai SDK not installed. Add to requirements: google-genai"

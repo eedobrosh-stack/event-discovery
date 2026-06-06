@@ -2283,9 +2283,22 @@ async def llm_extract_recurring_job(
                         # Run extract_auto on a thread — sync (urllib + bs4
                         # + maybe Gemini SDK). JSON-LD path runs without
                         # the LLM key.
-                        per_result = await asyncio.to_thread(
-                            extract_auto, u,
-                            source_name="llm_extractor",
+                        #
+                        # Hard per-URL ceiling (180s): the Gemini SDK now has
+                        # a 120s client timeout and the HTTP fetches cap at
+                        # 20–45s, so a healthy URL finishes well inside this.
+                        # wait_for is the backstop for any *other* unbounded
+                        # block — without it, a single wedged URL stalls the
+                        # whole run while holding _heavy_job_lock, which froze
+                        # every collector for 3 days on 2026-06-03. A timeout
+                        # falls through to the per-source `except Exception`
+                        # below (records last_error, moves to the next source).
+                        per_result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                extract_auto, u,
+                                source_name="llm_extractor",
+                            ),
+                            timeout=180,
                         )
                         aggregated_events.extend(per_result.events)
                         aggregated_dropped += per_result.dropped_for_hallucination
@@ -2307,6 +2320,17 @@ async def llm_extract_recurring_job(
                     log.notes = f"GEMINI_API_KEY not set ({e})"
                     log.status = "failed"
                     break
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.warning(
+                        f"llm_extract_recurring: {src_url} exceeded 180s "
+                        f"per-URL ceiling — skipping source (lock released, "
+                        f"run continues)"
+                    )
+                    src.last_error = "TimeoutError: extract_auto exceeded 180s ceiling"
+                    src.last_run_at = datetime.utcnow()
+                    src.runs_total = (src.runs_total or 0) + 1
+                    db.commit()
+                    continue
                 except Exception as e:
                     logger.warning(
                         f"llm_extract_recurring: {src_url} hard error: {e}"
