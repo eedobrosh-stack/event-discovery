@@ -12,13 +12,25 @@ logger = logging.getLogger(__name__)
 # (5 pages × 200) per query. Major cities (NYC, LA, London, Berlin)
 # routinely have 10k+ upcoming events, so a single un-windowed query
 # only ever sees the chronologically-first slice. We slice the
-# calendar into three windows so each gets its own 1 000-event budget.
-# Cost: 3× API calls per city per fire — still well inside the free
-# tier (~250 calls/day total at 4 cities × 6h cycle).
+# calendar into windows so each gets its own 1 000-event budget.
+#
+# The 12-18mo / 18-24mo windows were added 2026-06-07 to deepen the
+# horizon: the catalog was front-loaded (only ~786 upcoming events sat
+# beyond 1 year) because the windows stopped at 365 days. Far-dated
+# events are *sticky* — they don't age out of the upcoming pool for a
+# year+, so they accumulate instead of churning. An empirical probe
+# confirmed real inventory out there (NYC: 799 @ 12-18mo, 123 @ 18-24mo;
+# London: 917 / 59) and a hard floor of zero beyond 24mo — hence no
+# 24-36mo window. Sparse far windows page out after 1-4 pages, so the
+# real added cost is well under the 5×200 ceiling. Free tier is
+# 5 000 calls/day; worst case here is ~200 calls/day (4 cities ×
+# 2 fires/day × 5 windows × ≤5 pages).
 _DATE_WINDOWS = [
-    ("0-3mo",  0,    90),
-    ("3-6mo",  90,   180),
-    ("6-12mo", 180,  365),
+    ("0-3mo",   0,    90),
+    ("3-6mo",   90,   180),
+    ("6-12mo",  180,  365),
+    ("12-18mo", 365,  545),
+    ("18-24mo", 545,  730),
 ]
 
 # Map full country names → ISO 2-letter codes for Ticketmaster API
