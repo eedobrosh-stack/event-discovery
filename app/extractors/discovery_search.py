@@ -50,6 +50,7 @@ import urllib.parse
 import urllib.request
 
 from app.extractors.discovery import DiscoveryError
+from app.models.gemini_usage import record_gemini_usage
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +325,7 @@ def filter_candidates_via_llm(
                     response_mime_type="application/json",
                 ),
             )
+            record_gemini_usage(resp, model)
             break
         except Exception as e:
             last_err = e
@@ -586,6 +588,7 @@ def filter_artist_tour_pages_via_llm(
                     response_mime_type="application/json",
                 ),
             )
+            record_gemini_usage(resp, model)
             break
         except Exception as e:
             # Hard billing-cap → trip the circuit breaker.

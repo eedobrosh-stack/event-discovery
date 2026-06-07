@@ -15,5 +15,6 @@ from app.models.brave_query_coverage import BraveQueryCoverage
 from app.models.spotify_artist import SpotifyArtist, SPOTIFY_ARTIST_STATUSES
 from app.models.spotify_brave_attempt import SpotifyBraveAttempt, SPOTIFY_BRAVE_VARIANTS
 from app.models.theme import Theme, EventTheme, INITIAL_THEMES
+from app.models.gemini_usage import GeminiUsage, record_gemini_usage
 
-__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ArtistRelated", "ZeroResultSearch", "LLMSource", "LLM_SOURCE_STATES", "FetchAttempt", "BraveQueryCoverage", "SpotifyArtist", "SPOTIFY_ARTIST_STATUSES", "SpotifyBraveAttempt", "SPOTIFY_BRAVE_VARIANTS", "Theme", "EventTheme", "INITIAL_THEMES"]
+__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ArtistRelated", "ZeroResultSearch", "LLMSource", "LLM_SOURCE_STATES", "FetchAttempt", "BraveQueryCoverage", "SpotifyArtist", "SPOTIFY_ARTIST_STATUSES", "SpotifyBraveAttempt", "SPOTIFY_BRAVE_VARIANTS", "Theme", "EventTheme", "INITIAL_THEMES", "GeminiUsage", "record_gemini_usage"]

@@ -24,7 +24,7 @@ _heavy_job_lock = asyncio.Lock()
 # Kept at 4 through the Tier-2 expansion to stay clear of that history.
 CITY_BATCH_SIZE = 4
 _BATCH_INDEX_KEY = "city_batch_index"
-from app.models import City, Event, Venue, ScanLog, JobState
+from app.models import City, Event, Venue, ScanLog, JobState, record_gemini_usage
 from app.config import settings
 from app.services.collectors.registry import CollectorRegistry
 from app.services.collectors.scrapers.venue_websites import scrape_venue_website
@@ -3811,6 +3811,7 @@ async def llm_classify_conferences_job(batch: int = _CONFERENCE_PER_RUN):
                                 response_mime_type="application/json",
                             ),
                         )
+                        record_gemini_usage(resp, model)
                         break
                     except Exception as e:
                         # Hard spend-cap → trip the breaker AND bail

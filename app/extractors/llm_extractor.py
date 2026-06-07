@@ -42,6 +42,7 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 import urllib.request
 import urllib.error
 
+from app.models.gemini_usage import record_gemini_usage
 from app.services.collectors.base import RawEvent
 
 logger = logging.getLogger(__name__)
@@ -664,6 +665,7 @@ def _extract_via_html(client, url: str, cleaned_html: str, *,
             max_output_tokens=20_000,
         ),
     ))
+    record_gemini_usage(resp, model)
     payload = json.loads(resp.text or '{"events":[]}')
     return list(payload.get("events") or [])
 
@@ -690,6 +692,7 @@ def _extract_via_url_context(client, url: str, *,
             temperature=0,
         ),
     ))
+    record_gemini_usage(resp, model)
     raw = (resp.text or "").strip()
     if raw.startswith("```"):
         # Strip ```json ... ``` fences if present.
