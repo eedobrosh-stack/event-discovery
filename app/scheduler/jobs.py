@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import date, timedelta, datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, case
 from app.database import SessionLocal
 
 # Global lock — only one heavy scraping/enrichment job runs at a time.
@@ -947,10 +947,45 @@ async def collect_bandsintown_job(batch: int = 300):
             if l.notes and f"offset={prev_offset}" in l.notes
         )
         should_rotate = fires_at_current >= 2
-        total_perf = db.query(Performer).count()
+
+        # Yield-prioritization (2026-06-07). Bandsintown is a music-touring
+        # API: an artist with no upcoming shows returns found=0. Empirically
+        # the ~7.3k performers with ≤1 event in our DB are the dead tail —
+        # real but non-touring names (one-off festival billings, etc.) that
+        # the old count-DESC sweep wasted ~half of every cycle on (offsets
+        # 9k+ consistently returned found=0). Two coordinated fixes:
+        #   (a) restrict the rotation to performers with ≥MIN_EVENTS events
+        #       (the realistically-active set, ~7.6k) — roughly halves the
+        #       sweep cycle so active artists are revisited ~2× sooner.
+        #   (b) front-load PROVEN bandsintown-active artists (those that have
+        #       already produced a bandsintown event, ~4.4k) so each cycle
+        #       re-scrapes confirmed tourers first and catches their newly-
+        #       announced dates soonest.
+        MIN_EVENTS = 2
+        bit_event_count = func.sum(
+            case((Event.scrape_source == "bandsintown", 1), else_=0)
+        )
+
+        # The offset modulo must use the FILTERED pool size, else the cursor
+        # would advance past the smaller result set and return empty pages.
+        total_perf = (
+            db.query(func.count())
+            .select_from(
+                db.query(Performer.id)
+                .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
+                .group_by(Performer.id)
+                .having(func.count(Event.id) >= MIN_EVENTS)
+                .subquery()
+            )
+            .scalar()
+        )
         offset = (
             (prev_offset + batch) % max(total_perf, 1)
-            if should_rotate else prev_offset
+            if should_rotate
+            # Clamp a stale cursor: the pool shrank (~14.9k → ~7.6k) when the
+            # ≥MIN_EVENTS filter landed, so a persisted offset can now point
+            # past the result set and page in nothing. Modulo keeps it valid.
+            else prev_offset % max(total_perf, 1)
         )
         if should_rotate:
             logger.info(
@@ -958,12 +993,17 @@ async def collect_bandsintown_job(batch: int = 300):
                 f"— rotating to offset {offset}"
             )
 
-        # Performers by event count, starting at the rotation offset
+        # Active performers (≥MIN_EVENTS), proven bandsintown-active first,
+        # then most-active overall — swept via the rotation offset.
         rows = (
             db.query(Performer.name, func.count(Event.id).label("n"))
             .outerjoin(Event, func.lower(Event.artist_name) == func.lower(Performer.name))
             .group_by(Performer.id, Performer.name)
-            .order_by(func.count(Event.id).desc())
+            .having(func.count(Event.id) >= MIN_EVENTS)
+            .order_by(
+                (bit_event_count > 0).desc(),   # proven bandsintown-active first
+                func.count(Event.id).desc(),    # then most-active overall
+            )
             .offset(offset)
             .limit(batch)
             .all()
