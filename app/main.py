@@ -1093,30 +1093,31 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=600,
         coalesce=True,
     )
-    # classify_new_artists — Daily auto-classification for artists newly
-    # introduced by Cadence A (the LLM extractor) and for the rolling
-    # UNKNOWN-with-retries-left pool. +30 min after Cadence A so today's
-    # extracts are queryable when this runs. Caps spend at 800 artists/
-    # night; UNKNOWN-with-attempts >= retry_budget rows get parked and
-    # excluded from the pool, so cost converges on net-new arrivals.
-    scheduler.add_job(
-        classify_new_artists_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=270)),
-        id="classify_new_artists",
-        replace_existing=True,
-    )
-    # enrich_youtube_via_brave — Brave-search fallback for artists the
-    # YouTube Data API job didn't find a channel for. Daily, slot at
-    # boot+330 min — late enough that the YT API job (every 4h) has
-    # had several cycles to claim what it can. Hit rate ~40% on the
-    # long-tail pool, ~$2.50/night at limit=500. Cache makes per-
-    # artist cost one-shot.
-    scheduler.add_job(
-        enrich_youtube_via_brave_job,
-        IntervalTrigger(hours=24, start_date=_t + _td(minutes=330)),
-        id="enrich_youtube_via_brave",
-        replace_existing=True,
-    )
+    # ── PAUSED 2026-06-07: classify_new_artists + enrich_youtube_via_brave ──
+    # Both are Brave-consuming ENRICHMENT jobs (genre classification and
+    # YouTube-channel lookup). Neither creates events — they only improve
+    # quality on events that already exist. Together they spent ~1,300 Brave
+    # queries/day (800 + 500), the bulk of the Brave budget, while the 1M-
+    # events goal is gated by event *creation* (Route 2 collectors + the
+    # Gemini-bound Cadence A extractor), not enrichment. Paused to free the
+    # Brave budget (and a little Gemini) for the event-creation priority.
+    # Genre coverage sits at ~87%; this is a deferral, not a teardown.
+    # To re-enable: uncomment the two add_job blocks below. The job
+    # functions and their logic are untouched.
+    #
+    # scheduler.add_job(
+    #     classify_new_artists_job,
+    #     IntervalTrigger(hours=24, start_date=_t + _td(minutes=270)),
+    #     id="classify_new_artists",
+    #     replace_existing=True,
+    # )
+    # scheduler.add_job(
+    #     enrich_youtube_via_brave_job,
+    #     IntervalTrigger(hours=24, start_date=_t + _td(minutes=330)),
+    #     id="enrich_youtube_via_brave",
+    #     replace_existing=True,
+    # )
+    # ───────────────────────────────────────────────────────────────────────
     # recompute_popularity — Weekly recompute of Performer.derived_popularity
     # AND the per-parent-genre percentile thresholds the API uses for UI
     # stars. Weekly cadence: scores change slowly, percentile boundaries
