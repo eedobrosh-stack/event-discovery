@@ -2074,8 +2074,22 @@ def _update_drift_state(src, latest_event_count: int) -> None:
 
 
 async def llm_extract_recurring_job(
-    max_sources_per_run: int = 150,
-    min_hours_since_last: int = 6,
+    # Tuned 2026-06-07 to fit the 500 NIS/mo Gemini cap. At the prior
+    # 150/run × 8 runs/day the gemini-2.5-flash extractor (the dominant
+    # Gemini cost) projected ~715 NIS/mo — ~40% over cap. 100/run × 8 =
+    # 800 extractions/day is ~33% lower, landing near the cap with margin.
+    # Paired with yield-prioritized ordering (below) so the smaller budget
+    # hits the highest events-per-run sources first. MONITOR June spend and
+    # retune; the cap is monthly so there's slack to adjust.
+    max_sources_per_run: int = 100,
+    # 6h → 24h: with yield ordering a 6h floor would let the top ~100
+    # sources be re-extracted 4×/day (00/06/12/18) while the rest starve —
+    # and intra-day re-extraction of the same calendar yields mostly
+    # *updates*, not new events. A 24h floor spreads the 800 daily slots
+    # across 800 *distinct* high-yield sources, maximizing new events per
+    # NIS. (Re-extraction cadence was moot before — we were capacity-bound
+    # at a ~13-day cycle — but it binds once ordering favors top sources.)
+    min_hours_since_last: int = 24,
     auto_block_threshold: int = 3,
     auto_promote_threshold: int = 1,
 ):
@@ -2174,6 +2188,39 @@ async def llm_extract_recurring_job(
                 else_=1,
             )
 
+            # Yield-prioritization (2026-06-07). Under the fixed Gemini
+            # budget (500 NIS/mo cap) the extractor is the dominant spend
+            # and we can only afford ~max_sources_per_run × runs/day
+            # extractions — a fraction of the ~15.6k due sources. So spend
+            # the budget on the SOURCES THAT ACTUALLY PRODUCE EVENTS rather
+            # than the old oldest-first sweep that treated a dead source the
+            # same as a rich calendar.
+            #
+            # IMPORTANT: yield is a GATE, not a continuous sort. A source's
+            # `events_saved_total` is dominated by its first extraction (the
+            # one-time backlog harvest — e.g. a fresh calendar yields 1000+
+            # events on run 1, then mostly *updates* thereafter). Ordering by
+            # events_per_run DESC would therefore keep re-extracting already-
+            # harvested first-run sources for near-zero marginal new events.
+            # Instead we tier:
+            #   1. never_run_first — unharvested sources first (their first
+            #      extraction is the biggest single new-event haul available).
+            #   2. yields_tier — proven producers (≥2 events/run lifetime)
+            #      ahead of the dead/near-empty tail.
+            #   3. last_run_at ASC — within the producing tier, longest-
+            #      untouched first: those have accumulated the most NEW
+            #      events since we last looked. This is what actually
+            #      maximizes new events per Gemini call.
+            never_run_first = case(
+                (LLMSource.last_run_at.is_(None), 0), else_=1
+            )
+            events_per_run = case(
+                (LLMSource.runs_total > 0,
+                 LLMSource.events_saved_total * 1.0 / LLMSource.runs_total),
+                else_=0.0,
+            )
+            yields_tier = case((events_per_run >= 2, 0), else_=1)
+
             sources = (
                 db.query(LLMSource)
                 .filter(
@@ -2183,11 +2230,13 @@ async def llm_extract_recurring_job(
                         LLMSource.last_run_at < cutoff,
                     ),
                 )
-                # Priority lane first, then never-run-before sources,
-                # then longest-untouched among run sources. Stable id
-                # tiebreaker for reproducibility.
+                # Spotify funnel lane → never-run (biggest first harvest)
+                # → proven producers → longest-untouched (most accumulated
+                # new events) → stable id.
                 .order_by(
                     spotify_first_run_priority.asc(),
+                    never_run_first.asc(),
+                    yields_tier.asc(),
                     LLMSource.last_run_at.asc().nullsfirst(),
                     LLMSource.id.asc(),
                 )
