@@ -1,6 +1,7 @@
 from __future__ import annotations
 import html
 import logging
+from datetime import date, timedelta
 from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
@@ -9,6 +10,16 @@ from sqlalchemy import or_
 from app.models import Event, Venue, City, EventType, Performer, event_event_types
 from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name
 from app.services.youtube_lookup import lookup_youtube_video
+
+# Reject events dated more than this far in the future. Real inventory
+# tops out around 2-3 years (far-out conferences, the occasional tour);
+# anything beyond is a date-parse error (LLM hallucinating a year like
+# 3030/6960, tel_aviv_venues misreading a blog date as 2382) or a
+# Ticketmaster placeholder/accounting SKU pinned at 2099-12-31. A single
+# ceiling here in _save_events covers every source — all persistence
+# funnels through this method. Added 2026-06-07 alongside the one-time
+# cleanup of the ~154 rows that were already past this bound.
+MAX_FUTURE_DAYS = 1095  # ~3 years
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +145,18 @@ class CollectorRegistry:
                 # Skip events with no date — DB has NOT NULL constraint on start_date
                 if raw.start_date is None:
                     logger.debug(f"Skipping undated event '{raw.name}' from {raw.source}")
+                    continue
+
+                # Reject implausibly far-future dates — parse errors and
+                # placeholder SKUs (see MAX_FUTURE_DAYS). Keeps the catalog's
+                # "upcoming" pool honest now that we intentionally accept
+                # events up to ~2 years out.
+                if raw.start_date > date.today() + timedelta(days=MAX_FUTURE_DAYS):
+                    logger.info(
+                        f"Skipping far-future event '{(raw.name or '')[:60]}' "
+                        f"@ {raw.start_date} from {raw.source} "
+                        f"(> {MAX_FUTURE_DAYS}d ceiling)"
+                    )
                     continue
 
                 # Dedup: check by source+source_id
