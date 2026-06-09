@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.models import Event, Venue, City, EventType, Performer, event_event_types
-from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name
+from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name, CollectorAuthError
 from app.services.youtube_lookup import lookup_youtube_video
 
 # Reject events dated more than this far in the future. Real inventory
@@ -85,6 +85,12 @@ class CollectorRegistry:
                 saved = self._save_events(raw_events, city, db)
                 stats[collector.source_name] = {"fetched": fetched, "saved": saved}
                 logger.info(f"{collector.source_name}: fetched={fetched}, saved={saved}")
+            except CollectorAuthError as e:
+                # Systemic key rejection — flag distinctly so collect_events
+                # marks the run FAILED (not success/found=0). Other collectors
+                # still run for this city.
+                logger.error(f"{collector.source_name} AUTH error: {e}")
+                stats[collector.source_name] = {"auth_error": str(e)}
             except Exception as e:
                 logger.error(f"{collector.source_name} error: {e}")
                 stats[collector.source_name] = {"error": str(e)}

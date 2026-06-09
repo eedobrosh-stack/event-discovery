@@ -17,6 +17,7 @@ from datetime import date
 import httpx
 
 from app.config import settings
+from app.services.collectors.base import CollectorAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,23 @@ class BandsintownClient:
                 if resp.status_code == 404:
                     logger.debug(f"[Bandsintown] Artist not found: {artist_name!r}")
                     return []
+                # 401/403 = the app_id itself is rejected (banned / unauthorized).
+                # This is systemic — every artist will fail the same way — so
+                # raise instead of returning [], letting the job fail loudly
+                # rather than silently logging found=0 for the whole run.
+                if resp.status_code in (401, 403):
+                    raise CollectorAuthError(
+                        f"Bandsintown {resp.status_code} for app_id "
+                        f"(rejected): {resp.text[:160]}"
+                    )
                 resp.raise_for_status()
                 data = resp.json()
                 # API returns [] or a list of event dicts
                 if not isinstance(data, list):
                     return []
                 return data
+            except CollectorAuthError:
+                raise  # systemic — must not be swallowed by the catches below
             except httpx.HTTPStatusError as e:
                 logger.warning(f"[Bandsintown] HTTP {e.response.status_code} for {artist_name!r}")
                 return []

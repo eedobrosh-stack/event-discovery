@@ -59,7 +59,7 @@ COUNTRY_ISO = {
     "Slovakia": "SK", "Slovenia": "SI", "Spain": "ES", "Sweden": "SE",
     "Switzerland": "CH", "Turkey": "TR",
 }
-from app.services.collectors.base import BaseCollector, RawEvent
+from app.services.collectors.base import BaseCollector, RawEvent, CollectorAuthError
 from app.services.collectors.category_mapper import map_category
 
 
@@ -130,6 +130,12 @@ class TicketmasterCollector(BaseCollector):
                         )
                         throttled = True
                         break
+                    if resp.status_code in (401, 403):
+                        # Systemic key rejection — fail loudly so it can't hide
+                        # as found=0/success (the Bandsintown trap).
+                        raise CollectorAuthError(
+                            f"Ticketmaster {resp.status_code}: {resp.text[:160]}"
+                        )
                     if resp.status_code == 400:
                         break  # page out of range — TM returns 400 when page > total pages
                     resp.raise_for_status()

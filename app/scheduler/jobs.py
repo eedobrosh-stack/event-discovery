@@ -360,10 +360,20 @@ async def collect_all_events():
                 try:
                     stats = await registry.collect_all(city, db)
                     logger.info(f"{city.name} stats: {stats}")
-                    log.status = "success"
+                    # Surface systemic auth failures as a FAILED run rather than
+                    # success/found=0 (the Bandsintown blind spot). Other
+                    # collectors may still have saved events for this city.
+                    auth_fails = [
+                        k for k, v in stats.items()
+                        if isinstance(v, dict) and "auth_error" in v
+                    ]
+                    log.status = "failed" if auth_fails else "success"
                     log.events_found = sum(v.get("fetched", 0) for v in stats.values() if isinstance(v, dict))
                     log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
-                    log.notes = str(stats)
+                    log.notes = (
+                        (f"AUTH FAILURE {auth_fails} — " if auth_fails else "")
+                        + str(stats)
+                    )
                 except Exception as e:
                     logger.error(f"Error collecting {city.name}: {e}")
                     log.status = "failed"
@@ -905,7 +915,7 @@ async def collect_bandsintown_job(batch: int = 300):
 
     import asyncio as _asyncio
     from app.models import City, Venue, Event, Performer
-    from app.services.collectors.base import RawEvent, default_end_time
+    from app.services.collectors.base import RawEvent, default_end_time, CollectorAuthError
     from datetime import date as _date
     import urllib.parse
 
@@ -1091,6 +1101,12 @@ async def collect_bandsintown_job(batch: int = 300):
                 db.expire_all()
                 await _asyncio.sleep(1.1)  # Bandsintown rate limit
 
+            except CollectorAuthError:
+                # app_id is rejected — every artist will 403 the same way.
+                # Re-raise to the outer handler so the run is marked FAILED and
+                # we bail immediately instead of logging found=0 across 300
+                # artists (which hid the 17-day Bandsintown outage).
+                raise
             except Exception as e:
                 logger.warning(f"bandsintown artist error {artist!r}: {e}")
                 db.rollback()

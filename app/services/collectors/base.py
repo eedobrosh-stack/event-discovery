@@ -4,6 +4,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+
+class CollectorAuthError(Exception):
+    """Raised by a collector when the upstream API rejects authorization
+    (HTTP 401/403) — a systemic key problem, not a per-request miss. Lets jobs
+    surface it as a FAILURE instead of silently recording found=0 / success.
+    (The Bandsintown app_id was 403-banned for 17 days, hidden as found=0,
+    before this existed — 2026-06.)"""
+
 # Suffixes that indicate the preceding words are the artist/bandleader name
 _ENSEMBLE_SUFFIXES = re.compile(
     r"""^(.+?)\s+
