@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
 
@@ -7,6 +8,18 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_TM_ENDPOINT = "https://app.ticketmaster.com/discovery/v2/events.json"
+
+# Request pacing + 429 handling. TM's free tier caps at ~5 req/sec; the
+# 5-window × 5-page sweep (after the 2026-06-07 horizon extension to 24mo)
+# can burst past that for an event-rich city and earn a 429 — which used to
+# hit raise_for_status() and abort the whole city's TM collection, silently
+# dropping its intake. We now space requests (~4.5/sec) and back off+retry on
+# 429 instead of aborting.
+_TM_REQ_DELAY = 0.22          # seconds between requests (~4.5 req/sec)
+_TM_MAX_RETRIES = 4           # 429 retries per request
+_TM_BACKOFF_BASE = 1.0        # backoff 1s, 2s, 4s … (or Retry-After if larger)
 
 # Ticketmaster Discovery API caps responses at 1 000 events
 # (5 pages × 200) per query. Major cities (NYC, LA, London, Berlin)
@@ -75,21 +88,48 @@ class TicketmasterCollector(BaseCollector):
                 window_total_elements = None
                 window_added = 0
 
+                throttled = False
                 for page in range(_MAX_PAGES):
-                    resp = await client.get(
-                        "https://app.ticketmaster.com/discovery/v2/events.json",
-                        params={
-                            "apikey": settings.TICKETMASTER_KEY,
-                            "city": city_name,
-                            "countryCode": country_code,
-                            "size": 200,
-                            "page": page,
-                            "sort": "date,asc",
-                            "startDateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "endDateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "includePriceRanges": "yes",
-                        },
-                    )
+                    params = {
+                        "apikey": settings.TICKETMASTER_KEY,
+                        "city": city_name,
+                        "countryCode": country_code,
+                        "size": 200,
+                        "page": page,
+                        "sort": "date,asc",
+                        "startDateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "endDateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "includePriceRanges": "yes",
+                    }
+                    # Paced + 429-aware fetch (see _TM_REQ_DELAY block above).
+                    for attempt in range(_TM_MAX_RETRIES):
+                        await asyncio.sleep(_TM_REQ_DELAY)
+                        resp = await client.get(_TM_ENDPOINT, params=params)
+                        if resp.status_code != 429:
+                            break
+                        ra = resp.headers.get("Retry-After")
+                        try:
+                            ra = float(ra) if ra else 0.0
+                        except ValueError:
+                            ra = 0.0
+                        backoff = max(ra, _TM_BACKOFF_BASE * (2 ** attempt))
+                        logger.warning(
+                            f"ticketmaster {city_name}/{country_code}: 429 on "
+                            f"{label} p{page} — backoff {backoff:.1f}s "
+                            f"(attempt {attempt + 1}/{_TM_MAX_RETRIES})"
+                        )
+                        await asyncio.sleep(backoff)
+                    if resp.status_code == 429:
+                        # Still throttled after retries — stop paging this
+                        # window gracefully rather than aborting the whole
+                        # city (raise_for_status would lose all of its TM).
+                        logger.warning(
+                            f"ticketmaster {city_name}/{country_code}: still 429 "
+                            f"after {_TM_MAX_RETRIES} retries on {label}; "
+                            f"skipping rest of window"
+                        )
+                        throttled = True
+                        break
                     if resp.status_code == 400:
                         break  # page out of range — TM returns 400 when page > total pages
                     resp.raise_for_status()
@@ -129,6 +169,7 @@ class TicketmasterCollector(BaseCollector):
                 window_summary.append(
                     f"{label}: te={te} added={window_added}"
                     + (" CAPPED" if capped else "")
+                    + (" THROTTLED" if throttled else "")
                 )
 
         logger.info(
