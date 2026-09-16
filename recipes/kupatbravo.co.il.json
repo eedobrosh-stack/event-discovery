@@ -1,0 +1,112 @@
+{
+  "recipe_version": 1,
+  "domain": "kupatbravo.co.il",
+  "source_name": "bravo",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "timezone": "Asia/Jerusalem",
+  "language": "he",
+  "priority": 45,
+  "entry": {
+    "urls": [
+      "https://kupatbravo.co.il/list/section:8/",
+      "https://kupatbravo.co.il/list/section:6/",
+      "https://kupatbravo.co.il/list/section:5/",
+      "https://kupatbravo.co.il/list/section:12/",
+      "https://kupatbravo.co.il/list/section:13/",
+      "https://kupatbravo.co.il/list/section:14/",
+      "https://kupatbravo.co.il/list/section:11/"
+    ],
+    "paginate": {
+      "mode": "none"
+    },
+    "follow": {
+      "selector": "div.list-description-block h2 a[href^=\"/announce/\"]",
+      "max_links": 250
+    }
+  },
+  "fetch": {
+    "delay_seconds": 2,
+    "timeout": 25,
+    "headers": {
+      "Accept-Language": "he,en;q=0.8"
+    }
+  },
+  "parse": {
+    "kind": "html",
+    "item": "table.tbl-seance tr[data-city]",
+    "date_format": "%d.%m.%Y",
+    "page_fields": {
+      "name": "h1",
+      "description": {
+        "sel": "meta[name=\"description\"]",
+        "attr": "content"
+      },
+      "image_url": {
+        "sel": "meta[property=\"og:image\"]",
+        "attr": "content",
+        "absolute": true
+      }
+    },
+    "fields": {
+      "source_id": {
+        "sel": "a[href^=\"/announce/buy/\"]",
+        "attr": "href",
+        "regex": "/announce/buy/(\\d+)"
+      },
+      "start_date": {
+        "sel": "time.iim-date",
+        "regex": "(\\d{2}\\.\\d{2}\\.\\d{4})"
+      },
+      "start_time": {
+        "sel": "time.iim-date",
+        "regex": "(\\d{1,2}:\\d{2})"
+      },
+      "venue_name": {
+        "sel": "td[data-hall]",
+        "attr": "data-hall"
+      },
+      "venue_city": {
+        "attr": "data-city"
+      },
+      "price": {
+        "sel": ".seancePrice span",
+        "regex": "^(\\d+)$"
+      }
+    }
+  },
+  "city_aliases": {
+    "מודיעין": "Modiin",
+    "מודיעין-מכבים-רעות": "Modiin",
+    "רעננה": "Raanana",
+    "נס ציונה": "Ness Ziona",
+    "אשקלון": "Ashkelon",
+    "גבעתיים": "Givatayim",
+    "קריית אונו": "Kiryat Ono",
+    "קרית אונו": "Kiryat Ono",
+    "ראש העין": "Rosh HaAyin",
+    "רמת השרון": "Ramat HaSharon",
+    "נהריה": "Nahariya",
+    "טבריה": "Tiberias",
+    "כרמיאל": "Karmiel",
+    "עפולה": "Afula",
+    "חדרה": "Hadera",
+    "לוד": "Lod",
+    "רמלה": "Ramla",
+    "יבנה": "Yavne",
+    "בית שמש": "Beit Shemesh",
+    "קריית גת": "Kiryat Gat",
+    "קרית גת": "Kiryat Gat",
+    "זכרון יעקב": "Zichron Yaakov",
+    "שוהם": "Shoham",
+    "יקנעם": "Yokneam",
+    "עכו": "Acre",
+    "צפת": "Safed",
+    "פרדס חנה": "Pardes Hanna",
+    "פרדס חנה-כרכור": "Pardes Hanna"
+  },
+  "defaults": {
+    "price_currency": "ILS"
+  },
+  "notes": "Kupat Bravo ticketing. Crawled via kupatbravo.co.il (the canonical host; robots allows /list/ and /announce/<id>, disallows only /announce/buy/ which we never fetch — we only read that href for the SeanceID). bravo.org.il and kassa.bravo.org.il serve the same site but their robots.txt disallow all bots, so they are NOT used. bravo.co.il is an unrelated parked domain. Listing pages per genre section (8 jazz/blues, 6 concerts, 5 classical, 12 opera, 13 dance, 14 musicals, 11 theatre) show one card per SHOW (announce); the actual performances (city, date, hall, price) are the tr[data-city] rows of table.tbl-seance on each /announce/<id> page — hence entry.follow. Section pages do not paginate (?page=2 returns the same set). ~250 announce pages/night at 2s ≈ 9 min."
+}

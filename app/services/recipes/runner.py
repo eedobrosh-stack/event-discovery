@@ -57,6 +57,8 @@ class RunResult:
     duration_s: float = 0.0
     saved: int = 0
     budget_hit: bool = False
+    followed: int = 0
+    city_groups: int = 0
 
     @property
     def fetched(self) -> int:
@@ -68,6 +70,7 @@ class RunResult:
             "pages": len(self.pages), "requests": self.requests,
             "rows": self.fetched, "events": len(self.events),
             "saved": self.saved, "detail_fetched": self.detail_fetched,
+            "followed": self.followed, "city_groups": self.city_groups,
             "dropped": dict(self.dropped), "errors": len(self.errors),
             "fatal": self.fatal, "duration_s": round(self.duration_s, 1),
         }
@@ -121,9 +124,12 @@ def _parse_body(kind: str, resp, parse_cfg: dict):
 
 
 def _walk_pages(fetcher: Fetcher, start_url: str, values: dict, doc: dict,
-                result: RunResult) -> list[dict]:
+                result: RunResult, *, collect: str = "items",
+                paginate: bool = True) -> list:
+    """Walk one listing URL (with pagination). collect="items" → parsed
+    event rows; collect="links" → detail URLs per entry.follow."""
     entry = doc.get("entry") or {}
-    pag = entry.get("paginate") or {}
+    pag = (entry.get("paginate") or {}) if paginate else {}
     mode = pag.get("mode", "none")
     max_pages = int(pag.get("max_pages", 20))
     kind = doc["parse"]["kind"]
@@ -156,7 +162,11 @@ def _walk_pages(fetcher: Fetcher, start_url: str, values: dict, doc: dict,
             break
         result.pages.append(url)
         try:
-            rows, body = _parse_body(kind, resp, doc["parse"])
+            if collect == "links":
+                rows = P.extract_links(resp.text, entry["follow"], resp.url, doc["domain"])
+                body = None
+            else:
+                rows, body = _parse_body(kind, resp, doc["parse"])
         except Exception as e:
             result.errors.append(f"{url}: parse {type(e).__name__}: {e}")
             break
@@ -267,13 +277,36 @@ def run_recipe(doc: dict, *, fetcher: Optional[Fetcher] = None,
     try:
         rows: list[dict] = []
         try:
-            for url, values in expand_entry_urls(doc["entry"]):
-                rows.extend(_walk_pages(fetcher, url, values, doc, result))
-                if result.budget_hit:
-                    break
-                if len(rows) >= MAX_EVENTS_PER_RUN:
-                    result.errors.append(f"cap {MAX_EVENTS_PER_RUN} rows reached")
-                    break
+            follow = (doc.get("entry") or {}).get("follow")
+            if follow:
+                # two-level crawl: listing pages → detail pages → items
+                links: list[str] = []
+                for url, values in expand_entry_urls(doc["entry"]):
+                    for l in _walk_pages(fetcher, url, values, doc, result, collect="links"):
+                        if l not in links:
+                            links.append(l)
+                    if result.budget_hit:
+                        break
+                cap = int(follow.get("max_links", 100))
+                if len(links) > cap:
+                    result.errors.append(f"follow: {len(links)} links found, capped at {cap}")
+                    links = links[:cap]
+                result.followed = len(links)
+                for l in links:
+                    if result.budget_hit:
+                        break
+                    rows.extend(_walk_pages(fetcher, l, {}, doc, result, paginate=False))
+                    if len(rows) >= MAX_EVENTS_PER_RUN:
+                        result.errors.append(f"cap {MAX_EVENTS_PER_RUN} rows reached")
+                        break
+            else:
+                for url, values in expand_entry_urls(doc["entry"]):
+                    rows.extend(_walk_pages(fetcher, url, values, doc, result))
+                    if result.budget_hit:
+                        break
+                    if len(rows) >= MAX_EVENTS_PER_RUN:
+                        result.errors.append(f"cap {MAX_EVENTS_PER_RUN} rows reached")
+                        break
             if not result.budget_hit:
                 _detail_hop(fetcher, rows, doc, result, is_new)
         except RobotsDisallowed as e:
@@ -333,6 +366,36 @@ def _resolve_city(db, country: Optional[str], city_name: Optional[str]):
     if city is None and country:
         city = db.query(City).filter(City.country == country).first()
     return city
+
+
+def group_events_by_city(db, events: list, country: Optional[str], default_city):
+    """_save_events assigns every event of a batch to ONE City (venue_city
+    only lands in Venue.physical_city), so a multi-city recipe (Bravo:
+    Beersheba / Modi'in / Kfar Saba …) must be persisted per resolved
+    city. → {City: [events]}; unknown cities fall back to default_city
+    and are counted in the returned `unresolved` Counter."""
+    from app.models import City
+    from collections import Counter
+    groups: dict = {}
+    cache: dict = {}
+    unresolved: Counter = Counter()
+    for ev in events:
+        name = (ev.venue_city or "").strip()
+        city = None
+        if name:
+            if name not in cache:
+                q = db.query(City).filter(City.name == name)
+                if country:
+                    q = q.filter(City.country == country)
+                cache[name] = q.first()
+            city = cache[name]
+            if city is None:
+                unresolved[name] += 1
+        city = city or default_city
+        if city is None:
+            continue
+        groups.setdefault(city.id, (city, []))[1].append(ev)
+    return [v for v in groups.values()], unresolved
 
 
 def _update_health(row, result: RunResult, now: datetime) -> None:
@@ -407,8 +470,19 @@ def execute_recipe_row(row_id: int, *, dry_run: bool = False,
                     result.fatal = (f"no City resolvable for country={row.country!r} "
                                     f"city={row.city_name!r}; events not persisted")
                 else:
-                    result.saved = CollectorRegistry()._save_events(result.events, city, db)
+                    reg = CollectorRegistry()
+                    groups, unresolved = group_events_by_city(
+                        db, result.events, row.country or doc.get("country"), city)
+                    saved = 0
+                    for grp_city, grp_events in groups:
+                        saved += reg._save_events(grp_events, grp_city, db)
                     db.commit()
+                    result.saved = saved
+                    result.city_groups = len(groups)
+                    if unresolved:
+                        result.errors.append(
+                            "unresolved venue_city → default city: "
+                            + ", ".join(f"{k}×{v}" for k, v in unresolved.most_common(8)))
             except Exception as e:
                 db.rollback()
                 result.fatal = f"persist failed: {type(e).__name__}: {str(e)[:300]}"

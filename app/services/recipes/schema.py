@@ -125,6 +125,20 @@ def validate_recipe(doc: dict) -> list[str]:
         if not isinstance(mp, int) or mp < 1 or mp > 200:
             errs.append("entry.paginate.max_pages: int 1..200")
 
+    follow = entry.get("follow")
+    if follow is not None:
+        if not isinstance(follow, dict) or not follow.get("selector"):
+            errs.append("entry.follow: object with a CSS 'selector' for the links to follow")
+        else:
+            ml = follow.get("max_links", 100)
+            if not isinstance(ml, int) or ml < 1 or ml > 300:
+                errs.append("entry.follow.max_links: int 1..300")
+            if "regex" in follow:
+                try:
+                    re.compile(follow["regex"])
+                except re.error as e:
+                    errs.append(f"entry.follow.regex: {e}")
+
     # fetch
     fetch = doc.get("fetch") or {}
     if not isinstance(fetch, dict):
@@ -170,12 +184,20 @@ def validate_recipe(doc: dict) -> list[str]:
         else:
             for n, spec in fields.items():
                 errs += _field_spec_errors(n, spec, "parse.fields")
-            if "name" not in fields:
-                errs.append("parse.fields.name: required")
-            if not ({"start_date", "start_datetime"} & set(fields)):
+            provided = set(fields) | set((parse.get("page_fields") or {}) if isinstance(parse.get("page_fields"), dict) else {})
+            if "name" not in provided:
+                errs.append("parse.fields.name: required (or in parse.page_fields)")
+            if not ({"start_date", "start_datetime"} & provided):
                 errs.append("parse.fields: need start_date or start_datetime")
         if parse.get("date_format") is not None and not isinstance(parse["date_format"], str):
             errs.append("parse.date_format: strptime string")
+    if kind == "html" and parse.get("page_fields") is not None:
+        pf = parse["page_fields"]
+        if not isinstance(pf, dict):
+            errs.append("parse.page_fields: object of field specs evaluated once per page")
+        else:
+            for n, spec in pf.items():
+                errs += _field_spec_errors(n, spec, "parse.page_fields")
     if kind in ("html", "api") and "ongoing_if_end_only" in parse and not isinstance(parse["ongoing_if_end_only"], bool):
         errs.append("parse.ongoing_if_end_only: true|false")
 
@@ -195,6 +217,10 @@ def validate_recipe(doc: dict) -> list[str]:
             mpr = detail.get("max_per_run", 60)
             if not isinstance(mpr, int) or mpr < 0 or mpr > 500:
                 errs.append("detail.max_per_run: int 0..500")
+
+    ca = doc.get("city_aliases")
+    if ca is not None and (not isinstance(ca, dict) or not all(isinstance(v, str) for v in ca.values())):
+        errs.append("city_aliases: object of {raw city text: canonical City.name}")
 
     # optional git-controlled scheduling knobs
     if "priority" in doc and not isinstance(doc["priority"], int):

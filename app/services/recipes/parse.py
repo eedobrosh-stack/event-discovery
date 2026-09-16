@@ -161,15 +161,51 @@ def parse_html(html: str, cfg: dict, page_url: str) -> list[dict]:
     doc = soup(html)
     item_sel = cfg.get("item")
     nodes = doc.select(item_sel) if item_sel else [doc]
+    # page_fields: evaluated once against the whole document and merged
+    # into every item row (item-level values win). This is how a show
+    # page's title / image / blurb reach each of its performance rows.
+    page_vals: dict = {}
+    for field, spec in (cfg.get("page_fields") or {}).items():
+        val = _select_value(doc, spec, page_url)
+        if val is not None:
+            page_vals[field] = val
     out: list[dict] = []
     for node in nodes:
-        row: dict = {}
+        row: dict = dict(page_vals)
         for field, spec in (cfg.get("fields") or {}).items():
             val = _select_value(node, spec, page_url)
             if val is not None:
                 row[field] = val
         row["_page_url"] = page_url
         out.append(row)
+    return out
+
+
+def extract_links(html: str, follow: dict, page_url: str, domain: str) -> list[str]:
+    """entry.follow: collect the detail-page URLs a listing points at."""
+    doc = soup(html)
+    attr = follow.get("attr", "href")
+    pat = follow.get("regex")
+    same = follow.get("same_domain", True)
+    out: list[str] = []
+    for el in doc.select(follow["selector"]):
+        v = el.get(attr)
+        if isinstance(v, list):
+            v = " ".join(v)
+        if not v or str(v).startswith(("#", "javascript")):
+            continue
+        if pat:
+            m = re.search(pat, str(v))
+            if not m:
+                continue
+            v = m.group(1) if m.groups() else m.group(0)
+        u = urljoin(page_url, str(v))
+        if same:
+            from app.services.recipes.schema import registered_domain
+            if registered_domain(u) != domain:
+                continue
+        if u not in out:
+            out.append(u)
     return out
 
 

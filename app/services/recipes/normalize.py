@@ -117,9 +117,25 @@ def _str(v: Any) -> Optional[str]:
     return s or None
 
 
+def _city_alias_map(recipe: dict) -> dict:
+    """recipe.city_aliases wins; Hebrew sites also get the shared
+    Tickchak map so 'תל אביב-יפו' → 'Tel Aviv' etc. without repeating it
+    in every Israeli recipe."""
+    m: dict = {}
+    if (recipe.get("language") or "").lower() == "he":
+        try:
+            from app.services.collectors.scrapers.tickchak import HEB_TO_EN_CITY
+            m.update(HEB_TO_EN_CITY)
+        except Exception:  # pragma: no cover
+            pass
+    m.update(recipe.get("city_aliases") or {})
+    return {k.strip(): v for k, v in m.items()}
+
+
 def normalize(rows: list[dict], recipe: dict) -> NormalizeResult:
     res = NormalizeResult()
     parse_cfg = recipe.get("parse") or {}
+    aliases = _city_alias_map(recipe)
     fmt = parse_cfg.get("date_format")
     lang = recipe.get("language")
     tz = recipe.get("timezone")
@@ -203,6 +219,12 @@ def normalize(rows: list[dict], recipe: dict) -> NormalizeResult:
                     end_time = end_dt.strftime("%H:%M")
         if merged.get("end_time"):
             end_time = _split_time(merged["end_time"]) or end_time
+
+        # ── city aliases ─────────────────────────────────────────────
+        vc = _str(merged.get("venue_city"))
+        if vc and aliases:
+            vc = aliases.get(vc, aliases.get(vc.replace("-", " "), vc))
+        merged["venue_city"] = vc
 
         # ── ids / urls ───────────────────────────────────────────────
         venue_name = _str(merged.get("venue_name"))

@@ -426,3 +426,76 @@ def test_ongoing_if_end_only_maps_exhibitions_to_today():
     assert res.events[0].start_date == date.today() and res.events[0].start_time is None
     assert res.events[0].end_date == date.today() + timedelta(days=30)
     assert res.dropped["no_date"] == 2
+
+
+def test_follow_mode_fans_listing_into_show_pages_with_page_fields():
+    listing = ('<ul><li><a class="show" href="/announce/1">A</a></li>'
+               '<li><a class="show" href="/announce/2">B</a></li>'
+               '<li><a class="show" href="https://other.com/x">ext</a></li></ul>')
+    def show(n, title):
+        return (f'<h1>{title}</h1><meta property="og:image" content="/img/{n}.jpg">'
+                f'<table><tr data-city="Haifa"><td class="c">Haifa</td>'
+                f'<td><time class="d">א׳, {NEXT_WEEK[8:10]}.{NEXT_WEEK[5:7]}.{NEXT_WEEK[:4]}<br>20:30</time></td>'
+                f'<td class="last" data-hall="Hall {n}"></td><td><a href="/announce/buy/{n}1">x</a></td></tr>'
+                f'<tr data-city="Tel Aviv"><td class="c">Tel Aviv</td>'
+                f'<td><time class="d">ב׳, {NEXT_WEEK[8:10]}.{NEXT_WEEK[5:7]}.{NEXT_WEEK[:4]}<br>21:00</time></td>'
+                f'<td class="last" data-hall="Hall {n}b"></td><td><a href="/announce/buy/{n}2">x</a></td></tr></table>')
+    f = FakeFetcher({
+        "https://example.org/list": listing,
+        "https://example.org/announce/1": show(1, "Show One"),
+        "https://example.org/announce/2": show(2, "Show Two"),
+    })
+    doc = _base(
+        entry={"urls": ["https://example.org/list"],
+               "follow": {"selector": "a.show", "max_links": 10}},
+        parse={"kind": "html", "item": "tr[data-city]", "date_format": "%d.%m.%Y",
+               "page_fields": {"name": "h1",
+                               "image_url": {"sel": "meta[property='og:image']", "attr": "content", "absolute": True}},
+               "fields": {"source_id": {"sel": "a[href^='/announce/buy/']", "attr": "href", "regex": r"buy/(\d+)"},
+                          "start_date": {"sel": "time.d", "regex": r"(\d{2}\.\d{2}\.\d{4})"},
+                          "start_time": {"sel": "time.d", "regex": r"(\d{1,2}:\d{2})"},
+                          "venue_name": {"sel": "td.last", "attr": "data-hall"},
+                          "venue_city": "td.c"}})
+    res = run_recipe(doc, fetcher=f)
+    assert res.fatal is None, (res.fatal, res.errors)
+    assert res.followed == 2                      # other.com link filtered out
+    assert len(res.pages) == 3
+    assert len(res.events) == 4
+    ev = next(e for e in res.events if e.source_id == "21")
+    assert ev.name == "Show Two" and ev.venue_name == "Hall 2" and ev.venue_city == "Haifa"
+    assert ev.start_time == "20:30" and ev.image_url == "https://example.org/img/2.jpg"
+    assert ev.purchase_link == "https://example.org/announce/2"
+
+
+def test_hebrew_city_aliases_applied_for_he_recipes():
+    rows = [{"name": "x", "start_date": NEXT_WEEK, "venue_city": "תל אביב-יפו", "_page_url": "u"},
+            {"name": "y", "start_date": NEXT_WEEK, "venue_city": "באר שבע", "_page_url": "u"},
+            {"name": "z", "start_date": NEXT_WEEK, "venue_city": "כפר יונה", "_page_url": "u"}]
+    doc = _base()
+    doc["city_aliases"] = {"כפר יונה": "Kfar Yona"}
+    res = normalize(rows, doc)
+    assert [e.venue_city for e in res.events] == ["Tel Aviv", "Beersheba", "Kfar Yona"]
+
+
+def test_group_events_by_city_uses_venue_city_then_default(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import City
+    from app.services.recipes.runner import group_events_by_city
+    engine = create_engine(f"sqlite:///{tmp_path}/c.db")
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    tlv = City(name="Tel Aviv", country="Israel", timezone="Asia/Jerusalem", latitude=32.0, longitude=34.7)
+    bsh = City(name="Beersheba", country="Israel", timezone="Asia/Jerusalem", latitude=31.2, longitude=34.7)
+    db.add_all([tlv, bsh]); db.commit()
+    rows = [{"name": "a", "start_date": NEXT_WEEK, "venue_city": "Beersheba", "_page_url": "u"},
+            {"name": "b", "start_date": NEXT_WEEK, "venue_city": "Tel Aviv", "_page_url": "u"},
+            {"name": "c", "start_date": NEXT_WEEK, "venue_city": "Nowhere", "_page_url": "u"},
+            {"name": "d", "start_date": NEXT_WEEK, "_page_url": "u"}]
+    events = normalize(rows, _base()).events
+    groups, unresolved = group_events_by_city(db, events, "Israel", tlv)
+    by_name = {c.name: sorted(e.name for e in evs) for c, evs in groups}
+    assert by_name == {"Beersheba": ["a"], "Tel Aviv": ["b", "c", "d"]}
+    assert unresolved == {"Nowhere": 1}
