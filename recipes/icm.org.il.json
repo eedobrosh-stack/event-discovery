@@ -1,0 +1,73 @@
+{
+  "recipe_version": 1,
+  "domain": "icm.org.il",
+  "source_name": "icm",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "timezone": "Asia/Jerusalem",
+  "language": "he",
+  "entry": {
+    "urls": [
+      "https://www.icm.org.il/jazz-concerts/",
+      "https://www.icm.org.il/baroque-concerts/",
+      "https://www.icm.org.il/chamber/",
+      "https://www.icm.org.il/event-category/concerts-performed-by-students-he/",
+      "https://www.icm.org.il/event-category/masterclass-and-workshops-he/",
+      "https://www.icm.org.il/event-category/guests-he/",
+      "https://www.icm.org.il/event-category/hamachlaka/"
+    ],
+    "paginate": {
+      "mode": "none"
+    }
+  },
+  "fetch": {
+    "delay_seconds": 2,
+    "timeout": 25,
+    "headers": {
+      "Accept-Language": "he,en;q=0.8"
+    }
+  },
+  "parse": {
+    "kind": "html",
+    "item": "div.uc_post_grid_style_one_item",
+    "date_format": "%d.%m.%Y",
+    "fields": {
+      "source_id": {
+        "sel": "a.uc_post_grid_style_one_image",
+        "attr": "href",
+        "regex": "/event/([^/?#]+)"
+      },
+      "name": ".ue_p_title",
+      "artist_name": {
+        "sel": ".ue_p_title",
+        "regex": "^מועדון[^-–]*[-–][^-–]*[-–]\\s*([^-–]+?)\\s*$"
+      },
+      "start_date": ".event_date span",
+      "start_time": {
+        "sel": ".event_date",
+        "regex": "(\\d{1,2}:\\d{2})"
+      },
+      "purchase_link": {
+        "sel": "a.uc_post_grid_style_one_image",
+        "attr": "href",
+        "absolute": true
+      },
+      "image_url": {
+        "sel": ".uc_post_image img",
+        "attr": "src",
+        "absolute": true
+      },
+      "raw_categories": {
+        "sel": ".label-name",
+        "all": true
+      }
+    }
+  },
+  "defaults": {
+    "venue_name": "הקונסרבטוריון הישראלי למוסיקה",
+    "venue_city": "Tel Aviv",
+    "venue_address": "Louis Marshall St 25, Tel Aviv",
+    "price_currency": "ILS"
+  },
+  "notes": "WordPress + Elementor post grid (server-rendered). Date is dd.mm.yyyy in .event_date span, time after the last pipe. WP REST /wp/v2/event exists but hides ACF (no dates) so HTML wins. Same event appears on several category pages; source_id (event slug) dedupes. Venue defaulted to the conservatory; a few chamber concerts are held elsewhere (detail hop TODO if that matters). artist_name only for jazz-club titles (מועדון … - series - ARTIST); other titles are left without an artist rather than guessed."
+}

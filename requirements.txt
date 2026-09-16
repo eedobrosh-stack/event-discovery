@@ -19,3 +19,4 @@ google-genai
 python-multipart
 python-dateutil
 curl_cffi>=0.7
+dateparser>=1.2

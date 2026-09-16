@@ -61,6 +61,25 @@ geneous to hand-code). Two cadences:
 - Schedule: B fires +210 min from boot, A fires +240 min — B first
   so the same-night pool gets extracted (`a942a16`).
 
+**Route 3 — Recipe-driven extraction (the Gemini-free long tail,
+2026-09-16).** Supersedes Cadence A as the main long-tail path; Cadence
+A/B stay in the code but are off. One JSON *recipe* per domain
+(`recipes/<domain>.json`, git = source of truth; `source_recipes` table
+= runtime copy) says how to enumerate listing URLs, fetch, and parse
+events with one of four deterministic kinds: `ics`, `jsonld`, `api`
+(hidden JSON endpoint + field map), `html` (CSS selectors). Recipes are
+written interactively by Claude on the Mac (inspect in Chrome →
+`scripts/recipe_run.py --dry-run` → `--upsert` over SSH); the nightly
+`recipe_extract_job` (01:00 UTC, `_heavy_job_lock`) runs them on Render
+with httpx + BeautifulSoup and persists through the same
+`CollectorRegistry._save_events` path every collector uses. Drift =
+2 zero-fetch or 2 error runs → `drift_flag` → repair queue at
+`/api/stats/recipes`. Design: `docs/recipe_extraction_design.md`;
+authoring checklist: `recipes/README.md`; engine:
+`app/services/recipes/`. Enabling a recipe marks that domain's LLMSource
+rows `graduated` so Gemini never touches it again. **Brave discovery is
+paused** until the recipe queue (proven-yield LLMSource domains) runs dry.
+
 ### Discovery method selection
 Env var `DISCOVERY_METHOD` ∈ {`search`, `gemini`}. Auto-detects `search`
 when `BRAVE_API_KEY` is set. The Gemini-grounded path
@@ -232,6 +251,11 @@ shows Tel Aviv before Gush Dan).
 | `scripts/dedupe_events.py` | Cross-source event-row deduper — buckets on (start_date, venue_id, primary identifier), unions event_types onto canonical, ORM-driven so m2m cascades |
 | `scripts/backfill_mevalim_artist_name.py` | One-off SQL: name → artist_name for mevalim rows |
 | `scripts/seed_llm_sources.py` | Manual seed of LLMSource trial pool |
+| `app/services/recipes/` | Route 3 engine: schema / fetch / parse / normalize / runner |
+| `app/models/source_recipe.py` | `source_recipes` table (one row per domain, health + drift) |
+| `recipes/*.json` | Route 3 recipes (source of truth) + `recipes/README.md` authoring checklist |
+| `scripts/recipe_run.py` | `--dry-run` / `--upsert` / `--execute` / `--list` for recipes |
+| `docs/recipe_extraction_design.md` | Route 3 design |
 
 ## Active issues / open queue
 

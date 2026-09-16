@@ -1334,3 +1334,60 @@ def graduation_candidates(db: Session = Depends(get_db), limit: int = 20):
         "promotion": promotion,
         "block": block,
     }
+
+
+# ── Route 3 recipes health ────────────────────────────────────────────────
+@router.get("/recipes")
+def recipes_health(db: Session = Depends(get_db)):
+    """One row per SourceRecipe, drift/error first, then by priority.
+    Feeds the morning digest's Recipes block and the repair queue."""
+    from app.models import SourceRecipe
+    rows = db.query(SourceRecipe).all()
+    since = datetime.utcnow() - timedelta(hours=36)
+    last_job = (
+        db.query(ScanLog)
+        .filter(ScanLog.job_name == "recipe_extract", ScanLog.detail.is_(None))
+        .order_by(ScanLog.started_at.desc())
+        .first()
+    )
+
+    def _rank(r):
+        return (0 if r.drift_flag else 1,
+                0 if r.last_status in ("error", "drift") else 1,
+                -(r.priority or 0))
+
+    out = []
+    for r in sorted(rows, key=_rank):
+        out.append({
+            "id": r.id, "domain": r.domain, "source": r.source_name,
+            "enabled": bool(r.enabled), "version": r.recipe_version,
+            "kind": ((r.recipe or {}).get("parse") or {}).get("kind"),
+            "country": r.country, "priority": r.priority,
+            "cadence_hours": r.cadence_hours,
+            "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+            "next_run_at": r.next_run_at.isoformat() if r.next_run_at else None,
+            "last_status": r.last_status, "drift_flag": bool(r.drift_flag),
+            "last_fetched": r.last_fetched, "last_saved": r.last_saved,
+            "last_requests": r.last_requests, "last_duration_s": r.last_duration_s,
+            "runs_total": r.runs_total, "saved_total": r.saved_total,
+            "recent_fetched_counts": r.recent_fetched_counts,
+            "last_error": (r.last_error or "")[:300] or None,
+            "ran_last_36h": bool(r.last_run_at and r.last_run_at >= since),
+        })
+    return {
+        "as_of": datetime.utcnow().isoformat(),
+        "summary": {
+            "recipes": len(rows),
+            "enabled": sum(1 for r in rows if r.enabled),
+            "repair_queue": sum(1 for r in rows if r.drift_flag),
+            "saved_last_run": sum(r.last_saved or 0 for r in rows if r.last_run_at and r.last_run_at >= since),
+            "saved_total": sum(r.saved_total or 0 for r in rows),
+        },
+        "last_job": None if last_job is None else {
+            "started_at": last_job.started_at.isoformat() if last_job.started_at else None,
+            "finished_at": last_job.finished_at.isoformat() if last_job.finished_at else None,
+            "status": last_job.status, "events_found": last_job.events_found,
+            "events_saved": last_job.events_saved, "notes": (last_job.notes or "")[:500],
+        },
+        "recipes": out,
+    }

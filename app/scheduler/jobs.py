@@ -4173,3 +4173,142 @@ def cleanup_past_events():
         log.finished_at = datetime.utcnow()
         db.commit()
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Route 3 — recipe-driven extraction (Gemini-free long tail)
+# docs/recipe_extraction_design.md
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def recipe_extract_job(
+    max_recipes_per_run: int = 200,
+    per_recipe_wall_clock_s: int = 600,
+    job_request_cap: int = 20000,
+) -> None:
+    """Nightly: run every enabled SourceRecipe that is due
+    (next_run_at IS NULL or <= now), highest priority first.
+
+    Each recipe runs in a worker thread with its own DB session
+    (`execute_recipe_row`), bounded by a wall clock so one wedged site
+    can't hold the heavy-job lock all night. Health/drift bookkeeping is
+    done inside execute_recipe_row; this loop only aggregates and logs.
+    Zero LLM calls, zero Brave calls — by construction.
+    """
+    from app.models import SourceRecipe
+    from app.services.recipes import execute_recipe_row
+
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="recipe_extract", status="running")
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        log_id = log.id
+
+        now = datetime.utcnow()
+        try:
+            due = (
+                db.query(SourceRecipe.id, SourceRecipe.domain)
+                .filter(SourceRecipe.enabled.is_(True))
+                .filter((SourceRecipe.next_run_at.is_(None))
+                        | (SourceRecipe.next_run_at <= now))
+                .order_by(SourceRecipe.priority.desc(), SourceRecipe.id.asc())
+                .limit(max_recipes_per_run)
+                .all()
+            )
+        finally:
+            db.close()
+
+        logger.info(f"recipe_extract: {len(due)} recipe(s) due")
+        tot_fetched = tot_saved = tot_requests = 0
+        failures: list[str] = []
+
+        for rid, domain in due:
+            if tot_requests >= job_request_cap:
+                failures.append(f"job request cap {job_request_cap} reached before {domain}")
+                break
+            sub_db = SessionLocal()
+            sub = ScanLog(job_name="recipe_extract", detail=domain, status="running")
+            sub_db.add(sub)
+            sub_db.commit()
+            sub_db.refresh(sub)
+            sub_id = sub.id
+            sub_db.close()
+
+            summary: dict
+            try:
+                summary = await asyncio.wait_for(
+                    asyncio.to_thread(execute_recipe_row, rid),
+                    timeout=per_recipe_wall_clock_s,
+                )
+            except asyncio.TimeoutError:
+                summary = {"fatal": f"wall clock {per_recipe_wall_clock_s}s exceeded",
+                           "rows": 0, "saved": 0, "requests": 0}
+                # mark the row so the repair queue sees it
+                try:
+                    mdb = SessionLocal()
+                    r = mdb.query(SourceRecipe).get(rid)
+                    if r is not None:
+                        r.last_run_at = datetime.utcnow()
+                        r.last_status = "error"
+                        r.last_error = summary["fatal"]
+                        r.consecutive_errors = (r.consecutive_errors or 0) + 1
+                        r.drift_flag = r.consecutive_errors >= 2
+                        r.next_run_at = datetime.utcnow() + timedelta(hours=(r.cadence_hours or 24) * 2)
+                        mdb.commit()
+                finally:
+                    mdb.close()
+            except Exception as e:
+                summary = {"fatal": f"{type(e).__name__}: {e}", "rows": 0, "saved": 0, "requests": 0}
+                logger.exception(f"recipe_extract: {domain} crashed")
+
+            fetched = int(summary.get("rows") or 0)
+            saved = int(summary.get("saved") or 0)
+            reqs = int(summary.get("requests") or 0)
+            tot_fetched += fetched
+            tot_saved += saved
+            tot_requests += reqs
+            if summary.get("fatal"):
+                failures.append(f"{domain}: {summary['fatal']}")
+
+            sub_db = SessionLocal()
+            try:
+                s = sub_db.query(ScanLog).get(sub_id)
+                if s is not None:
+                    s.finished_at = datetime.utcnow()
+                    s.events_found = fetched
+                    s.events_saved = saved
+                    s.status = "failed" if summary.get("fatal") else "success"
+                    s.notes = (f"requests={reqs} pages={summary.get('pages', 0)} "
+                               f"dropped={summary.get('dropped', {})} "
+                               f"{summary.get('fatal') or ''}")[:2000]
+                    sub_db.commit()
+            finally:
+                sub_db.close()
+
+            logger.info(
+                f"recipe_extract: {domain} rows={fetched} saved={saved} "
+                f"requests={reqs} dropped={summary.get('dropped', {})} "
+                f"{'FATAL ' + summary['fatal'] if summary.get('fatal') else ''}"
+            )
+            # free ORM identity maps + BeautifulSoup trees between recipes
+            import gc
+            gc.collect()
+
+        db = SessionLocal()
+        try:
+            l = db.query(ScanLog).get(log_id)
+            if l is not None:
+                l.finished_at = datetime.utcnow()
+                l.events_found = tot_fetched
+                l.events_saved = tot_saved
+                l.status = "success" if not failures or tot_saved > 0 else "failed"
+                l.notes = (f"recipes={len(due)} requests={tot_requests} "
+                           f"failures={len(failures)}: " + " | ".join(failures[:10]))[:2000]
+                db.commit()
+        finally:
+            db.close()
+        logger.info(
+            f"recipe_extract: done — {len(due)} recipes, rows={tot_fetched}, "
+            f"saved={tot_saved}, requests={tot_requests}, failures={len(failures)}"
+        )
