@@ -41,7 +41,7 @@ load_dotenv(os.environ.get("SUPERCALY_ENV", "/Users/eedo.b/supercaly/.env"))
 logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"),
                     format="%(levelname)s %(name)s: %(message)s")
 
-from app.services.recipes.schema import validate_recipe, registered_domain  # noqa: E402
+from app.services.recipes.schema import validate_recipe  # noqa: E402
 from app.services.recipes.runner import run_recipe  # noqa: E402
 
 
@@ -121,79 +121,23 @@ def _db():
 
 def cmd_upsert(path: str, *, written_by: str, priority: int | None,
                cadence: int | None, enable: bool | None) -> int:
-    from app.models import SourceRecipe, LLMSource
+    from app.services.recipes.sync import upsert_recipe
     doc = _load(path)
-    probs = validate_recipe(doc)
-    if probs:
-        print(f"{path}: INVALID")
-        for p in probs:
-            print("  -", p)
-        return 2
     db = _db()
     try:
-        row = db.query(SourceRecipe).filter(SourceRecipe.domain == doc["domain"]).first()
-        clash = db.query(SourceRecipe).filter(
-            SourceRecipe.source_name == doc["source_name"],
-            SourceRecipe.domain != doc["domain"]).first()
-        if clash:
-            print(f"source_name {doc['source_name']!r} already used by {clash.domain}")
-            return 2
-        now = datetime.utcnow()
-        if row is None:
-            row = SourceRecipe(domain=doc["domain"], source_name=doc["source_name"],
-                               recipe=doc, recipe_version=1, enabled=True,
-                               priority=priority or 0, cadence_hours=cadence or 24,
-                               written_by=written_by, next_run_at=now)
-            db.add(row)
-            verb = "created"
-        else:
-            changed = json.dumps(row.recipe, sort_keys=True) != json.dumps(doc, sort_keys=True)
-            row.recipe = doc
-            row.source_name = doc["source_name"]
-            if changed:
-                row.recipe_version = (row.recipe_version or 0) + 1
-                # a repaired recipe should run tonight and leave the repair queue
-                row.next_run_at = now
-                row.drift_flag = False
-                row.consecutive_errors = 0
-                row.consecutive_zero_fetch = 0
-            if priority is not None:
-                row.priority = priority
-            if cadence is not None:
-                row.cadence_hours = cadence
-            row.written_by = written_by
-            verb = "updated" if changed else "unchanged"
-        if enable is not None:
-            row.enabled = enable
-        row.country = doc.get("country")
-        row.city_name = doc.get("city_name")
-        row.notes = doc.get("notes")
-        db.flush()
-
-        db.commit()
-
-        # Graduate LLMSource rows on this domain so Cadence A (if ever
-        # re-enabled) never spends Gemini on a recipe-covered site.
-        # Separate transaction: a stale local DB (missing newer
-        # llm_sources columns) must not undo the recipe upsert.
-        dom = doc["domain"]
-        grads = 0
-        try:
-            for src in db.query(LLMSource).filter(LLMSource.url.ilike(f"%{dom}%")).all():
-                if registered_domain(src.url) == dom and src.state != "graduated":
-                    src.state = "graduated"
-                    src.notes = ((src.notes or "") + f"\n[{now:%Y-%m-%d}] graduated → recipe {doc['source_name']}").strip()
-                    grads += 1
-            db.commit()
-        except Exception as e:  # pragma: no cover
-            db.rollback()
-            grads = f"skipped ({type(e).__name__})"
-        print(f"{dom}: {verb} (v{row.recipe_version}, enabled={row.enabled}, "
-              f"priority={row.priority}, cadence={row.cadence_hours}h, "
-              f"llm_sources graduated={grads})")
-        return 0
+        res = upsert_recipe(db, doc, written_by=written_by, priority=priority,
+                            cadence=cadence, enable=enable)
     finally:
         db.close()
+    if res["verb"] in ("invalid", "clash"):
+        print(f"{path}: {res['verb'].upper()}")
+        for pr in res["problems"]:
+            print("  -", pr)
+        return 2
+    print(f"{res['domain']}: {res['verb']} (v{res['version']}, enabled={res['enabled']}, "
+          f"priority={res['priority']}, cadence={res['cadence']}h, "
+          f"llm_sources graduated={res['graduated']})")
+    return 0
 
 
 def cmd_list() -> int:

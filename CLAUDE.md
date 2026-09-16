@@ -69,7 +69,7 @@ A/B stay in the code but are off. One JSON *recipe* per domain
 events with one of four deterministic kinds: `ics`, `jsonld`, `api`
 (hidden JSON endpoint + field map), `html` (CSS selectors). Recipes are
 written interactively by Claude on the Mac (inspect in Chrome →
-`scripts/recipe_run.py --dry-run` → `--upsert` over SSH); the nightly
+`scripts/recipe_run.py --dry-run` → commit + push; every deploy syncs `recipes/*.json` into the table at startup and runs due recipes ~25 min after boot, so no SSH is needed); the nightly
 `recipe_extract_job` (01:00 UTC, `_heavy_job_lock`) runs them on Render
 with httpx + BeautifulSoup and persists through the same
 `CollectorRegistry._save_events` path every collector uses. Drift =

@@ -6,6 +6,7 @@
   "city_name": "Tel Aviv",
   "timezone": "Asia/Jerusalem",
   "language": "he",
+  "priority": 50,
   "entry": {
     "urls": [
       "https://www.icm.org.il/jazz-concerts/",

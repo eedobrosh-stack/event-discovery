@@ -194,6 +194,14 @@ def validate_recipe(doc: dict) -> list[str]:
             if not isinstance(mpr, int) or mpr < 0 or mpr > 500:
                 errs.append("detail.max_per_run: int 0..500")
 
+    # optional git-controlled scheduling knobs
+    if "priority" in doc and not isinstance(doc["priority"], int):
+        errs.append("priority: int")
+    if "cadence_hours" in doc and (not isinstance(doc["cadence_hours"], int) or doc["cadence_hours"] < 1):
+        errs.append("cadence_hours: int >= 1")
+    if "enabled" in doc and not isinstance(doc["enabled"], bool):
+        errs.append("enabled: true|false")
+
     # defaults
     dflt = doc.get("defaults") or {}
     if not isinstance(dflt, dict):

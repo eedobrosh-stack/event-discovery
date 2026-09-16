@@ -29,7 +29,7 @@ table on Render is the runtime copy. Full schema and rationale:
    Read: rows parsed vs events built, the `dropped` reasons, the fill
    rate line, the date range. `no_date` > 0 means the selector or format
    is off. `past` is normal on pages that list history.
-5. **Push** to prod (Claude runs this over SSH to the Render box):
+5. **Publish** = commit + push to `main`. Every deploy runs `sync_recipes_from_dir` at startup (creates/updates rows, bumps `recipe_version` on change, resets `next_run_at`, clears drift, graduates the domain's LLMSource rows) and a one-shot `recipe_extract` fires ~25 min after boot for due recipes. Manual alternative over SSH on the Render box:
    ```
    cd /opt/render/project/src && PYTHONPATH=. python3 scripts/recipe_run.py recipes/<domain>.json --upsert
    PYTHONPATH=. python3 scripts/recipe_run.py --execute-dry <domain>   # optional sanity run on prod

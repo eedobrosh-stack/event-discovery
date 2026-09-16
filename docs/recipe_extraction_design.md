@@ -310,10 +310,14 @@ A new personal skill, `/supercaly-recipe`, drives this. Per domain:
 4. **Dry-run locally:** `PYTHONPATH=. python3 scripts/recipe_run.py
    recipes/icm.org.il.json --dry-run` prints parsed events (count, first
    10, date-parse failures, missing-field counts) without touching any DB.
-5. **Push:** `scripts/recipe_run.py --upsert` over SSH to the Render box
-   (existing convention: Claude runs prod scripts, dry-run first). The
-   script upserts the `source_recipes` row, bumps `recipe_version`, and
-   marks the domain's LLMSource rows `graduated`.
+5. **Publish:** commit + push to `main`. Startup (`_deferred_seed`)
+   runs `sync_recipes_from_dir` — upserts the `source_recipes` row,
+   bumps `recipe_version` on change, resets `next_run_at`, marks the
+   domain's LLMSource rows `graduated` — and a one-shot
+   `recipe_extract` fires ~25 min after boot for due recipes.
+   (`scripts/recipe_run.py --upsert` over SSH remains as a manual path;
+   SSH from the Claude session is blocked by policy, which is why deploy
+   became the publish step.)
 6. **Verify next morning** in the digest.
 
 Recipes live in git (`recipes/*.json`) as the source of truth and in the

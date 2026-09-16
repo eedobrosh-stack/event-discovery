@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -935,6 +936,17 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=3600,
         coalesce=True,
     )
+    # One-shot catch-up ~25 min after boot: only *due* recipes run
+    # (next_run_at <= now), so a redeploy costs nothing when the nightly
+    # already ran, and a freshly pushed recipe yields events the same
+    # day instead of waiting for 01:00 UTC.
+    scheduler.add_job(
+        recipe_extract_job,
+        DateTrigger(run_date=_t + _td(minutes=25)),
+        id="recipe_extract_boot",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     scheduler.add_job(
         cleanup_past_events,
         IntervalTrigger(hours=24, start_date=_t + _td(minutes=35)),
@@ -1212,6 +1224,10 @@ async def lifespan(app: FastAPI):
             await asyncio.get_event_loop().run_in_executor(None, _seed_platform_venues)
             await asyncio.get_event_loop().run_in_executor(None, _seed_event_types)
             await asyncio.get_event_loop().run_in_executor(None, _seed_artist_classifications)
+            # Route 3: recipes/*.json (git) → source_recipes. Pushing to
+            # main is the publish step — no SSH into the box needed.
+            from app.services.recipes.sync import seed_recipes_at_startup
+            await asyncio.get_event_loop().run_in_executor(None, seed_recipes_at_startup)
             _log.info("Seeding complete")
         except Exception as e:
             _log.warning(f"Seeding failed: {e}")

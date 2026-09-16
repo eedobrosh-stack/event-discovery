@@ -333,3 +333,50 @@ def test_invalid_recipe_is_fatal_without_fetching():
     res = run_recipe(_base(domain="www.example.org"), fetcher=f)
     assert res.fatal.startswith("invalid recipe")
     assert f.requests_made == 0
+
+
+# ── sync (git → table) on a throwaway SQLite DB ──────────────────────────
+def test_sync_recipes_from_dir_upsert_semantics(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401  (register every table on Base)
+    from app.database import Base
+    from app.models import SourceRecipe
+    from app.services.recipes.sync import sync_recipes_from_dir
+
+    engine = create_engine(f"sqlite:///{tmp_path}/t.db")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    rdir = tmp_path / "recipes"
+    rdir.mkdir()
+    doc = _html_recipe()
+    doc["priority"] = 7
+    (rdir / "example.org.json").write_text(json.dumps(doc), encoding="utf-8")
+    (rdir / "broken.json").write_text("{not json", encoding="utf-8")
+    bad = _html_recipe(domain="www.bad.org")
+    (rdir / "bad.json").write_text(json.dumps(bad), encoding="utf-8")
+
+    db = Session()
+    s = sync_recipes_from_dir(db, str(rdir))
+    assert s["created"] == 1 and len(s["invalid"]) == 2, s
+    row = db.query(SourceRecipe).filter_by(domain="example.org").one()
+    assert row.recipe_version == 1 and row.priority == 7 and row.enabled
+
+    # simulate a night of health, then redeploy with an unchanged file
+    row.last_status = "ok"; row.saved_total = 99; row.drift_flag = True
+    row.next_run_at = None
+    db.commit()
+    s = sync_recipes_from_dir(db, str(rdir))
+    assert s["unchanged"] == 1, s
+    row = db.query(SourceRecipe).filter_by(domain="example.org").one()
+    assert row.recipe_version == 1 and row.saved_total == 99 and row.drift_flag is True
+
+    # edited recipe → version bump, drift cleared, due now
+    doc["parse"]["fields"]["description"] = ".d"
+    (rdir / "example.org.json").write_text(json.dumps(doc), encoding="utf-8")
+    s = sync_recipes_from_dir(db, str(rdir))
+    assert s["updated"] == 1, s
+    row = db.query(SourceRecipe).filter_by(domain="example.org").one()
+    assert row.recipe_version == 2 and row.drift_flag is False and row.next_run_at is not None
+    db.close()
