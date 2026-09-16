@@ -1,0 +1,69 @@
+{
+  "recipe_version": 1,
+  "domain": "visitberlin.de",
+  "source_name": "visitberlin",
+  "country": "Germany",
+  "city_name": "Berlin",
+  "timezone": "Europe/Berlin",
+  "language": "en",
+  "priority": 40,
+  "entry": {
+    "urls": [
+      "https://www.visitberlin.de/en/event-calendar-berlin"
+    ],
+    "paginate": {
+      "mode": "page_param",
+      "param": "page",
+      "start": 0,
+      "max_pages": 40
+    }
+  },
+  "fetch": {
+    "delay_seconds": 2,
+    "timeout": 25
+  },
+  "parse": {
+    "kind": "html",
+    "item": "article.teaser-search--event",
+    "date_format": "%d/%m/%Y",
+    "fields": {
+      "source_id": {
+        "attr": "data-nid"
+      },
+      "name": ".teaser-search__heading",
+      "start_date": {
+        "sel": ".teaser-search__date",
+        "regex": "^(\\d{2}/\\d{2}/\\d{4})"
+      },
+      "start_time": {
+        "sel": ".teaser-search__date time",
+        "attr": "datetime",
+        "regex": "(\\d{2}:\\d{2}):\\d{2}"
+      },
+      "end_date": {
+        "sel": ".teaser-search__date",
+        "regex": "^To (\\d{2}/\\d{2}/\\d{4})"
+      },
+      "venue_name": ".teaser-search__location .me__content > .nopr",
+      "description": ".teaser-search__text > div",
+      "purchase_link": {
+        "sel": "a.teaser-search__mainlink",
+        "attr": "href",
+        "absolute": true
+      },
+      "raw_categories": {
+        "sel": ".category-label",
+        "all": true
+      },
+      "venue_address": {
+        "sel": ".teaser-search__print-address"
+      }
+    },
+    "ongoing_if_end_only": true
+  },
+  "defaults": {
+    "venue_city": "Berlin",
+    "price_currency": "EUR"
+  },
+  "notes": "Drupal, server-rendered, 21 cards/page, ?page=N from 0. Cards whose date reads 'To dd/mm/yyyy' are ongoing exhibitions (only an end date is shown): parse.ongoing_if_end_only maps them to start=today (no time) + end_date, matching how the catalog already carries exhibitions. 'Permanent exhibition' cards have no date at all and are dropped. Proven-yield LLMSource domain (~55 events/week under Cadence A)."
+}

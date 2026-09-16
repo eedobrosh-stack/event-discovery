@@ -176,6 +176,8 @@ def validate_recipe(doc: dict) -> list[str]:
                 errs.append("parse.fields: need start_date or start_datetime")
         if parse.get("date_format") is not None and not isinstance(parse["date_format"], str):
             errs.append("parse.date_format: strptime string")
+    if kind in ("html", "api") and "ongoing_if_end_only" in parse and not isinstance(parse["ongoing_if_end_only"], bool):
+        errs.append("parse.ongoing_if_end_only: true|false")
 
     # detail
     detail = doc.get("detail")

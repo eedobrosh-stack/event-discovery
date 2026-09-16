@@ -169,15 +169,27 @@ def normalize(rows: list[dict], recipe: dict) -> NormalizeResult:
             start_dt = _parse_dt(merged["start_date"], fmt=fmt, language=lang, tz=tz)
             if start_dt and (start_dt.hour or start_dt.minute) and not merged.get("start_time"):
                 start_time = start_dt.strftime("%H:%M")
+        ongoing = False
+        if start_dt is None and parse_cfg.get("ongoing_if_end_only"):
+            # exhibitions / runs that only publish an end date ("To
+            # 13/11/2026"): treat as ongoing from today, if still open
+            end_raw0 = merged.get("end_datetime", merged.get("end_date"))
+            end_dt0 = _parse_dt(end_raw0, fmt=fmt, language=lang, tz=tz) if end_raw0 is not None else None
+            if end_dt0 is not None and end_dt0.date() >= today:
+                start_dt = datetime.combine(today, datetime.min.time())
+                ongoing = True
+                res.dropped["ongoing_from_end_date"] += 1   # informational counter
         if start_dt is None:
             res.dropped["no_date"] += 1
             res.samples.setdefault("no_date", row)
             continue
         start_date = start_dt.date()
+        if ongoing:
+            start_time = None
         if start_date < today:
             res.dropped["past"] += 1
             continue
-        if merged.get("start_time"):
+        if merged.get("start_time") and not ongoing:
             start_time = _split_time(merged["start_time"]) or start_time
 
         end_date = None

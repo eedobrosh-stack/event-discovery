@@ -56,6 +56,7 @@ class RunResult:
     fatal: Optional[str] = None
     duration_s: float = 0.0
     saved: int = 0
+    budget_hit: bool = False
 
     @property
     def fetched(self) -> int:
@@ -139,7 +140,13 @@ def _walk_pages(fetcher: Fetcher, start_url: str, values: dict, doc: dict,
         seen_urls.add(url)
         try:
             resp = fetcher.get(url, values=values)
-        except (BudgetExhausted, RobotsDisallowed):
+        except BudgetExhausted as e:
+            # keep everything parsed so far — a capped run is a partial
+            # run, not a failed one
+            result.errors.append(f"request budget exhausted ({e}) at {url}; partial run")
+            result.budget_hit = True
+            break
+        except RobotsDisallowed:
             raise
         except Exception as e:
             result.errors.append(f"{url}: fetch {type(e).__name__}: {e}")
@@ -206,7 +213,11 @@ def _detail_hop(fetcher: Fetcher, rows: list[dict], doc: dict, result: RunResult
                 continue
         try:
             resp = fetcher.get(url)
-        except (BudgetExhausted, RobotsDisallowed):
+        except BudgetExhausted as e:
+            result.errors.append(f"request budget exhausted ({e}) during detail hop; partial")
+            result.budget_hit = True
+            break
+        except RobotsDisallowed:
             raise
         except Exception as e:
             result.errors.append(f"detail {url}: {type(e).__name__}: {e}")
@@ -258,12 +269,13 @@ def run_recipe(doc: dict, *, fetcher: Optional[Fetcher] = None,
         try:
             for url, values in expand_entry_urls(doc["entry"]):
                 rows.extend(_walk_pages(fetcher, url, values, doc, result))
+                if result.budget_hit:
+                    break
                 if len(rows) >= MAX_EVENTS_PER_RUN:
                     result.errors.append(f"cap {MAX_EVENTS_PER_RUN} rows reached")
                     break
-            _detail_hop(fetcher, rows, doc, result, is_new)
-        except BudgetExhausted as e:
-            result.errors.append(f"request budget exhausted ({e}); partial run")
+            if not result.budget_hit:
+                _detail_hop(fetcher, rows, doc, result, is_new)
         except RobotsDisallowed as e:
             result.fatal = f"robots.txt disallows {e}"
         # In-run dedupe on source_id: the same event often appears on

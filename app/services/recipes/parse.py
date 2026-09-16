@@ -16,6 +16,16 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 
+def soup(html: str) -> BeautifulSoup:
+    """lxml is fast but chokes on some real-world markup (e.g. a bare
+    ':' attribute name — seen on visitstockholm.com). Fall back to the
+    stdlib parser rather than failing the whole page."""
+    try:
+        return BeautifulSoup(html, "lxml")
+    except Exception:
+        return BeautifulSoup(html, "html.parser")
+
+
 # ── generic helpers ──────────────────────────────────────────────────────
 _PATH_TOKEN = re.compile(r"([^.\[\]]+)|\[(\*|-?\d+)\]")
 
@@ -61,7 +71,7 @@ def _apply_regex(val: Any, pattern: Optional[str]) -> Any:
 
 def _strip_html(s: Any) -> Any:
     if isinstance(s, str) and "<" in s:
-        return BeautifulSoup(s, "lxml").get_text(" ", strip=True)
+        return soup(s).get_text(" ", strip=True)
     return s
 
 
@@ -148,9 +158,9 @@ def _select_value(node, spec, page_url: str):
 
 
 def parse_html(html: str, cfg: dict, page_url: str) -> list[dict]:
-    soup = BeautifulSoup(html, "lxml")
+    doc = soup(html)
     item_sel = cfg.get("item")
-    nodes = soup.select(item_sel) if item_sel else [soup]
+    nodes = doc.select(item_sel) if item_sel else [doc]
     out: list[dict] = []
     for node in nodes:
         row: dict = {}
@@ -202,8 +212,8 @@ def parse_ics(text: str, page_url: str) -> list[dict]:
 
 # ── pagination ───────────────────────────────────────────────────────────
 def next_link(html: str, selector: str, page_url: str) -> Optional[str]:
-    soup = BeautifulSoup(html, "lxml")
-    el = soup.select_one(selector)
+    doc = soup(html)
+    el = doc.select_one(selector)
     if el is None:
         return None
     href = el.get("href") if el.name == "a" else (el.get("href") or el.get("data-href"))

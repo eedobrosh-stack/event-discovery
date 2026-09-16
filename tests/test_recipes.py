@@ -380,3 +380,49 @@ def test_sync_recipes_from_dir_upsert_semantics(tmp_path):
     row = db.query(SourceRecipe).filter_by(domain="example.org").one()
     assert row.recipe_version == 2 and row.drift_flag is False and row.next_run_at is not None
     db.close()
+
+
+def test_html_parser_falls_back_on_markup_lxml_rejects():
+    # a bare ':' attribute name makes lxml's sax target raise
+    html = f'<div : class="ev"><a class="t" href="/event/9">Odd</a><time datetime="{NEXT_WEEK}">x</time></div>'
+    rows = P.parse_html(html, _html_recipe()["parse"], "https://example.org/e")
+    assert len(rows) == 1 and rows[0]["name"] == "Odd"
+
+
+def test_budget_exhaustion_keeps_partial_rows():
+    from app.services.recipes.fetch import BudgetExhausted
+
+    class CappedFetcher(FakeFetcher):
+        def get(self, url, *, values=None):
+            if self.requests_made >= 1:
+                raise BudgetExhausted("1 requests")
+            return super().get(url, values=values)
+
+    f = CappedFetcher({
+        "https://example.org/events?page=1": HTML_P2,
+        "https://example.org/events?page=2": HTML_P2.replace("201", "202"),
+    })
+    doc = _html_recipe(entry={"urls": ["https://example.org/events"],
+                              "paginate": {"mode": "page_param", "param": "page", "max_pages": 10}})
+    res = run_recipe(doc, fetcher=f)
+    assert res.fetched == 1 and len(res.events) == 1
+    assert res.budget_hit and res.fatal is None
+    assert any("budget" in e for e in res.errors)
+
+
+def test_ongoing_if_end_only_maps_exhibitions_to_today():
+    doc = _base()
+    doc["parse"]["date_format"] = "%d/%m/%Y"
+    rows = [
+        {"name": "Open show", "end_date": (date.today() + timedelta(days=30)).strftime("%d/%m/%Y"), "_page_url": "u"},
+        {"name": "Closed show", "end_date": (date.today() - timedelta(days=1)).strftime("%d/%m/%Y"), "_page_url": "u"},
+        {"name": "Undated", "_page_url": "u"},
+    ]
+    res = normalize(rows, doc)
+    assert len(res.events) == 0 and res.dropped["no_date"] == 3      # flag off → dropped
+    doc["parse"]["ongoing_if_end_only"] = True
+    res = normalize(rows, doc)
+    assert [e.name for e in res.events] == ["Open show"]
+    assert res.events[0].start_date == date.today() and res.events[0].start_time is None
+    assert res.events[0].end_date == date.today() + timedelta(days=30)
+    assert res.dropped["no_date"] == 2
