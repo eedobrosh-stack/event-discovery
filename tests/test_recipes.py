@@ -499,3 +499,55 @@ def test_group_events_by_city_uses_venue_city_then_default(tmp_path):
     by_name = {c.name: sorted(e.name for e in evs) for c, evs in groups}
     assert by_name == {"Beersheba": ["a"], "Tel Aviv": ["b", "c", "d"]}
     assert unresolved == {"Nowhere": 1}
+
+
+def test_auto_enroll_jsonld_groups_domains_and_respects_git_recipes(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import LLMSource, SourceRecipe
+    from app.services.recipes.auto_enroll import auto_enroll_jsonld, plan_jsonld_recipes
+    engine = create_engine(f"sqlite:///{tmp_path}/a.db")
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+
+    def src(url, **kw):
+        d = dict(url=url, state="recurring", last_method="jsonld", country="Germany",
+                 city_name="Berlin", events_saved_total=5, last_event_count=2)
+        d.update(kw)
+        db.add(LLMSource(**d))
+    src("https://www.alpha.de/events", events_saved_total=50)
+    src("https://alpha.de/konzerte", events_saved_total=120)
+    src("https://alpha.de/theater", events_saved_total=1)
+    src("https://beta.co.uk/whats-on", country="United Kingdom", city_name="Leeds", events_saved_total=9)
+    src("https://beta.co.uk/blocked", country="United Kingdom", state="blocked")
+    src("https://gamma.org/cal", country=None, city_name=None)          # no country → skipped
+    src("https://delta.fr/agenda", last_method="html")                   # not jsonld → ignored
+    src("https://example.org/e")                                         # has a git recipe → left alone
+    db.add(SourceRecipe(domain="example.org", source_name="example", recipe=_base(),
+                        recipe_version=1, enabled=True, written_by="git-deploy"))
+    db.commit()
+
+    plan = plan_jsonld_recipes(db, max_urls=2)
+    doms = {d["domain"]: d for d in plan["recipes"]}
+    assert set(doms) == {"alpha.de", "beta.co.uk"}
+    assert doms["alpha.de"]["entry"]["urls"] == ["https://alpha.de/konzerte", "https://www.alpha.de/events"]
+    assert doms["alpha.de"]["priority"] == 17 and doms["alpha.de"]["cadence_hours"] == 48
+    assert doms["alpha.de"]["source_name"] == "ld_alpha_de" and doms["alpha.de"]["parse"] == {"kind": "jsonld"}
+    assert doms["beta.co.uk"]["city_name"] == "Leeds"
+    assert plan["skipped"]["no_country"] == 1 and plan["skipped"]["has_recipe"] == 1
+
+    s = auto_enroll_jsonld(db, max_urls=2)
+    assert s["created"] == 2 and s["invalid"] == []
+    rows = {r.domain: r for r in db.query(SourceRecipe).all()}
+    assert rows["alpha.de"].written_by == "auto-jsonld" and rows["alpha.de"].enabled
+    assert rows["example.org"].written_by == "git-deploy"
+    # LLMSource rows of enrolled domains are graduated; others untouched
+    states = {r.url: r.state for r in db.query(LLMSource).all()}
+    assert states["https://alpha.de/konzerte"] == "graduated"
+    assert states["https://beta.co.uk/blocked"] == "graduated"
+    assert states["https://delta.fr/agenda"] == "recurring"
+    # idempotent
+    s2 = auto_enroll_jsonld(db, max_urls=2)
+    assert s2["created"] == 0 and s2["domains_planned"] == 0

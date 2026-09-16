@@ -329,6 +329,25 @@ a slow, human-paced Chrome MCP loop feeding `entry.urls` for new recipes.
 
 ---
 
+## Scaling beyond hand-written recipes (added 2026-09-17)
+
+The LLMSource pool is ~5k domains with a power-law yield; hand-writing
+recipes for all of them is neither possible nor worth it. Three gears:
+
+1. **Auto-enroll JSON-LD domains** (shipped): `auto_enroll.py` turns every
+   domain whose Cadence A pages extracted via JSON-LD into a generic
+   `jsonld` recipe with the domain's pages as `entry.urls` (≤40, by
+   yield). Runs at startup and weekly. Git recipes take precedence.
+2. **Platform templates + detector** (next): one recipe template per
+   platform (WordPress The Events Calendar REST, Elementor grids,
+   Squarespace/Wix event blocks, Drupal, Tickchak/Smarticket white-labels)
+   and a nightly marker detector that attaches the template to matching
+   queued domains. No LLM.
+3. **Autonomous drafting** (later): a nightly headless `claude -p` job on
+   the Mac drafts recipes for the highest-yield remaining domains,
+   dry-runs them, validates against the Gemini-era `events_saved_total`
+   for the same pages, and queues passing drafts for a morning approval.
+
 ## Not covered in v1 (and what to do instead)
 
 | Gap | v1 answer |

@@ -4181,9 +4181,15 @@ def cleanup_past_events():
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def recipe_extract_job(
-    max_recipes_per_run: int = 200,
+    # 500: hand-written recipes (~dozens) + auto-enrolled JSON-LD domains
+    # (a few hundred) must all fit in one nightly pass.
+    max_recipes_per_run: int = 500,
     per_recipe_wall_clock_s: int = 600,
     job_request_cap: int = 20000,
+    # Holding _heavy_job_lock for the whole night would starve Route 2's
+    # collect_all_events. Stop *starting* new recipes after this budget;
+    # the rest stay due (highest priority already ran) and go next night.
+    job_wall_clock_s: int = 3 * 3600,
 ) -> None:
     """Nightly: run every enabled SourceRecipe that is due
     (next_run_at IS NULL or <= now), highest priority first.
@@ -4223,9 +4229,13 @@ async def recipe_extract_job(
         tot_fetched = tot_saved = tot_requests = 0
         failures: list[str] = []
 
+        job_t0 = datetime.utcnow()
         for rid, domain in due:
             if tot_requests >= job_request_cap:
                 failures.append(f"job request cap {job_request_cap} reached before {domain}")
+                break
+            if (datetime.utcnow() - job_t0).total_seconds() > job_wall_clock_s:
+                failures.append(f"job wall clock {job_wall_clock_s}s reached before {domain}; rest deferred to next run")
                 break
             sub_db = SessionLocal()
             sub = ScanLog(job_name="recipe_extract", detail=domain, status="running")
@@ -4312,3 +4322,10 @@ async def recipe_extract_job(
             f"recipe_extract: done — {len(due)} recipes, rows={tot_fetched}, "
             f"saved={tot_saved}, requests={tot_requests}, failures={len(failures)}"
         )
+
+
+async def recipe_auto_enroll_job() -> None:
+    """Weekly: enroll any JSON-LD LLMSource domains that still lack a
+    recipe (see app/services/recipes/auto_enroll.py). Cheap, DB-only."""
+    from app.services.recipes.auto_enroll import auto_enroll_at_startup
+    await asyncio.to_thread(auto_enroll_at_startup)

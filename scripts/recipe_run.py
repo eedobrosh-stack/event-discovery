@@ -213,6 +213,9 @@ def main(argv=None) -> int:
     g.add_argument("--disable", metavar="DOMAIN")
     g.add_argument("--execute", metavar="DOMAIN", help="run + persist one recipe now")
     g.add_argument("--execute-dry", metavar="DOMAIN", help="run one stored recipe, no persist")
+    g.add_argument("--auto-enroll-jsonld", action="store_true",
+                   help="create generic jsonld recipes for JSON-LD LLMSource domains (add --plan to only print)")
+    ap.add_argument("--plan", action="store_true", help="with --auto-enroll-jsonld: dry plan, no writes")
     ap.add_argument("--max-requests", type=int, default=25, help="dry-run request cap (default 25)")
     ap.add_argument("--show", type=int, default=10, help="rows/events to print")
     ap.add_argument("--priority", type=int)
@@ -231,6 +234,14 @@ def main(argv=None) -> int:
         return cmd_execute(a.execute, dry=False)
     if a.execute_dry:
         return cmd_execute(a.execute_dry, dry=True)
+    if a.auto_enroll_jsonld:
+        from app.services.recipes.auto_enroll import auto_enroll_jsonld
+        db = _db()
+        try:
+            print(json.dumps(auto_enroll_jsonld(db, dry_run=a.plan), indent=2, ensure_ascii=False))
+        finally:
+            db.close()
+        return 0
 
     paths = a.paths
     if a.sync_all:

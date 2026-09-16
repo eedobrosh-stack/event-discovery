@@ -77,8 +77,14 @@ with httpx + BeautifulSoup and persists through the same
 `/api/stats/recipes`. Design: `docs/recipe_extraction_design.md`;
 authoring checklist: `recipes/README.md`; engine:
 `app/services/recipes/`. Enabling a recipe marks that domain's LLMSource
-rows `graduated` so Gemini never touches it again. **Brave discovery is
-paused** until the recipe queue (proven-yield LLMSource domains) runs dry.
+rows `graduated` so Gemini never touches it again. **Auto-enrollment**
+(`app/services/recipes/auto_enroll.py`, at startup + Sundays 00:30 UTC):
+every LLMSource domain whose pages extracted via JSON-LD gets a generic
+`jsonld` recipe (`written_by=auto-jsonld`, cadence 48h, priority ≤30 so
+hand-written recipes run first); a git recipe for the same domain always
+wins. Nightly job stops starting recipes after 3h so Route 2 isn't
+starved. **Brave discovery is paused** until the recipe queue
+(proven-yield LLMSource domains) runs dry.
 
 ### Discovery method selection
 Env var `DISCOVERY_METHOD` ∈ {`search`, `gemini`}. Auto-detects `search`

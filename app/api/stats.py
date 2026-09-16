@@ -1362,6 +1362,8 @@ def recipes_health(db: Session = Depends(get_db)):
             "id": r.id, "domain": r.domain, "source": r.source_name,
             "enabled": bool(r.enabled), "version": r.recipe_version,
             "kind": ((r.recipe or {}).get("parse") or {}).get("kind"),
+            "written_by": r.written_by,
+            "urls": len(((r.recipe or {}).get("entry") or {}).get("urls") or []),
             "country": r.country, "priority": r.priority,
             "cadence_hours": r.cadence_hours,
             "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
@@ -1382,6 +1384,10 @@ def recipes_health(db: Session = Depends(get_db)):
             "repair_queue": sum(1 for r in rows if r.drift_flag),
             "saved_last_run": sum(r.last_saved or 0 for r in rows if r.last_run_at and r.last_run_at >= since),
             "saved_total": sum(r.saved_total or 0 for r in rows),
+            "by_author": {a: sum(1 for r in rows if (r.written_by or "?") == a)
+                          for a in sorted({(r.written_by or "?") for r in rows})},
+            "by_kind": {k: sum(1 for r in rows if ((r.recipe or {}).get("parse") or {}).get("kind") == k)
+                        for k in ("jsonld", "html", "api", "ics")},
         },
         "last_job": None if last_job is None else {
             "started_at": last_job.started_at.isoformat() if last_job.started_at else None,

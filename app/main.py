@@ -20,7 +20,7 @@ from app.api import version as version_api
 from app.api import geo as geo_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job, llm_classify_conferences_job, recipe_extract_job
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job, llm_classify_conferences_job, recipe_extract_job, recipe_auto_enroll_job
 
 scheduler = AsyncIOScheduler()
 
@@ -936,6 +936,16 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=3600,
         coalesce=True,
     )
+    # Weekly re-scan for newly JSON-LD-capable LLMSources (Sunday 00:30 UTC,
+    # before the nightly recipe run). Startup already covers deploys.
+    scheduler.add_job(
+        recipe_auto_enroll_job,
+        CronTrigger(day_of_week="sun", hour=0, minute=30),
+        id="recipe_auto_enroll",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
     # One-shot catch-up ~25 min after boot: only *due* recipes run
     # (next_run_at <= now), so a redeploy costs nothing when the nightly
     # already ran, and a freshly pushed recipe yields events the same
@@ -1228,6 +1238,11 @@ async def lifespan(app: FastAPI):
             # main is the publish step — no SSH into the box needed.
             from app.services.recipes.sync import seed_recipes_at_startup
             await asyncio.get_event_loop().run_in_executor(None, seed_recipes_at_startup)
+            # Step 1 of the Route 3 scaling plan: every JSON-LD LLMSource
+            # domain without a git recipe gets a generic jsonld recipe.
+            # Idempotent; git recipes always win.
+            from app.services.recipes.auto_enroll import auto_enroll_at_startup
+            await asyncio.get_event_loop().run_in_executor(None, auto_enroll_at_startup)
             _log.info("Seeding complete")
         except Exception as e:
             _log.warning(f"Seeding failed: {e}")
