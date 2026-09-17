@@ -1482,3 +1482,68 @@ def probes_progress(db: Session = Depends(get_db)):
                             "at": p.last_probed_at.isoformat() if p.last_probed_at else None}
                            for p in recent_hits],
     }
+
+
+# ── Batch cadence: one row per job run, newest first ──────────────────────
+@router.get("/batches")
+def batch_runs(days: int = 7, limit: int = 300, db: Session = Depends(get_db)):
+    """Timeline of batch runs for the cadence view on stats.html.
+
+    Job-level ScanLog rows (detail IS NULL) are returned as-is:
+    recipe_extract (3-hourly sweep + boot catch-up), recipe_probe (hourly),
+    cleanup, dedup, bandsintown, mevalim, techconf, … Per-city rows of
+    collect_events are rolled up into one row per run-hour so Route 2
+    shows up as a batch too instead of hundreds of city lines."""
+    days = max(1, min(days, 60))
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = (
+        db.query(ScanLog)
+        .filter(ScanLog.started_at >= since, ScanLog.detail.is_(None))
+        .order_by(ScanLog.started_at.desc())
+        .limit(limit)
+        .all()
+    )
+    out = []
+    for r in rows:
+        dur = (r.finished_at - r.started_at).total_seconds() if (r.finished_at and r.started_at) else None
+        out.append({
+            "job": r.job_name, "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "duration_s": int(dur) if dur is not None else None,
+            "status": r.status, "found": r.events_found or 0, "saved": r.events_saved or 0,
+            "notes": (r.notes or "")[:240],
+        })
+    # Route 2 collect_events: roll per-city rows up per hour bucket
+    city_rows = (
+        db.query(ScanLog.started_at, ScanLog.finished_at, ScanLog.status, ScanLog.events_found, ScanLog.events_saved)
+        .filter(ScanLog.started_at >= since, ScanLog.job_name == "collect_events", ScanLog.detail.isnot(None))
+        .all()
+    )
+    buckets: dict = {}
+    for st, fi, status, found, saved in city_rows:
+        if st is None:
+            continue
+        key = st.replace(minute=0, second=0, microsecond=0)
+        b = buckets.setdefault(key, {"job": "collect_events", "started_at": st, "finished_at": fi, "cities": 0,
+                                     "found": 0, "saved": 0, "failed": 0, "status": "success"})
+        b["cities"] += 1
+        b["found"] += found or 0
+        b["saved"] += saved or 0
+        b["started_at"] = min(b["started_at"], st)
+        if fi and (b["finished_at"] is None or fi > b["finished_at"]):
+            b["finished_at"] = fi
+        if status == "failed":
+            b["failed"] += 1
+    for b in buckets.values():
+        dur = (b["finished_at"] - b["started_at"]).total_seconds() if b["finished_at"] else None
+        out.append({
+            "job": "collect_events", "started_at": b["started_at"].isoformat(),
+            "finished_at": b["finished_at"].isoformat() if b["finished_at"] else None,
+            "duration_s": int(dur) if dur is not None else None,
+            "status": "failed" if b["failed"] and b["failed"] == b["cities"] else ("partial" if b["failed"] else "success"),
+            "found": b["found"], "saved": b["saved"],
+            "notes": f"{b['cities']} cities" + (f", {b['failed']} failed" if b["failed"] else ""),
+        })
+    out.sort(key=lambda x: x["started_at"] or "", reverse=True)
+    jobs = sorted({x["job"] for x in out})
+    return {"since": since.isoformat(), "days": days, "jobs": jobs, "runs": out[:limit]}

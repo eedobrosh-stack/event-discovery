@@ -46,6 +46,19 @@
             gap: 0;
         }
         .pulse-card.accent-card { border-color: rgba(124,106,247,.35); }
+        /* Batch cadence */
+        .cad-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; font-size: .8rem; color: #aaa; }
+        .cad-controls select { background: #14141c; color: #ddd; border: 1px solid #333; border-radius: 6px; padding: 4px 8px; font-size: .8rem; }
+        .cad-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+        .cad-table th { text-align: left; color: #888; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid #262636; }
+        .cad-table th.num, .cad-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .cad-table td { padding: 6px 10px; border-bottom: 1px solid #1c1c26; color: #c9c9d6; vertical-align: top; }
+        .cad-table td.ts { white-space: nowrap; color: #aaa; }
+        .cad-table td.job { font-weight: 600; color: #e8e8f0; white-space: nowrap; }
+        .cad-table td.notes { color: #777; font-size: .74rem; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cad-bar { display: inline-block; height: 8px; background: #7c6af7; border-radius: 4px; vertical-align: middle; margin-right: 6px; }
+        .st-success { color: #4caf50; } .st-failed { color: #e05a5a; } .st-running { color: #d9a441; } .st-partial { color: #d9a441; }
+        .cad-gap { color: #666; font-size: .72rem; }
         /* Taste of last 24h */
         .taste-src { border: 1px solid #262636; border-radius: 10px; margin-bottom: 8px; background: #14141c; }
         .taste-src summary { cursor: pointer; padding: 10px 14px; display: flex; gap: 12px; align-items: baseline; list-style: none; }
@@ -906,6 +919,17 @@
         <div id="taste-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
         <div id="taste-wrap" hidden></div>
 
+        <!-- ── Batch cadence ───────────────────────────────────────────────── -->
+        <p class="section-title" style="margin: 28px 0 12px;">⏱ Batch cadence
+            <span style="font-weight:400; color:#555; font-size:.75rem;" id="cad-sub">every batch run, newest first · new events saved per batch</span></p>
+        <div class="cad-controls">
+            <label>Job <select id="cad-job"><option value="">all</option></select></label>
+            <label>Window <select id="cad-days"><option value="2">2 days</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></label>
+            <span id="cad-count"></span>
+        </div>
+        <div id="cad-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
+        <div id="cad-wrap" hidden style="overflow-x:auto;"></div>
+
         <!-- ── Sliding Window Balance ──────────────────────────────────────── -->
         <p class="section-title" style="margin: 28px 0 12px;">🪟 Sliding Window Balance <span style="font-weight:400; color:#555; font-size:.75rem;">last 24 hours</span></p>
         <div class="window-balance" id="window-balance" hidden>
@@ -1578,6 +1602,71 @@
     loadGraduation();
 
     // ── Daily Pulse ────────────────────────────────────────────────────────
+    let _cadRuns = [];
+    function fmtDur(s) {
+        if (s == null) return '—';
+        if (s < 60) return s + 's';
+        if (s < 3600) return Math.round(s / 60) + 'm';
+        return (s / 3600).toFixed(1) + 'h';
+    }
+    function fmtTs(iso) {
+        if (!iso) return '—';
+        return iso.slice(0, 10) + ' ' + iso.slice(11, 16) + 'Z';
+    }
+    function renderCadence() {
+        const job = document.getElementById('cad-job').value;
+        const runs = _cadRuns.filter(r => !job || r.job === job);
+        document.getElementById('cad-count').textContent = `${runs.length} run${runs.length === 1 ? '' : 's'}`;
+        const maxSaved = Math.max(1, ...runs.map(r => r.saved || 0));
+        // gap to the previous run of the SAME job → shows the real cadence
+        const lastByJob = {};
+        const rowsAsc = [...runs].reverse();
+        const gapById = new Map();
+        rowsAsc.forEach(r => {
+            const prev = lastByJob[r.job];
+            if (prev && r.started_at) {
+                const g = (new Date(r.started_at) - new Date(prev)) / 1000;
+                gapById.set(r, g);
+            }
+            lastByJob[r.job] = r.started_at;
+        });
+        const html = `<table class="cad-table"><thead><tr>
+            <th>Started (UTC)</th><th>Job</th><th class="num">Duration</th><th class="num">Found</th><th>New events saved</th><th>Status</th><th>Notes</th>
+        </tr></thead><tbody>` + runs.map(r => {
+            const w = Math.max(2, Math.round((r.saved || 0) * 160 / maxSaved));
+            const gap = gapById.get(r);
+            return `<tr>
+                <td class="ts">${fmtTs(r.started_at)}${gap ? `<br><span class="cad-gap">+${fmtDur(Math.round(gap))} after previous</span>` : ''}</td>
+                <td class="job">${esc(r.job)}</td>
+                <td class="num">${fmtDur(r.duration_s)}</td>
+                <td class="num">${(r.found || 0).toLocaleString()}</td>
+                <td><span class="cad-bar" style="width:${w}px"></span>${(r.saved || 0).toLocaleString()}</td>
+                <td class="st-${esc(r.status)}">${esc(r.status)}</td>
+                <td class="notes" title="${esc(r.notes || '')}">${esc(r.notes || '')}</td>
+            </tr>`;
+        }).join('') + '</tbody></table>';
+        document.getElementById('cad-wrap').innerHTML = runs.length ? html : '<p class="pulse-empty">No batch runs in this window</p>';
+    }
+    async function loadCadence() {
+        try {
+            const days = document.getElementById('cad-days').value;
+            const res = await fetch(`/api/stats/batches?days=${days}`);
+            const d = await res.json();
+            _cadRuns = d.runs;
+            const sel = document.getElementById('cad-job');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">all</option>' + d.jobs.map(j => `<option value="${esc(j)}" ${j === cur ? 'selected' : ''}>${esc(j)}</option>`).join('');
+            renderCadence();
+            document.getElementById('cad-loading').hidden = true;
+            document.getElementById('cad-wrap').hidden = false;
+        } catch (e) {
+            document.getElementById('cad-loading').textContent = 'Failed to load batch runs: ' + e;
+        }
+    }
+    document.getElementById('cad-job').addEventListener('change', renderCadence);
+    document.getElementById('cad-days').addEventListener('change', loadCadence);
+    loadCadence();
+
     async function loadTaste() {
         try {
             const res = await fetch('/api/stats/source-samples?hours=24&per_source=10');
