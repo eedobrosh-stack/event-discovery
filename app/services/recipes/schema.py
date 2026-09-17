@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 RECIPE_VERSION = 1
 
 PARSE_KINDS = ("jsonld", "api", "html", "ics")
-PAGINATE_MODES = ("none", "next_link", "page_param", "cursor")
+PAGINATE_MODES = ("none", "next_link", "page_param", "cursor", "next_url")
 FETCH_METHODS = ("GET", "POST")
 RENDER_MODES = ("none", "browser")
 
@@ -121,6 +121,8 @@ def validate_recipe(doc: dict) -> list[str]:
             errs.append("entry.paginate.param required for page_param")
         if mode == "cursor" and not (pag.get("cursor_path") and pag.get("param")):
             errs.append("entry.paginate: cursor mode needs cursor_path + param")
+        if mode == "next_url" and not pag.get("path"):
+            errs.append("entry.paginate: next_url mode needs 'path' (JSON path to the next page URL)")
         mp = pag.get("max_pages", 20)
         if not isinstance(mp, int) or mp < 1 or mp > 200:
             errs.append("entry.paginate.max_pages: int 1..200")

@@ -1440,3 +1440,45 @@ def source_samples(hours: int = 24, per_source: int = 10, db: Session = Depends(
         })
     return {"since": since.isoformat(), "hours": hours, "per_source": per_source,
             "total": sum(int(n) for _, n in counts), "sources": out}
+
+
+# ── Route 3 prober progress ───────────────────────────────────────────────
+@router.get("/probes")
+def probes_progress(db: Session = Depends(get_db)):
+    """How far the prober has got through the never-recipe'd pool, and
+    what it found. Pool size is computed the same way probe.select_candidates
+    does (domains with LLMSource pages minus those with a recipe)."""
+    from app.models import SourceProbe, SourceRecipe
+    from app.services.recipes.schema import registered_domain as _rd
+    have_recipe = {d for (d,) in db.query(SourceRecipe.domain).all()}
+    doms = set()
+    for (u,) in db.query(LLMSource.url).filter(LLMSource.state != "blocked").all():
+        d = _rd(u)
+        if d and "." in d and d not in have_recipe:
+            doms.add(d)
+    probes = db.query(SourceProbe).all()
+    by_outcome = {}
+    by_detector = {}
+    for p in probes:
+        by_outcome[p.outcome] = by_outcome.get(p.outcome, 0) + 1
+        if p.detector:
+            by_detector[p.detector] = by_detector.get(p.detector, 0) + 1
+    last = (db.query(ScanLog).filter(ScanLog.job_name == "recipe_probe")
+            .order_by(ScanLog.started_at.desc()).first())
+    recent_hits = (db.query(SourceProbe).filter(SourceProbe.outcome == "recipe")
+                   .order_by(SourceProbe.last_probed_at.desc()).limit(25).all())
+    return {
+        "as_of": datetime.utcnow().isoformat(),
+        "pool_domains_without_recipe": len(doms),
+        "probed_domains": len(probes),
+        "remaining": max(0, len(doms) - sum(1 for p in probes if p.domain in doms)),
+        "by_outcome": by_outcome, "by_detector": by_detector,
+        "last_job": None if last is None else {
+            "started_at": last.started_at.isoformat() if last.started_at else None,
+            "finished_at": last.finished_at.isoformat() if last.finished_at else None,
+            "status": last.status, "probed": last.events_found, "recipes": last.events_saved,
+            "notes": (last.notes or "")[:600]},
+        "recent_recipes": [{"domain": p.domain, "detector": p.detector, "events": p.events_found,
+                            "at": p.last_probed_at.isoformat() if p.last_probed_at else None}
+                           for p in recent_hits],
+    }

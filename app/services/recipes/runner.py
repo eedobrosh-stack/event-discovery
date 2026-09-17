@@ -192,6 +192,13 @@ def _walk_pages(fetcher: Fetcher, start_url: str, values: dict, doc: dict,
             if not cur or not rows:
                 break
             url = P.set_query_param(start_url, pag["param"], cur)
+        elif mode == "next_url":
+            # APIs that hand back the full URL of the next page
+            # (WordPress The Events Calendar: next_rest_url)
+            nxt = P.get_path(body, pag["path"]) if body is not None else None
+            if not isinstance(nxt, str) or not nxt.startswith("http") or not rows:
+                break
+            url = nxt
     return rows_all
 
 

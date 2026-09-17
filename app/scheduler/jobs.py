@@ -4330,3 +4330,43 @@ async def recipe_auto_enroll_job() -> None:
     recipe (see app/services/recipes/auto_enroll.py). Cheap, DB-only."""
     from app.services.recipes.auto_enroll import auto_enroll_at_startup
     await asyncio.to_thread(auto_enroll_at_startup)
+
+
+async def recipe_probe_job() -> None:
+    """Hourly: try to crack the next batch of never-recipe'd LLMSource
+    domains with free deterministic detectors (JSON-LD / ICS / WP Events
+    Calendar REST). See app/services/recipes/probe.py. ~60 domains and
+    ≤40 min per run, under the heavy-job lock like every crawler."""
+    from app.services.recipes.probe import probe_at_job
+    async with _heavy_job_lock:
+        db = SessionLocal()
+        log = ScanLog(job_name="recipe_probe", status="running")
+        db.add(log); db.commit(); db.refresh(log); log_id = log.id
+        db.close()
+        summary: dict = {}
+        try:
+            summary = await asyncio.wait_for(asyncio.to_thread(probe_at_job), timeout=50 * 60)
+            status = "success"
+        except asyncio.TimeoutError:
+            summary = {"fatal": "wall clock 50min"}
+            status = "failed"
+        except Exception as e:
+            logger.exception("recipe_probe crashed")
+            summary = {"fatal": f"{type(e).__name__}: {e}"}
+            status = "failed"
+        db = SessionLocal()
+        try:
+            l = db.query(ScanLog).get(log_id)
+            if l is not None:
+                l.finished_at = datetime.utcnow()
+                l.events_found = int(summary.get("probed", 0))
+                l.events_saved = int(summary.get("recipes", 0))
+                l.status = status
+                l.notes = (f"probed={summary.get('probed', 0)} recipes={summary.get('recipes', 0)} "
+                           f"{summary.get('by_detector', {})} none={summary.get('none', 0)} "
+                           f"error={summary.get('error', 0)} no_country={summary.get('no_country', 0)} "
+                           f"requests={summary.get('requests', 0)} hits={summary.get('hits', [])[:10]} "
+                           f"{summary.get('fatal', '')}")[:2000]
+                db.commit()
+        finally:
+            db.close()

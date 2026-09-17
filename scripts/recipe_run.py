@@ -41,7 +41,7 @@ load_dotenv(os.environ.get("SUPERCALY_ENV", "/Users/eedo.b/supercaly/.env"))
 logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"),
                     format="%(levelname)s %(name)s: %(message)s")
 
-from app.services.recipes.schema import validate_recipe  # noqa: E402
+from app.services.recipes.schema import validate_recipe, registered_domain  # noqa: E402
 from app.services.recipes.runner import run_recipe  # noqa: E402
 
 
@@ -215,7 +215,9 @@ def main(argv=None) -> int:
     g.add_argument("--execute-dry", metavar="DOMAIN", help="run one stored recipe, no persist")
     g.add_argument("--auto-enroll-jsonld", action="store_true",
                    help="create generic jsonld recipes for JSON-LD LLMSource domains (add --plan to only print)")
-    ap.add_argument("--plan", action="store_true", help="with --auto-enroll-jsonld: dry plan, no writes")
+    g.add_argument("--probe", metavar="DOMAIN", help="run the free-path detector cascade on one domain (reads its LLMSource pages), no writes")
+    g.add_argument("--probe-batch", type=int, metavar="N", help="probe the next N never-recipe'd domains (add --plan to only list them)")
+    ap.add_argument("--plan", action="store_true", help="with --auto-enroll-jsonld / --probe-batch: dry plan, no writes")
     ap.add_argument("--max-requests", type=int, default=25, help="dry-run request cap (default 25)")
     ap.add_argument("--show", type=int, default=10, help="rows/events to print")
     ap.add_argument("--priority", type=int)
@@ -234,6 +236,29 @@ def main(argv=None) -> int:
         return cmd_execute(a.execute, dry=False)
     if a.execute_dry:
         return cmd_execute(a.execute_dry, dry=True)
+    if a.probe:
+        from app.services.recipes.probe import probe_domain, select_candidates
+        from app.models import LLMSource
+        db = _db()
+        try:
+            urls = [u for (u,) in db.query(LLMSource.url).filter(LLMSource.url.ilike(f"%{a.probe}%")).all()
+                    if registered_domain(u) == a.probe]
+            country = next((c for (c,) in db.query(LLMSource.country).filter(LLMSource.url.ilike(f"%{a.probe}%")).all() if c), None)
+        finally:
+            db.close()
+        if not urls:
+            urls = [f"https://{a.probe}/"]
+        res = probe_domain(a.probe, urls, country)
+        print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
+        return 0 if res["hit"] else 1
+    if a.probe_batch:
+        from app.services.recipes.probe import run_probe_batch
+        db = _db()
+        try:
+            print(json.dumps(run_probe_batch(db, limit=a.probe_batch, dry_run=a.plan), indent=2, ensure_ascii=False, default=str))
+        finally:
+            db.close()
+        return 0
     if a.auto_enroll_jsonld:
         from app.services.recipes.auto_enroll import auto_enroll_jsonld
         db = _db()

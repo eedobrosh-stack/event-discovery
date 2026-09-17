@@ -567,3 +567,90 @@ def test_fetcher_falls_back_to_impersonation_on_403(monkeypatch):
     r2 = f.get("https://x.test/e2")           # subsequent calls go straight to impersonation
     assert r2.status == 200 and calls == {"plain": 1, "imp": 2}
     f.close()
+
+
+# ── prober ───────────────────────────────────────────────────────────────
+def _probe_fetcher(pages):
+    f = FakeFetcher(pages)
+    f.max_requests = 8
+    return f
+
+
+def test_probe_detects_jsonld_first():
+    from app.services.recipes.probe import probe_domain
+    html = "".join(f'<script type="application/ld+json">{{"@type":"Event","name":"E{i}","startDate":"{NEXT_WEEK}T20:00:00","location":{{"@type":"Place","name":"H"}}}}</script>' for i in range(4))
+    f = _probe_fetcher({"https://a.test/events": f"<html>{html}</html>"})
+    res = probe_domain("a.test", ["https://a.test/events"], "Israel", fetcher=f)
+    assert res["hit"] and res["hit"]["detector"] == "jsonld" and res["hit"]["events"] == 4
+
+
+def test_probe_finds_ics_feed_link():
+    from app.services.recipes.probe import probe_domain, build_recipe
+    ics = "BEGIN:VCALENDAR\nVERSION:2.0\n" + "".join(
+        f"BEGIN:VEVENT\nUID:u{i}\nSUMMARY:Show {i}\nDTSTART:{NEXT_WEEK.replace('-', '')}T190000Z\nEND:VEVENT\n" for i in range(3)) + "END:VCALENDAR\n"
+    f = _probe_fetcher({
+        "https://b.test/whats-on": '<html><head><link rel="alternate" type="text/calendar" href="/feed.ics"></head><body>no jsonld</body></html>',
+        "https://b.test/feed.ics": ics,
+    })
+    res = probe_domain("b.test", ["https://b.test/whats-on"], "Ireland", fetcher=f)
+    assert res["hit"]["detector"] == "ics" and res["hit"]["feed"] == "https://b.test/feed.ics"
+    doc = build_recipe("b.test", res["hit"], ["https://b.test/whats-on"], "Ireland", None, 12)
+    assert validate_recipe(doc) == [] and doc["parse"]["kind"] == "ics" and doc["source_name"] == "ics_b_test"
+
+
+def test_probe_finds_wp_events_calendar_rest():
+    from app.services.recipes.probe import probe_domain, build_recipe
+    events = [{"id": i, "title": f"Gig {i}", "start_date": f"{NEXT_WEEK} 20:00:00", "end_date": f"{NEXT_WEEK} 22:00:00",
+               "url": f"https://c.test/event/{i}", "cost": "$10", "venue": {"venue": "Barn", "city": "Austin"},
+               "categories": [{"name": "Music"}], "image": {"url": "https://c.test/i.jpg"}} for i in range(5)]
+    f = _probe_fetcher({
+        "https://c.test/calendar": '<html><link rel="stylesheet" href="/wp-content/themes/x.css"><div class="tribe-events">…</div></html>',
+        "https://c.test/wp-json/tribe/events/v1/events?per_page=50&start_date=now": json.dumps({"events": events, "next_rest_url": None}),
+    })
+    res = probe_domain("c.test", ["https://c.test/calendar"], "United States", fetcher=f)
+    assert res["hit"]["detector"] == "tribe_rest" and res["hit"]["events"] == 5
+    doc = build_recipe("c.test", res["hit"], ["https://c.test/calendar"], "United States", "Austin", 0)
+    assert validate_recipe(doc) == [] and doc["entry"]["paginate"]["mode"] == "next_url"
+    # and the built recipe actually runs against the same fake API
+    r = run_recipe(doc, fetcher=_probe_fetcher(f.pages))
+    assert r.fatal is None and len(r.events) == 5 and r.events[0].venue_city == "Austin" and r.events[0].price == 10.0
+
+
+def test_probe_none_when_nothing_free_and_budget_respected():
+    from app.services.recipes.probe import probe_domain
+    f = _probe_fetcher({"https://d.test/": "<html><body>plain listing, no structured data</body></html>",
+                        "https://d.test/2": "<html><body>still nothing</body></html>"})
+    res = probe_domain("d.test", ["https://d.test/", "https://d.test/2", "https://d.test/3"], "Germany", fetcher=f)
+    assert res["hit"] is None and res["pages_checked"] == 2 and res["requests"] <= 8 and res["error"] is None
+
+
+def test_probe_batch_records_outcomes_and_creates_recipe(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import LLMSource, SourceRecipe, SourceProbe
+    from app.services.recipes import probe as PR
+    engine = create_engine(f"sqlite:///{tmp_path}/p.db"); Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    db.add(LLMSource(url="https://hit.test/events", state="recurring", last_method="html", country="Spain", events_saved_total=40))
+    db.add(LLMSource(url="https://miss.test/cal", state="recurring", last_method="error", country="Spain", events_saved_total=2))
+    db.add(LLMSource(url="https://done.test/x", state="graduated", last_method="jsonld", country="Spain"))
+    db.add(SourceRecipe(domain="done.test", source_name="ld_done_test", recipe=_base(), recipe_version=1, enabled=True))
+    db.commit()
+    html_hit = "".join(f'<script type="application/ld+json">{{"@type":"Event","name":"E{i}","startDate":"{NEXT_WEEK}T20:00:00"}}</script>' for i in range(3))
+    pages = {"https://hit.test/events": html_hit, "https://miss.test/cal": "<html>nothing</html>"}
+    real = PR.probe_domain
+    monkeypatch.setattr(PR, "probe_domain", lambda dom, urls, country, fetcher=None: real(dom, urls, country, fetcher=_probe_fetcher(pages)))
+
+    cands = PR.select_candidates(db, 10)
+    assert [c["domain"] for c in cands] == ["hit.test", "miss.test"]        # done.test excluded, yield order
+    s = PR.run_probe_batch(db, limit=10)
+    assert s["probed"] == 2 and s["recipes"] == 1 and s["none"] == 1 and s["by_detector"] == {"jsonld": 1}
+    rec = db.query(SourceRecipe).filter_by(domain="hit.test").one()
+    assert rec.written_by == "auto-probe" and rec.recipe["parse"]["kind"] == "jsonld"
+    pr = {p.domain: p for p in db.query(SourceProbe).all()}
+    assert pr["hit.test"].outcome == "recipe" and pr["miss.test"].outcome == "none"
+    # LLMSource graduated by the upsert; second batch finds nothing new to probe
+    assert db.query(LLMSource).filter_by(url="https://hit.test/events").one().state == "graduated"
+    assert PR.select_candidates(db, 10) == []
