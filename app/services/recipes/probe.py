@@ -18,7 +18,9 @@ recipe is created through the same upsert_recipe path (written_by=
 so a domain is never probed twice (outcome 'none' domains are retried
 after REPROBE_DAYS — a site may adopt JSON-LD later).
 
-No LLM, no Brave. Budget ≤ 8 requests per domain.
+No LLM, no Brave. Budget ≤ 8 requests per domain. Country for the recipe: the
+LLMSource rows' country, else inferred from the detected events' own
+addresses (ISO codes mapped), else the domain's country-code TLD.
 """
 from __future__ import annotations
 
@@ -67,12 +69,57 @@ def _origin(url: str) -> str:
     return f"{p.scheme}://{p.netloc}"
 
 
+def _future_events(rows: list, doc_stub: dict) -> list:
+    """Normalise parsed rows with a throwaway recipe stub and return the
+    survivors (future-dated, named). This is exactly what the nightly
+    runner would keep, so a probe 'hit' means real events."""
+    return normalize(rows, doc_stub).events
+
+
 def _count_future(rows: list, doc_stub: dict) -> int:
-    """Normalise parsed rows with a throwaway recipe stub and count survivors
-    (future-dated, named). This is exactly what the nightly runner would
-    keep, so a probe 'hit' means real events."""
-    res = normalize(rows, doc_stub)
-    return len(res.events)
+    return len(_future_events(rows, doc_stub))
+
+
+# ISO-3166 alpha-2 / common variants → the country names City.country uses.
+_ISO2 = {
+    "IL": "Israel", "US": "United States", "USA": "United States", "GB": "United Kingdom", "UK": "United Kingdom",
+    "DE": "Germany", "FR": "France", "ES": "Spain", "IT": "Italy", "PT": "Portugal", "NL": "Netherlands",
+    "BE": "Belgium", "AT": "Austria", "CH": "Switzerland", "IE": "Ireland", "SE": "Sweden", "NO": "Norway",
+    "DK": "Denmark", "FI": "Finland", "PL": "Poland", "CZ": "Czech Republic", "HU": "Hungary", "GR": "Greece",
+    "TR": "Turkey", "CA": "Canada", "MX": "Mexico", "BR": "Brazil", "AR": "Argentina", "CL": "Chile",
+    "AU": "Australia", "NZ": "New Zealand", "JP": "Japan", "KR": "South Korea", "TH": "Thailand",
+    "SG": "Singapore", "IN": "India", "ZA": "South Africa", "AE": "United Arab Emirates", "CY": "Cyprus",
+}
+_TLD = {
+    "il": "Israel", "co.il": "Israel", "org.il": "Israel", "de": "Germany", "fr": "France", "es": "Spain",
+    "it": "Italy", "pt": "Portugal", "nl": "Netherlands", "be": "Belgium", "at": "Austria", "ch": "Switzerland",
+    "ie": "Ireland", "se": "Sweden", "no": "Norway", "dk": "Denmark", "fi": "Finland", "pl": "Poland",
+    "cz": "Czech Republic", "hu": "Hungary", "gr": "Greece", "tr": "Turkey", "ca": "Canada", "mx": "Mexico",
+    "br": "Brazil", "com.br": "Brazil", "ar": "Argentina", "cl": "Chile", "au": "Australia", "com.au": "Australia",
+    "nz": "New Zealand", "jp": "Japan", "kr": "South Korea", "th": "Thailand", "sg": "Singapore", "in": "India",
+    "za": "South Africa", "co.za": "South Africa", "uk": "United Kingdom", "co.uk": "United Kingdom", "cy": "Cyprus",
+}
+
+
+def infer_country(events: list, domain: str) -> Optional[str]:
+    """Most common venue_country among the detected events (ISO codes
+    mapped to City.country names), else the domain's country-code TLD."""
+    votes: dict = {}
+    for ev in events:
+        c = (getattr(ev, "venue_country", None) or "").strip()
+        if not c:
+            continue
+        name = _ISO2.get(c.upper(), None) if len(c) <= 3 else c
+        if name:
+            votes[name] = votes.get(name, 0) + 1
+    if votes:
+        return max(votes, key=votes.get)
+    parts = domain.lower().split(".")
+    for n in (2, 1):
+        tld = ".".join(parts[-n:])
+        if tld in _TLD:
+            return _TLD[tld]
+    return None
 
 
 def _stub(domain: str, kind: str, country: Optional[str]) -> dict:
@@ -83,8 +130,11 @@ def _stub(domain: str, kind: str, country: Optional[str]) -> dict:
 # ── detectors ────────────────────────────────────────────────────────────
 def detect_jsonld(html: str, page_url: str, domain: str, country) -> Optional[dict]:
     rows = P.parse_jsonld(html, page_url)
-    n = _count_future(rows, _stub(domain, "jsonld", country))
-    return {"detector": "jsonld", "events": n, "evidence": f"jsonld on {page_url}"} if n >= MIN_EVENTS else None
+    evs = _future_events(rows, _stub(domain, "jsonld", country))
+    if len(evs) < MIN_EVENTS:
+        return None
+    return {"detector": "jsonld", "events": len(evs), "evidence": f"jsonld on {page_url}",
+            "country": country or infer_country(evs, domain)}
 
 
 def find_ics_links(html: str, page_url: str) -> list[str]:
@@ -124,9 +174,11 @@ def detect_ics(fetcher: Fetcher, html: str, page_url: str, domain: str, country,
         except Exception as e:
             trail.append(f"ics parse: {type(e).__name__}")
             continue
-        n = _count_future(rows, _stub(domain, "ics", country))
-        if n >= MIN_EVENTS:
-            return {"detector": "ics", "events": n, "feed": feed, "evidence": f"ics feed {feed} → {n} future"}
+        evs = _future_events(rows, _stub(domain, "ics", country))
+        if len(evs) >= MIN_EVENTS:
+            return {"detector": "ics", "events": len(evs), "feed": feed,
+                    "evidence": f"ics feed {feed} → {len(evs)} future",
+                    "country": country or infer_country(evs, domain)}
     return None
 
 
@@ -150,9 +202,11 @@ def detect_tribe(fetcher: Fetcher, html: str, page_url: str, domain: str, countr
     except Exception as e:
         trail.append(f"tribe parse: {type(e).__name__}")
         return None
-    n = _count_future(rows, _stub(domain, "api", country))
-    if n >= MIN_EVENTS:
-        return {"detector": "tribe_rest", "events": n, "api": api, "evidence": f"tribe REST → {n} future"}
+    evs = _future_events(rows, _stub(domain, "api", country))
+    if len(evs) >= MIN_EVENTS:
+        return {"detector": "tribe_rest", "events": len(evs), "api": api,
+                "evidence": f"tribe REST → {len(evs)} future",
+                "country": country or infer_country(evs, domain)}
     return None
 
 
@@ -252,7 +306,10 @@ def select_candidates(db, limit: int) -> list[dict]:
     for pr in db.query(SourceProbe).all():
         # skip: recipe already made, or probed recently (any outcome), or
         # permanently reserved
-        if pr.outcome in ("recipe", "reserved") or (pr.last_probed_at and pr.last_probed_at >= cutoff):
+        # 'no_country' rows are HITS we could not file yet — re-eligible at
+        # once so a better country inference picks them up next run.
+        if pr.outcome in ("recipe", "reserved") or (
+                pr.outcome != "no_country" and pr.last_probed_at and pr.last_probed_at >= cutoff):
             fresh[pr.domain] = pr
     rows = (db.query(LLMSource.url, LLMSource.country, LLMSource.city_name,
                      LLMSource.events_saved_total, LLMSource.last_event_count, LLMSource.state)
@@ -276,7 +333,7 @@ def select_candidates(db, limit: int) -> list[dict]:
     return cands[:limit]
 
 
-def run_probe_batch(db, *, limit: int = 60, dry_run: bool = False,
+def run_probe_batch(db, *, limit: int = 120, dry_run: bool = False,
                     wall_clock_s: int = 40 * 60) -> dict:
     from app.models import SourceProbe
     t0 = datetime.utcnow()
@@ -320,13 +377,17 @@ def run_probe_batch(db, *, limit: int = 60, dry_run: bool = False,
             pr.detector = None
             pr.events_found = 0
             summary["none"] += 1
-        elif not c["country"]:
+        elif not (c["country"] or hit.get("country")):
             pr.outcome = "no_country"
             pr.detector = hit["detector"]
             pr.events_found = hit["events"]
             summary["no_country"] += 1
         else:
-            doc = build_recipe(dom, hit, c["urls"], c["country"], c["city"], c["prior_yield"])
+            country = c["country"] or hit["country"]
+            if not c["country"]:
+                res["trail"].append(f"country inferred: {country}")
+                pr.evidence = " | ".join(res["trail"])[:1500]
+            doc = build_recipe(dom, hit, c["urls"], country, c["city"], c["prior_yield"])
             up = upsert_recipe(db, doc, written_by=WRITTEN_BY)
             if up["verb"] in ("created", "updated", "unchanged"):
                 pr.outcome = "recipe"

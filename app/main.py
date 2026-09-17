@@ -952,7 +952,7 @@ async def lifespan(app: FastAPI):
     )
     # recipe_probe — around-the-clock cracking of the ~5k never-recipe'd
     # LLMSource domains (JSON-LD / ICS / WP Events Calendar REST), ~60
-    # domains per hour at :30, so it interleaves with the 3-hourly
+    # domains per hour (120 since the first run showed 60 took 6 min) at :30, so it interleaves with the 3-hourly
     # recipe sweeps at :00. Every domain is probed once; 'none' outcomes
     # are retried after 45 days.
     scheduler.add_job(

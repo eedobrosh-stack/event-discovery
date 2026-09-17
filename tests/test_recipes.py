@@ -654,3 +654,13 @@ def test_probe_batch_records_outcomes_and_creates_recipe(tmp_path, monkeypatch):
     # LLMSource graduated by the upsert; second batch finds nothing new to probe
     assert db.query(LLMSource).filter_by(url="https://hit.test/events").one().state == "graduated"
     assert PR.select_candidates(db, 10) == []
+
+
+def test_probe_infers_country_from_events_then_tld():
+    from app.services.recipes.probe import probe_domain, infer_country
+    html = "".join(f'<script type="application/ld+json">{{"@type":"Event","name":"E{i}","startDate":"{NEXT_WEEK}T20:00:00","location":{{"@type":"Place","name":"H","address":{{"addressLocality":"Haifa","addressCountry":"IL"}}}}}}</script>' for i in range(3))
+    f = _probe_fetcher({"https://x.example/events": f"<html>{html}</html>"})
+    res = probe_domain("x.example", ["https://x.example/events"], None, fetcher=f)
+    assert res["hit"]["country"] == "Israel"                      # from addressCountry IL
+    assert infer_country([], "venue.co.uk") == "United Kingdom"    # TLD fallback
+    assert infer_country([], "venue.com") is None
