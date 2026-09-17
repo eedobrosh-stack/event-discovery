@@ -330,6 +330,9 @@ def run_recipe(doc: dict, *, fetcher: Optional[Fetcher] = None,
         rows = deduped
         result.rows = rows
         result.requests = fetcher.requests_made
+        if getattr(fetcher, "switched_to_impersonation", False):
+            result.errors.append("plain client got 403/429 → switched to Chrome impersonation for this run "
+                                 "(consider fetch.impersonate=true in the recipe)")
 
         # JSON-LD detail merges: prefer detail block if listing lacked one
         for r in rows:

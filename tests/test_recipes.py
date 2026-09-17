@@ -551,3 +551,19 @@ def test_auto_enroll_jsonld_groups_domains_and_respects_git_recipes(tmp_path):
     # idempotent
     s2 = auto_enroll_jsonld(db, max_urls=2)
     assert s2["created"] == 0 and s2["domains_planned"] == 0
+
+
+def test_fetcher_falls_back_to_impersonation_on_403(monkeypatch):
+    from app.services.recipes.fetch import Fetcher, Response
+    f = Fetcher({"delay_seconds": 0.5}, respect_robots=False)
+    calls = {"plain": 0, "imp": 0}
+
+    class R:  # minimal httpx-like response
+        def __init__(self, code, text): self.status_code, self.text, self.url, self.headers = code, text, "https://x.test/e", {}
+    monkeypatch.setattr(f._client, "get", lambda url: calls.__setitem__("plain", calls["plain"] + 1) or R(403, "blocked"))
+    monkeypatch.setattr(f, "_get_impersonated", lambda url, values: calls.__setitem__("imp", calls["imp"] + 1) or Response(url, 200, "<html>ok</html>", {}))
+    r = f.get("https://x.test/e")
+    assert r.status == 200 and f.impersonate is True and f.switched_to_impersonation
+    r2 = f.get("https://x.test/e2")           # subsequent calls go straight to impersonation
+    assert r2.status == 200 and calls == {"plain": 1, "imp": 2}
+    f.close()

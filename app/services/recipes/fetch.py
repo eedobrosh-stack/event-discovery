@@ -66,6 +66,10 @@ class Fetcher:
         self.delay = float(cfg.get("delay_seconds", 1.0))
         self.timeout = float(cfg.get("timeout", 20))
         self.impersonate = bool(cfg.get("impersonate", False))
+        # fall back to impersonation on a 403/429 (default on; recipes
+        # can pin "auto_impersonate": false)
+        self.auto_impersonate = bool(cfg.get("auto_impersonate", True))
+        self.switched_to_impersonation = False
         self.max_requests = int(cfg.get("max_requests", max_requests))
         self.respect_robots = respect_robots
         self.requests_made = 0
@@ -152,6 +156,21 @@ class Fetcher:
                     else:
                         r = self._client.get(url)
                     resp = Response(str(r.url), r.status_code, r.text, dict(r.headers))
+                    # Bot wall on the plain client (jambase, concertfix, …
+                    # 30 of the first 114 auto-enrolled domains). Retry
+                    # once with Chrome TLS impersonation and, if that
+                    # works, keep it for the rest of this run. Costs one
+                    # extra request only on 403/429-walled sites.
+                    if resp.status in (403, 429) and not self.impersonate and self.auto_impersonate:
+                        try:
+                            self.requests_made += 1
+                            alt = self._get_impersonated(url, values)
+                            if alt.status < 400:
+                                self.impersonate = True
+                                self.switched_to_impersonation = True
+                                return alt
+                        except Exception:
+                            pass
                 if resp.status in RETRY_STATUSES and attempt < 2:
                     time.sleep(2.0 * (attempt + 1))
                     continue
