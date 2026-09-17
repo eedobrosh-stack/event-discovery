@@ -338,7 +338,7 @@ recipes for all of them is neither possible nor worth it. Three gears:
    domain whose Cadence A pages extracted via JSON-LD into a generic
    `jsonld` recipe with the domain's pages as `entry.urls` (≤40, by
    yield). Runs at startup and weekly. Git recipes take precedence.
-2. **Platform templates + detector** (next): one recipe template per
+2. **Prober** (shipped 2026-09-17, `probe.py`): hourly, ~60 never-recipe'd domains per run, free detectors JSON-LD → ICS → WP Events Calendar REST; ≥3 future events ⇒ auto recipe. Originally planned as "platform templates + detector": one recipe template per
    platform (WordPress The Events Calendar REST, Elementor grids,
    Squarespace/Wix event blocks, Drupal, Tickchak/Smarticket white-labels)
    and a nightly marker detector that attaches the template to matching

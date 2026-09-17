@@ -83,8 +83,15 @@ every LLMSource domain whose pages extracted via JSON-LD gets a generic
 `jsonld` recipe (`written_by=auto-jsonld`, cadence 48h, priority ≤30 so
 hand-written recipes run first); a git recipe for the same domain always
 wins. Each sweep stops starting recipes after 2h so Route 2 isn't
-starved. **Brave discovery is paused** until the recipe queue
-(proven-yield LLMSource domains) runs dry.
+starved. **Prober** (`app/services/recipes/probe.py`, hourly at :30): works
+around the clock through the ~5k never-recipe'd LLMSource domains,
+highest Cadence-A yield first, trying free detectors in order — JSON-LD
+on the page, an ICS feed link (or the WP Events Calendar `?ical=1`
+feeds), the WP Events Calendar REST API — and auto-creates a recipe
+(`written_by=auto-probe`) when one yields ≥3 future events. Outcomes in
+`source_probes` (never probe a domain twice; `none` retried after 45
+days); progress at `/api/stats/probes`. **Brave discovery is paused**
+until the recipe queue runs dry.
 
 ### Discovery method selection
 Env var `DISCOVERY_METHOD` ∈ {`search`, `gemini`}. Auto-detects `search`
@@ -257,7 +264,7 @@ shows Tel Aviv before Gush Dan).
 | `scripts/dedupe_events.py` | Cross-source event-row deduper — buckets on (start_date, venue_id, primary identifier), unions event_types onto canonical, ORM-driven so m2m cascades |
 | `scripts/backfill_mevalim_artist_name.py` | One-off SQL: name → artist_name for mevalim rows |
 | `scripts/seed_llm_sources.py` | Manual seed of LLMSource trial pool |
-| `app/services/recipes/` | Route 3 engine: schema / fetch / parse / normalize / runner |
+| `app/services/recipes/` | Route 3 engine: schema / fetch / parse / normalize / runner / sync / auto_enroll / probe |
 | `app/models/source_recipe.py` | `source_recipes` table (one row per domain, health + drift) |
 | `recipes/*.json` | Route 3 recipes (source of truth) + `recipes/README.md` authoring checklist |
 | `scripts/recipe_run.py` | `--dry-run` / `--upsert` / `--execute` / `--list` for recipes |
