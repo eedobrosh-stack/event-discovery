@@ -69,8 +69,8 @@ A/B stay in the code but are off. One JSON *recipe* per domain
 events with one of four deterministic kinds: `ics`, `jsonld`, `api`
 (hidden JSON endpoint + field map), `html` (CSS selectors). Recipes are
 written interactively by Claude on the Mac (inspect in Chrome →
-`scripts/recipe_run.py --dry-run` → commit + push; every deploy syncs `recipes/*.json` into the table at startup and runs due recipes ~25 min after boot, so no SSH is needed); the nightly
-`recipe_extract_job` (01:00 UTC, `_heavy_job_lock`) runs them on Render
+`scripts/recipe_run.py --dry-run` → commit + push; every deploy syncs `recipes/*.json` into the table at startup and runs due recipes ~25 min after boot, so no SSH is needed); the
+`recipe_extract_job` (every 3h at :00 UTC, `_heavy_job_lock`, per-recipe cadence 24h/48h) runs them on Render
 with httpx + BeautifulSoup and persists through the same
 `CollectorRegistry._save_events` path every collector uses. Drift =
 2 zero-fetch or 2 error runs → `drift_flag` → repair queue at
@@ -82,7 +82,7 @@ rows `graduated` so Gemini never touches it again. **Auto-enrollment**
 every LLMSource domain whose pages extracted via JSON-LD gets a generic
 `jsonld` recipe (`written_by=auto-jsonld`, cadence 48h, priority ≤30 so
 hand-written recipes run first); a git recipe for the same domain always
-wins. Nightly job stops starting recipes after 3h so Route 2 isn't
+wins. Each sweep stops starting recipes after 2h so Route 2 isn't
 starved. **Brave discovery is paused** until the recipe queue
 (proven-yield LLMSource domains) runs dry.
 
@@ -243,7 +243,7 @@ shows Tel Aviv before Gush Dan).
 | `app/api/suggestions.py` | `/api/suggestions` endpoint |
 | `app/api/events.py` | `/api/events` (the search results) |
 | `app/api/cities.py` | `/api/cities`, `/api/cities/countries`, `/api/cities/states` |
-| `app/api/stats.py` | `/api/stats/*` — coverage dashboards |
+| `app/api/stats.py` | `/api/stats/*` — coverage dashboards; `/recipes` health, `/source-samples` (10 newest events per source, last 24h → stats.html “Taste of the last 24h”) |
 | `app/api/_us_states.py` | Code → name + name-overlap detection for city disambig |
 | `app/seed/artist_classifications.json.gz` | The genre taxonomy + artist classifications, loaded at boot |
 | `frontend/app.js` | Results-page JS — autocomplete, filter chips, search call |

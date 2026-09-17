@@ -1397,3 +1397,46 @@ def recipes_health(db: Session = Depends(get_db)):
         },
         "recipes": out,
     }
+
+
+# ── Taste of the last run: N sample events per source ─────────────────────
+@router.get("/source-samples")
+def source_samples(hours: int = 24, per_source: int = 10, db: Session = Depends(get_db)):
+    """Events ingested in the last `hours`, grouped by scrape_source with
+    up to `per_source` most-recent samples each — a human sanity check
+    that what a recipe/collector saved actually looks like events."""
+    per_source = max(1, min(per_source, 50))
+    since = datetime.utcnow() - timedelta(hours=max(1, min(hours, 24 * 14)))
+    counts = (
+        db.query(Event.scrape_source, func.count(Event.id))
+        .filter(Event.created_at >= since)
+        .group_by(Event.scrape_source)
+        .order_by(func.count(Event.id).desc())
+        .all()
+    )
+    out = []
+    for src, n in counts:
+        rows = (
+            db.query(Event, Venue.name, City.name)
+            .outerjoin(Venue, Event.venue_id == Venue.id)
+            .outerjoin(City, Venue.city_id == City.id)
+            .filter(Event.created_at >= since, Event.scrape_source == src)
+            .order_by(Event.created_at.desc(), Event.id.desc())
+            .limit(per_source)
+            .all()
+        )
+        out.append({
+            "source": src or "(null)",
+            "count": int(n),
+            "samples": [{
+                "id": e.id, "name": e.name, "artist_name": e.artist_name,
+                "start_date": e.start_date.isoformat() if e.start_date else None,
+                "start_time": e.start_time,
+                "venue": vname, "city": cname,
+                "price": e.price, "price_currency": e.price_currency,
+                "purchase_link": e.purchase_link,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            } for e, vname, cname in rows],
+        })
+    return {"since": since.isoformat(), "hours": hours, "per_source": per_source,
+            "total": sum(int(n) for _, n in counts), "sources": out}

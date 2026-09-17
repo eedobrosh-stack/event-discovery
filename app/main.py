@@ -923,14 +923,18 @@ async def lifespan(app: FastAPI):
         id="collect_events",
         replace_existing=True,
     )
-    # recipe_extract — Route 3 (docs/recipe_extraction_design.md). Runs
-    # every enabled SourceRecipe that is due. Deterministic parsers only:
-    # no Gemini, no Brave. CronTrigger (not Interval) so redeploys don't
-    # reset the schedule; 01:00 UTC = 04:00 Israel, after the evening
-    # Route 2 collect cycle and before cleanup_past's daily tick.
+    # recipe_extract — Route 3 (docs/recipe_extraction_design.md). Sweeps
+    # every enabled SourceRecipe that is *due* (its own cadence_hours has
+    # elapsed). Deterministic parsers only: no Gemini, no Brave. Runs
+    # around the clock every 3h rather than once a night (2026-09-17):
+    # each recipe still fetches at its own 24h/48h cadence, so total
+    # requests are unchanged, but the load is spread across the day, a
+    # freshly pushed recipe is picked up within ≤3h, and the pool can grow
+    # to thousands of recipes without needing one giant nightly window.
+    # CronTrigger (not Interval) so redeploys don't reset the schedule.
     scheduler.add_job(
         recipe_extract_job,
-        CronTrigger(hour=1, minute=0),
+        CronTrigger(hour="1,4,7,10,13,16,19,22", minute=0),
         id="recipe_extract",
         replace_existing=True,
         misfire_grace_time=3600,

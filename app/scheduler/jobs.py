@@ -4186,10 +4186,11 @@ async def recipe_extract_job(
     max_recipes_per_run: int = 500,
     per_recipe_wall_clock_s: int = 600,
     job_request_cap: int = 20000,
-    # Holding _heavy_job_lock for the whole night would starve Route 2's
+    # Holding _heavy_job_lock for hours would starve Route 2's
     # collect_all_events. Stop *starting* new recipes after this budget;
-    # the rest stay due (highest priority already ran) and go next night.
-    job_wall_clock_s: int = 3 * 3600,
+    # the rest stay due (highest priority already ran) and go on the next
+    # 3-hourly sweep.
+    job_wall_clock_s: int = 2 * 3600,
 ) -> None:
     """Nightly: run every enabled SourceRecipe that is due
     (next_run_at IS NULL or <= now), highest priority first.

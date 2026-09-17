@@ -46,6 +46,19 @@
             gap: 0;
         }
         .pulse-card.accent-card { border-color: rgba(124,106,247,.35); }
+        /* Taste of last 24h */
+        .taste-src { border: 1px solid #262636; border-radius: 10px; margin-bottom: 8px; background: #14141c; }
+        .taste-src summary { cursor: pointer; padding: 10px 14px; display: flex; gap: 12px; align-items: baseline; list-style: none; }
+        .taste-src summary::-webkit-details-marker { display: none; }
+        .taste-src summary .t-name { font-weight: 600; color: #e8e8f0; }
+        .taste-src summary .t-count { color: #9d92ff; font-variant-numeric: tabular-nums; }
+        .taste-src summary .t-hint { color: #666; font-size: .75rem; margin-left: auto; }
+        .taste-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+        .taste-table td { padding: 5px 14px; border-top: 1px solid #1f1f2a; vertical-align: top; color: #c9c9d6; }
+        .taste-table td.t-date { white-space: nowrap; color: #aaa; width: 120px; }
+        .taste-table td.t-where { color: #8f8fa3; }
+        .taste-table a { color: #b7aeff; text-decoration: none; }
+        .taste-table a:hover { text-decoration: underline; }
         .pulse-label {
             font-size: 0.68rem;
             text-transform: uppercase;
@@ -887,6 +900,12 @@
         <div id="pulse-loading" style="color:#aaa; font-size:.85rem; padding:12px 0 20px;">Loading…</div>
         <div class="pulse-grid" id="pulse-grid" hidden></div>
 
+        <!-- ── Taste of the last 24h ───────────────────────────────────────── -->
+        <p class="section-title" style="margin: 28px 0 12px;">🍱 Taste of the last 24h
+            <span style="font-weight:400; color:#555; font-size:.75rem;" id="taste-sub">10 newest events per source</span></p>
+        <div id="taste-loading" style="color:#aaa; font-size:.85rem; padding:8px 0 20px;">Loading…</div>
+        <div id="taste-wrap" hidden></div>
+
         <!-- ── Sliding Window Balance ──────────────────────────────────────── -->
         <p class="section-title" style="margin: 28px 0 12px;">🪟 Sliding Window Balance <span style="font-weight:400; color:#555; font-size:.75rem;">last 24 hours</span></p>
         <div class="window-balance" id="window-balance" hidden>
@@ -1559,6 +1578,43 @@
     loadGraduation();
 
     // ── Daily Pulse ────────────────────────────────────────────────────────
+    async function loadTaste() {
+        try {
+            const res = await fetch('/api/stats/source-samples?hours=24&per_source=10');
+            const d = await res.json();
+            const wrap = document.getElementById('taste-wrap');
+            document.getElementById('taste-sub').textContent =
+                `${d.total.toLocaleString()} events ingested · 10 newest per source · click a source to expand`;
+            if (!d.sources.length) {
+                wrap.innerHTML = '<p class="pulse-empty">Nothing ingested in the last 24h</p>';
+            } else {
+                wrap.innerHTML = d.sources.map((s, i) => `
+                <details class="taste-src" ${i < 2 ? 'open' : ''}>
+                    <summary>
+                        <span class="t-name">${esc(s.source)}</span>
+                        <span class="t-count">+${s.count.toLocaleString()}</span>
+                        <span class="t-hint">${s.samples.length} sample${s.samples.length === 1 ? '' : 's'}</span>
+                    </summary>
+                    <table class="taste-table"><tbody>
+                    ${s.samples.map(e => `
+                        <tr>
+                            <td class="t-date">${esc(e.start_date || '')}${e.start_time ? ' ' + esc(e.start_time) : ''}</td>
+                            <td>${e.purchase_link ? `<a href="${esc(e.purchase_link)}" target="_blank" rel="noopener">${esc(e.name)}</a>` : esc(e.name)}
+                                ${e.artist_name && e.artist_name !== e.name ? `<span style="color:#777"> · ${esc(e.artist_name)}</span>` : ''}</td>
+                            <td class="t-where">${esc([e.venue, e.city].filter(Boolean).join(' · '))}</td>
+                            <td class="t-date">${e.price != null ? `${Math.round(e.price)} ${esc(e.price_currency || '')}` : ''}</td>
+                        </tr>`).join('')}
+                    </tbody></table>
+                </details>`).join('');
+            }
+            document.getElementById('taste-loading').hidden = true;
+            wrap.hidden = false;
+        } catch (e) {
+            document.getElementById('taste-loading').textContent = 'Failed to load samples: ' + e;
+        }
+    }
+    loadTaste();
+
     async function loadPulse() {
         try {
             const res = await fetch('/api/stats/daily');
