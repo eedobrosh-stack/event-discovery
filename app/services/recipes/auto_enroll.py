@@ -83,7 +83,10 @@ def plan_jsonld_recipes(db, *, max_urls: int = DEFAULT_MAX_URLS) -> dict:
 
     docs = []
     for dom, srcs in sorted(by_domain.items()):
-        srcs.sort(key=lambda s: ((s.events_saved_total or 0), (s.last_event_count or 0)), reverse=True)
+        # Deterministic order (yield desc, then URL) — SQL row order is not
+        # guaranteed, and a flapping URL order would make upsert_recipe see a
+        # "changed" recipe at every startup (version bump, health reset).
+        srcs.sort(key=lambda s: (-(s.events_saved_total or 0), -(s.last_event_count or 0), s.url))
         countries = [s.country for s in srcs if s.country]
         if not countries:
             skipped["no_country"] += len(srcs)
