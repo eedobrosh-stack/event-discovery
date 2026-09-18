@@ -249,7 +249,7 @@ function renderPins(pins) {
         <td class="dom"><a href="https://${esc(p.domain)}" target="_blank" rel="noopener">${esc(p.domain)}</a></td>
         <td>${esc(p.country || '—')}</td>
         <td><span class="chip ${p.status === 'queued' ? 'pin' : p.status === 'recipe' ? 'ok' : ''}">${esc(p.status)}</span></td>
-        <td>${esc(p.outcome || '—')}</td><td>${esc(p.note || '')}</td><td class="dim">${fmtTs(p.created_at)}</td>
+        <td title="${esc(p.evidence || '')}">${esc(p.outcome || '—')}${p.evidence ? ` <span class="dim">· ${esc(p.evidence.slice(0, 90))}${p.evidence.length > 90 ? '…' : ''}</span>` : ''}</td><td>${esc(p.note || '')}</td><td class="dim">${fmtTs(p.created_at)}</td>
         <td><span class="x" title="remove pin" onclick="unpin('${esc(p.domain)}')">✕</span></td></tr>`).join('') || '<tr><td colspan="8" class="dim">—</td></tr>';
 }
 

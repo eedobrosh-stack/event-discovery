@@ -1759,6 +1759,7 @@ def _build_queue(db) -> dict:
     pin_rows = [{
         "domain": p.domain, "rank": p.rank, "country": p.country, "note": p.note,
         "status": p.status, "outcome": p.outcome,
+        "evidence": (probes[p.domain].evidence or "")[:600] if p.domain in probes else None,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "resolved_at": p.resolved_at.isoformat() if p.resolved_at else None,
     } for p in sorted(pins.values(), key=lambda p: (0 if p.status == "queued" else 1, p.rank, p.id))]

@@ -2650,7 +2650,7 @@ _RESERVED_DISCOVERY_DOMAINS: frozenset[str] = frozenset({
     "concreteplayground.com", "allevents.in", "venuepilot.com",
     # Israel-specific
     "tickchak.co.il", "leaan.co.il", "cameri.co.il",
-    "barby.co.il", "smartticket.co.il", "hatarbut.org.il",
+    "barby.co.il", "smarticket.co.il", "hatarbut.org.il",
     # City-specific (where we have hand-coded support)
     "choosechicago.com",
     # Sports
