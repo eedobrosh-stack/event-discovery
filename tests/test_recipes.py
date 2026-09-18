@@ -716,13 +716,27 @@ def test_select_candidates_pins_first_and_no_country_cooldown(tmp_path):
     db.add(SourceProbe(domain="small.test", outcome="none", last_probed_at=now - timedelta(days=1)))
     db.add(QueuePin(domain="small.test", rank=2))
     db.add(QueuePin(domain="outside.test", rank=1, country="Israel"))     # not in the pool at all
+    # cityonly.test: no country on the row, but the city is unambiguous → country derived
+    db.add(LLMSource(url="https://cityonly.test/e", state="recurring", country=None, city_name="Brussels", events_saved_total=40))
+    db.add(LLMSource(url="https://ambig.test/e", state="recurring", country=None, city_name="Dublin", events_saved_total=30))
+    from app.models import City
+    db.add(City(name="Brussels", country="Belgium", latitude=50.8, longitude=4.3))
+    db.add(City(name="Dublin", country="Ireland", latitude=53.3, longitude=-6.2))
+    db.add(City(name="Dublin", country="United States", latitude=40.1, longitude=-83.1))
     db.commit()
 
     cands = PR.select_candidates(db, 10)
     doms = [c["domain"] for c in cands]
     assert doms[:2] == ["outside.test", "small.test"], doms           # pins first, by rank
-    assert "nc.test" not in doms                                        # cooling down
-    assert doms[2:] == ["big.test", "old.test"]                         # then yield order
+    assert "nc.test" not in doms                                        # cooling down, still no country
+    assert doms[2:] == ["big.test", "old.test", "cityonly.test", "ambig.test"]   # then yield order
+    by = {c["domain"]: c for c in cands}
+    assert by["cityonly.test"]["country"] == "Belgium"
+    assert by["ambig.test"]["country"] is None                          # Dublin IE vs Dublin OH: leave it
+    # a cooling-down no_country hit becomes eligible as soon as its city resolves a country
+    db.add(LLMSource(url="https://nc.test/more", state="recurring", country=None, city_name="Brussels", events_saved_total=1))
+    db.commit()
+    assert "nc.test" in [c["domain"] for c in PR.select_candidates(db, 10)]
     by = {c["domain"]: c for c in cands}
     assert by["outside.test"]["urls"][0] == "https://outside.test/" and by["outside.test"]["country"] == "Israel"
     assert by["small.test"]["country"] == "Germany"                     # LLMSource alias canonicalised

@@ -311,20 +311,35 @@ def select_candidates(db, limit: int) -> list[dict]:
     Human pins (QueuePin, superca.ly/queue.html) come first in rank order,
     regardless of probe history, and may name domains that are not in the
     LLMSource pool at all (the homepage becomes the entry URL)."""
-    from app.models import LLMSource, SourceRecipe, SourceProbe, QueuePin
+    from app.models import LLMSource, SourceRecipe, SourceProbe, QueuePin, City
     have_recipe = {d for (d,) in db.query(SourceRecipe.domain).all()}
+    # city → country when the city name is unambiguous in our City table.
+    # Most pool rows have a city but no country (Cadence B stored the
+    # query city only), which is what produced the 'no_country' pile.
+    city_country: dict = {}
+    for name, country in db.query(City.name, City.country).all():
+        if not name or not country:
+            continue
+        if name in city_country and city_country[name] != country:
+            city_country[name] = None            # ambiguous (Dublin IE / Dublin OH)
+        else:
+            city_country.setdefault(name, country)
     pins = {p.domain: p for p in db.query(QueuePin).filter(QueuePin.status == "queued")
             .order_by(QueuePin.rank.asc(), QueuePin.id.asc()).all()}
     now = datetime.utcnow()
     cutoff = now - timedelta(days=REPROBE_DAYS)
     cutoff_nc = now - timedelta(days=NO_COUNTRY_REPROBE_DAYS)
     fresh = {}
+    nc_fresh: set = set()                 # no_country hits still cooling down
     for pr in db.query(SourceProbe).all():
         if pr.domain in pins:
             continue                      # a pin overrides any history
         if pr.outcome in ("recipe", "reserved"):
             fresh[pr.domain] = pr
-        elif pr.last_probed_at and pr.last_probed_at >= (cutoff_nc if pr.outcome == "no_country" else cutoff):
+        elif pr.outcome == "no_country":
+            if pr.last_probed_at and pr.last_probed_at >= cutoff_nc:
+                nc_fresh.add(pr.domain)   # decided below: eligible iff a country is now known
+        elif pr.last_probed_at and pr.last_probed_at >= cutoff:
             fresh[pr.domain] = pr
     rows = (db.query(LLMSource.url, LLMSource.country, LLMSource.city_name,
                      LLMSource.events_saved_total, LLMSource.last_event_count, LLMSource.state)
@@ -342,6 +357,10 @@ def select_candidates(db, limit: int) -> list[dict]:
         country = max(set(countries), key=countries.count) if countries else None
         cities = [ci for _, c, ci, _, _ in lst if ci and c == country]
         city = max(set(cities), key=cities.count) if cities else None
+        if country is None and city and city_country.get(city):
+            country = city_country[city]
+        if dom in nc_fresh and country is None:
+            continue                      # still nothing to file it under
         pin = pins.get(dom)
         cands.append({"domain": dom, "urls": [u for u, *_ in lst],
                       "country": canon_country(pin.country) if (pin and pin.country) else country,

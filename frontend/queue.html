@@ -38,6 +38,10 @@
         table.q { width: 100%; border-collapse: collapse; font-size: .82rem; }
         table.q th { text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: #888; padding: 8px 10px; border-bottom: 1px solid var(--border); background: #fafafe; position: sticky; top: 0; white-space: nowrap; cursor: pointer; }
         table.q th.num, table.q td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        table.q th[data-k]:hover { color: var(--accent); }
+        table.q th.sorted { color: var(--accent); }
+        table.q th.sorted::after { content: ' ▲'; font-size: .6rem; }
+        table.q th.sorted.desc::after { content: ' ▼'; }
         table.q td { padding: 6px 10px; border-top: 1px solid #f0f0f5; white-space: nowrap; vertical-align: top; }
         table.q tr:hover td { background: rgba(124,106,247,.05); }
         table.q tr.pinned td { background: rgba(255,200,60,.12); }
@@ -92,7 +96,7 @@
         <div class="section" id="sec-pins"><button class="toggle" data-t="pins">−</button>📌 Pinned
             <span class="sub" id="pins-sub"></span></div>
         <div id="pins-body"><div class="twrap"><table class="q" id="pins-table"><thead><tr>
-            <th>#</th><th>Domain</th><th>Country</th><th>Status</th><th>Outcome</th><th>Note</th><th>Added</th><th></th>
+            <th data-k="rank" class="num">#</th><th data-k="domain">Domain</th><th data-k="country">Country</th><th data-k="status">Status</th><th data-k="outcome">Outcome</th><th data-k="note">Note</th><th data-k="created_at">Added</th><th></th>
         </tr></thead><tbody></tbody></table></div></div>
 
         <!-- Recipes -->
@@ -106,13 +110,13 @@
                 <span id="rcount"></span>
             </div>
             <div class="twrap"><table class="q" id="recipes-table"><thead><tr>
-                <th>#</th><th>Domain</th><th>Kind</th><th>By</th><th>Country</th><th>City</th>
-                <th class="num">Prio</th><th>Next run</th><th>Status</th>
-                <th class="num">Fetched→saved</th><th class="num">Saved total</th><th class="num">Events held</th><th class="num">Upcoming</th>
-                <th>Formats</th><th>Genres</th><th>Last error</th>
+                <th data-k="_i" class="num">#</th><th data-k="domain">Domain</th><th data-k="kind">Kind</th><th data-k="written_by">By</th><th data-k="country">Country</th><th data-k="city">City</th>
+                <th data-k="priority" class="num">Prio</th><th data-k="_next">Next run</th><th data-k="last_status">Status</th>
+                <th data-k="last_saved" class="num">Fetched→saved</th><th data-k="saved_total" class="num">Saved total</th><th data-k="events" class="num">Events held</th><th data-k="upcoming" class="num">Upcoming</th>
+                <th data-k="formats">Formats</th><th data-k="genres">Genres</th><th data-k="last_error">Last error</th>
             </tr></thead><tbody></tbody></table></div>
             <div class="more" id="rmore"></div>
-            <p class="legend">Order = the next 3-hourly sweep: <b>due</b> recipes (purple bar) by priority, then not-yet-due by next run time, disabled last.
+            <p class="legend">Click any column header to sort (again to flip, a third time to restore queue order). Order = the next 3-hourly sweep: <b>due</b> recipes (purple bar) by priority, then not-yet-due by next run time, disabled last.
                 Fetched→saved of the last run: <i>fetched</i> = events parsed off the site, <i>saved</i> = new to the DB (the rest were already held → dupes).</p>
         </div>
 
@@ -122,7 +126,7 @@
         <div id="nc-body" hidden>
             <p class="legend" style="margin-bottom:8px;">Detector found ≥3 future events but no country could be inferred (no venue country in the data, generic TLD). Paste <code>domain, Country</code> above to file them. Re-probed automatically every 7 days.</p>
             <div class="twrap"><table class="q" id="nc-table"><thead><tr>
-                <th>Domain</th><th>Detector</th><th class="num">Events found</th><th class="num">Cadence-A yield</th><th>Cities seen</th><th>Probed</th>
+                <th data-k="domain">Domain</th><th data-k="detector">Detector</th><th data-k="events" class="num">Events found</th><th data-k="prior_yield" class="num">Cadence-A yield</th><th data-k="cities">Cities seen</th><th data-k="probed_at">Probed</th>
             </tr></thead><tbody></tbody></table></div>
         </div>
 
@@ -137,9 +141,9 @@
                 <span id="qcount"></span>
             </div>
             <div class="twrap"><table class="q" id="queue-table"><thead><tr>
-                <th class="num">Pos</th><th>Domain</th><th>Country</th><th>City</th>
-                <th class="num">Pages</th><th class="num">Cadence-A yield</th><th class="num">Events held</th><th class="num">Upcoming</th>
-                <th>Formats</th><th>Genres</th><th>Method</th><th>Via</th><th>Previous probe</th>
+                <th data-k="pos" class="num">Pos</th><th data-k="domain">Domain</th><th data-k="country">Country</th><th data-k="city">City</th>
+                <th data-k="pages" class="num">Pages</th><th data-k="prior_yield" class="num">Cadence-A yield</th><th data-k="events" class="num">Events held</th><th data-k="upcoming" class="num">Upcoming</th>
+                <th data-k="formats">Formats</th><th data-k="genres">Genres</th><th data-k="method">Method</th><th data-k="via">Via</th><th data-k="prev_probed_at">Previous probe</th>
             </tr></thead><tbody></tbody></table></div>
             <div class="more" id="qmore"></div>
             <p class="legend">Order = the prober's order: pinned first (rank), then Cadence-A yield desc (events the LLM extractor once saved from the domain), then page count.
@@ -155,6 +159,33 @@ const chips = (arr, cls) => (arr || []).map(x => `<span class="chip ${cls}">${es
 const statusChip = s => `<span class="chip ${s === 'ok' ? 'ok' : (s === 'error' || s === 'drift') ? 'bad' : s === 'empty' ? 'warn' : ''}">${esc(s)}</span>`;
 const PAGE = 300;
 let DATA = null;
+
+// ── click-to-sort (per table; click again flips; default order = queue order) ──
+const SORT = {};   // tableId → {k, desc}
+function sortRows(tableId, rows) {
+    const st = SORT[tableId];
+    if (!st) return rows;
+    const val = r => { const v = r[st.k]; return Array.isArray(v) ? v.join(', ') : (v ?? null); };
+    return [...rows].sort((a, b) => {
+        const x = val(a), y = val(b);
+        if (x === y) return 0;
+        if (x === null || x === '') return 1;          // blanks last either way
+        if (y === null || y === '') return -1;
+        const c = (typeof x === 'number' && typeof y === 'number') ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' });
+        return st.desc ? -c : c;
+    });
+}
+function initSort(tableId, rerender) {
+    document.querySelectorAll(`#${tableId} th[data-k]`).forEach(th => th.addEventListener('click', () => {
+        const k = th.dataset.k, cur = SORT[tableId];
+        if (cur && cur.k === k) { if (cur.desc) delete SORT[tableId]; else cur.desc = true; }
+        else SORT[tableId] = { k, desc: th.classList.contains('num') };   // numbers: biggest first on first click
+        document.querySelectorAll(`#${tableId} th`).forEach(h => h.classList.remove('sorted', 'desc'));
+        const st = SORT[tableId];
+        if (st) { th.classList.add('sorted'); if (st.desc) th.classList.add('desc'); }
+        rerender();
+    }));
+}
 
 // ── collapsible sections (remembered per browser) ──
 const collapsed = (() => { try { return JSON.parse(localStorage.getItem('queue.collapsed') || '{}'); } catch { return {}; } })();
@@ -213,7 +244,7 @@ function renderCards(s) {
 function renderPins(pins) {
     const tb = document.querySelector('#pins-table tbody');
     document.getElementById('pins-sub').textContent = pins.length ? `${pins.filter(p => p.status === 'queued').length} queued · ${pins.length} total` : 'nothing pinned — paste domains above';
-    tb.innerHTML = pins.map(p => `<tr class="${p.status === 'queued' ? 'pinned' : ''}">
+    tb.innerHTML = sortRows('pins-table', pins).map(p => `<tr class="${p.status === 'queued' ? 'pinned' : ''}">
         <td class="num">${p.rank}</td>
         <td class="dom"><a href="https://${esc(p.domain)}" target="_blank" rel="noopener">${esc(p.domain)}</a></td>
         <td>${esc(p.country || '—')}</td>
@@ -227,16 +258,17 @@ function recipeRows() {
     const f = document.getElementById('rf').value.trim().toLowerCase();
     const st = document.getElementById('rs').value;
     const due = document.getElementById('rdue').checked;
-    return DATA.recipes.filter(r => (!st || r.last_status === st) && (!due || r.due) &&
+    const rows = DATA.recipes.filter(r => (!st || r.last_status === st) && (!due || r.due) &&
         (!f || [r.domain, r.country, r.city, r.kind, r.written_by, ...(r.formats || []), ...(r.genres || [])].join(' ').toLowerCase().includes(f)));
+    return sortRows('recipes-table', rows);
 }
 function renderRecipes() {
     const rows = recipeRows();
     document.getElementById('rcount').textContent = `${rows.length} of ${DATA.recipes.length}`;
     document.getElementById('recipes-sub').textContent = `${DATA.summary.recipes_due} due on the next 3-hourly sweep`;
     const tb = document.querySelector('#recipes-table tbody');
-    tb.innerHTML = rows.slice(0, rShown).map((r, i) => `<tr class="${r.pinned ? 'pinned' : ''} ${r.due ? 'due' : ''}">
-        <td class="num dim">${i + 1}</td>
+    tb.innerHTML = rows.slice(0, rShown).map((r) => `<tr class="${r.pinned ? 'pinned' : ''} ${r.due ? 'due' : ''}">
+        <td class="num dim">${r._i}</td>
         <td class="dom"><a href="https://${esc(r.domain)}" target="_blank" rel="noopener">${esc(r.domain)}</a>${r.pinned ? ' 📌' : ''}${!r.enabled ? ' <span class="chip bad">disabled</span>' : ''}</td>
         <td><span class="chip k">${esc(r.kind || '?')}</span></td>
         <td class="dim">${esc((r.written_by || '').replace('auto-', ''))}</td>
@@ -256,8 +288,9 @@ function queueRows() {
     const f = document.getElementById('qf').value.trim().toLowerCase();
     const c = document.getElementById('qc').value;
     const y = document.getElementById('qy').checked;
-    return DATA.queue.filter(q => (!c || (q.country || '—') === c) && (!y || q.prior_yield > 0) &&
+    const rows = DATA.queue.filter(q => (!c || (q.country || '—') === c) && (!y || q.prior_yield > 0) &&
         (!f || [q.domain, q.country, q.city, q.method, ...(q.formats || []), ...(q.genres || [])].join(' ').toLowerCase().includes(f)));
+    return sortRows('queue-table', rows);
 }
 function renderQueue() {
     const rows = queueRows();
@@ -279,7 +312,7 @@ function renderQueue() {
 
 function renderNC(rows) {
     document.getElementById('nc-sub').textContent = `${rows.length} domains with events but no country`;
-    document.querySelector('#nc-table tbody').innerHTML = rows.map(r => `<tr class="${r.pinned ? 'pinned' : ''}">
+    document.querySelector('#nc-table tbody').innerHTML = sortRows('nc-table', rows).map(r => `<tr class="${r.pinned ? 'pinned' : ''}">
         <td class="dom"><a href="https://${esc(r.domain)}" target="_blank" rel="noopener">${esc(r.domain)}</a>${r.pinned ? ' 📌' : ''}</td>
         <td><span class="chip k">${esc(r.detector || '?')}</span></td>
         <td class="num">${r.events}</td><td class="num">${r.prior_yield}</td>
@@ -289,6 +322,7 @@ function renderNC(rows) {
 async function load(refresh) {
     const r = await fetch('/api/stats/queue' + (refresh ? '?refresh=1' : ''));
     DATA = await r.json();
+    DATA.recipes.forEach((r, i) => { r._i = i + 1; r._next = r.due ? '0-due' : (r.next_run_at || '9'); });
     document.getElementById('asof').textContent = 'as of ' + fmtTs(DATA.as_of);
     document.getElementById('sched').innerHTML = Object.entries(DATA.schedule).map(([k, v]) => `<b>${esc(k)}</b> — ${esc(v)}`).join('<br>');
     renderCards(DATA.summary);
@@ -300,6 +334,10 @@ async function load(refresh) {
     document.getElementById('loading').hidden = true;
     document.getElementById('content').hidden = false;
 }
+initSort('pins-table', () => renderPins(DATA.pins));
+initSort('recipes-table', () => { rShown = PAGE; renderRecipes(); });
+initSort('nc-table', () => renderNC(DATA.needs_country));
+initSort('queue-table', () => { qShown = PAGE; renderQueue(); });
 ['rf', 'rs', 'rdue'].forEach(id => document.getElementById(id).addEventListener('input', () => { rShown = PAGE; renderRecipes(); }));
 ['qf', 'qc', 'qy'].forEach(id => document.getElementById(id).addEventListener('input', () => { qShown = PAGE; renderQueue(); }));
 load(false).catch(e => { document.getElementById('loading').textContent = 'Failed to load: ' + e; });
