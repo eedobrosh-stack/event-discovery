@@ -90,8 +90,19 @@ on the page, an ICS feed link (or the WP Events Calendar `?ical=1`
 feeds), the WP Events Calendar REST API — and auto-creates a recipe
 (`written_by=auto-probe`) when one yields ≥3 future events. Outcomes in
 `source_probes` (never probe a domain twice; `none` retried after 45
-days); progress at `/api/stats/probes`. **Brave discovery is paused**
-until the recipe queue runs dry.
+days, `no_country` after 7); progress at `/api/stats/probes`. The pool
+is ~15k domains (120/hour ≈ 5 days to drain). **Parse queue page**
+`superca.ly/queue.html` (`/api/stats/queue`, cached 5 min) shows every
+recipe in next-sweep order and the whole probe queue in the prober's
+order with country / city / pages / Cadence-A yield / events held /
+formats / genres. Its "Cut in line" box POSTs `/api/admin/queue/pins`
+(`queue_pins` table): pinned domains are probed first (even if probed
+before or outside the pool; optional `domain, Country` supplies what
+the prober could not infer), and pinned recipe domains get priority
+100 + due now. Country strings from Cadence A are canonicalised via
+`app/services/recipes/countries.py` ("Deutschland" → "Germany") before
+any City lookup. **Brave discovery is paused** until the recipe queue
+runs dry.
 
 ### Discovery method selection
 Env var `DISCOVERY_METHOD` ∈ {`search`, `gemini`}. Auto-detects `search`
@@ -250,12 +261,12 @@ shows Tel Aviv before Gush Dan).
 | `app/api/suggestions.py` | `/api/suggestions` endpoint |
 | `app/api/events.py` | `/api/events` (the search results) |
 | `app/api/cities.py` | `/api/cities`, `/api/cities/countries`, `/api/cities/states` |
-| `app/api/stats.py` | `/api/stats/*` — coverage dashboards; `/recipes` health, `/source-samples` (10 newest events per source, last 24h → stats.html “Taste of the last 24h”) |
+| `app/api/stats.py` | `/api/stats/*` — coverage dashboards; `/recipes` health, `/probes`, `/batches` (per-run cadence + recipe_extract breakdown ok/dupes/zero-fetch/error), `/queue` (parse queue page), `/source-samples` (10 newest events per source, last 24h → stats.html “Taste of the last 24h”) |
 | `app/api/_us_states.py` | Code → name + name-overlap detection for city disambig |
 | `app/seed/artist_classifications.json.gz` | The genre taxonomy + artist classifications, loaded at boot |
 | `frontend/app.js` | Results-page JS — autocomplete, filter chips, search call |
 | `frontend/home.js` | Homepage JS — same patterns, slimmer |
-| `frontend/index.html` `frontend/results.html` `frontend/stats.html` | Pages |
+| `frontend/index.html` `frontend/results.html` `frontend/stats.html` `frontend/queue.html` | Pages (stats sections collapse with ± buttons, state in localStorage) |
 | `scripts/improve_genre_coverage.py` | Levers A+B (Performer.genres bridge + Gemini batch) |
 | `scripts/improve_genre_via_brave.py` | Lever C (Brave-augmented retry) — supports `--country` |
 | `scripts/dump_classifications_seed.py` | Dump local artist_genre + taxonomy → seed bundle |

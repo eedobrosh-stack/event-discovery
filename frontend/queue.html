@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supercaly — Parse Queue</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        :root { --accent: #7c6af7; --muted: #777; --border: #e4e4ee; --card: #fff; }
+        main { max-width: 1400px; }
+        .back-link { color: var(--accent); text-decoration: none; font-size: .85rem; }
+        .q-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 14px 0 6px; flex-wrap: wrap; }
+        .q-header h2 { margin: 0; font-size: 1.4rem; }
+        .sub { color: var(--muted); font-size: .8rem; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 14px 0 18px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+        .card .n { font-size: 1.35rem; font-weight: 700; color: #222; font-variant-numeric: tabular-nums; }
+        .card .l { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
+        .card .s { font-size: .74rem; color: #999; margin-top: 3px; }
+        .pin-box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; }
+        .pin-box h3 { margin: 0 0 6px; font-size: 1rem; }
+        .pin-box textarea { width: 100%; box-sizing: border-box; min-height: 96px; font: .85rem/1.4 ui-monospace, Menlo, monospace; padding: 8px 10px; border: 1px solid #cfcfe0; border-radius: 6px; resize: vertical; }
+        .pin-row { display: flex; gap: 10px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+        .pin-row input { flex: 1; min-width: 180px; padding: 7px 10px; border: 1px solid #cfcfe0; border-radius: 6px; font-size: .85rem; }
+        .btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-weight: 600; cursor: pointer; font-size: .85rem; }
+        .btn:disabled { opacity: .5; cursor: default; }
+        .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+        #pin-result { margin-top: 10px; font-size: .84rem; display: none; padding: 8px 12px; border-radius: 6px; }
+        #pin-result.ok { display: block; background: rgba(100,200,100,.12); color: #2f7a2f; border: 1px solid rgba(100,200,100,.3); }
+        #pin-result.err { display: block; background: rgba(220,80,80,.12); color: #a33; border: 1px solid rgba(220,80,80,.3); }
+        .section { margin: 26px 0 8px; display: flex; align-items: center; gap: 8px; font-size: 1rem; font-weight: 600; color: #333; flex-wrap: wrap; }
+        .section .sub { font-weight: 400; }
+        .toggle { border: 1px solid #cfcfe0; background: #fff; color: #555; width: 22px; height: 22px; border-radius: 5px; cursor: pointer; font-size: .95rem; line-height: 1; padding: 0; }
+        .tools { display: flex; gap: 10px; align-items: center; margin: 6px 0 8px; flex-wrap: wrap; font-size: .82rem; color: #555; }
+        .tools input, .tools select { padding: 5px 8px; border: 1px solid #cfcfe0; border-radius: 5px; font-size: .82rem; }
+        .twrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
+        table.q { width: 100%; border-collapse: collapse; font-size: .82rem; }
+        table.q th { text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: #888; padding: 8px 10px; border-bottom: 1px solid var(--border); background: #fafafe; position: sticky; top: 0; white-space: nowrap; cursor: pointer; }
+        table.q th.num, table.q td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        table.q td { padding: 6px 10px; border-top: 1px solid #f0f0f5; white-space: nowrap; vertical-align: top; }
+        table.q tr:hover td { background: rgba(124,106,247,.05); }
+        table.q tr.pinned td { background: rgba(255,200,60,.12); }
+        table.q tr.due td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+        .chip { display: inline-block; font-size: .68rem; padding: 1px 7px; border-radius: 10px; background: #eef; color: #445; margin-right: 3px; }
+        .chip.g { background: #e8f5ee; color: #256b3f; }
+        .chip.k { background: #f2ecff; color: #5b47d6; }
+        .chip.warn { background: #fff1d6; color: #8a5a00; }
+        .chip.bad { background: #ffe3e3; color: #a11; }
+        .chip.ok { background: #e3f6e3; color: #227722; }
+        .chip.pin { background: #ffe9a8; color: #6b4a00; }
+        .dom a { color: #222; text-decoration: none; font-weight: 600; }
+        .dom a:hover { color: var(--accent); }
+        .dim { color: #999; }
+        .more { text-align: center; padding: 10px; }
+        .legend { font-size: .76rem; color: #777; margin: 6px 0 0; line-height: 1.5; }
+        .x { color: #bbb; cursor: pointer; margin-left: 6px; }
+        .x:hover { color: #a11; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Supercaly</h1>
+    <p>Route 3 parse queue — what gets parsed next, in order</p>
+</header>
+
+<main style="padding: 24px;">
+    <a href="/stats.html" class="back-link">← Coverage Stats</a>
+    <div class="q-header">
+        <h2>🧾 Parse Queue</h2>
+        <span class="sub" id="asof"></span>
+    </div>
+    <p class="sub" id="sched" style="margin:0 0 10px; line-height:1.5;"></p>
+
+    <div class="pin-box">
+        <h3>⏩ Cut in line</h3>
+        <div class="sub">One domain per line. Optional country after a comma (rescues "needs country" sites): <code>somesite.com, Germany</code>.
+            Domains with a recipe get priority 100 and run on the next 3-hourly sweep; everything else is probed first on the next hourly prober run — even if it was probed before or is not in the pool yet.</div>
+        <textarea id="pin-text" placeholder="eventim.de&#10;koelnticket.de, Germany&#10;https://www.somevenue.com/events"></textarea>
+        <div class="pin-row">
+            <input id="pin-note" placeholder="note (optional)">
+            <button class="btn" id="pin-btn">Prioritize</button>
+        </div>
+        <div id="pin-result"></div>
+    </div>
+
+    <div id="loading" class="sub">Loading queue… (first load walks ~30k source pages, a few seconds)</div>
+    <div id="content" hidden>
+        <div class="cards" id="cards"></div>
+
+        <!-- Pins -->
+        <div class="section" id="sec-pins"><button class="toggle" data-t="pins">−</button>📌 Pinned
+            <span class="sub" id="pins-sub"></span></div>
+        <div id="pins-body"><div class="twrap"><table class="q" id="pins-table"><thead><tr>
+            <th>#</th><th>Domain</th><th>Country</th><th>Status</th><th>Outcome</th><th>Note</th><th>Added</th><th></th>
+        </tr></thead><tbody></tbody></table></div></div>
+
+        <!-- Recipes -->
+        <div class="section" id="sec-recipes"><button class="toggle" data-t="recipes">−</button>🍳 Enrolled recipes
+            <span class="sub" id="recipes-sub"></span></div>
+        <div id="recipes-body">
+            <div class="tools">
+                <input id="rf" placeholder="filter domain / country / format…">
+                <select id="rs"><option value="">all statuses</option><option>ok</option><option>empty</option><option>error</option><option>drift</option><option>never_run</option></select>
+                <label><input type="checkbox" id="rdue"> due only</label>
+                <span id="rcount"></span>
+            </div>
+            <div class="twrap"><table class="q" id="recipes-table"><thead><tr>
+                <th>#</th><th>Domain</th><th>Kind</th><th>By</th><th>Country</th><th>City</th>
+                <th class="num">Prio</th><th>Next run</th><th>Status</th>
+                <th class="num">Fetched→saved</th><th class="num">Saved total</th><th class="num">Events held</th><th class="num">Upcoming</th>
+                <th>Formats</th><th>Genres</th><th>Last error</th>
+            </tr></thead><tbody></tbody></table></div>
+            <div class="more" id="rmore"></div>
+            <p class="legend">Order = the next 3-hourly sweep: <b>due</b> recipes (purple bar) by priority, then not-yet-due by next run time, disabled last.
+                Fetched→saved of the last run: <i>fetched</i> = events parsed off the site, <i>saved</i> = new to the DB (the rest were already held → dupes).</p>
+        </div>
+
+        <!-- Needs country -->
+        <div class="section" id="sec-nc"><button class="toggle" data-t="nc">+</button>🌍 Needs country
+            <span class="sub" id="nc-sub"></span></div>
+        <div id="nc-body" hidden>
+            <p class="legend" style="margin-bottom:8px;">Detector found ≥3 future events but no country could be inferred (no venue country in the data, generic TLD). Paste <code>domain, Country</code> above to file them. Re-probed automatically every 7 days.</p>
+            <div class="twrap"><table class="q" id="nc-table"><thead><tr>
+                <th>Domain</th><th>Detector</th><th class="num">Events found</th><th class="num">Cadence-A yield</th><th>Cities seen</th><th>Probed</th>
+            </tr></thead><tbody></tbody></table></div>
+        </div>
+
+        <!-- Probe queue -->
+        <div class="section" id="sec-queue"><button class="toggle" data-t="queue">−</button>🔎 Probe queue
+            <span class="sub" id="queue-sub"></span></div>
+        <div id="queue-body">
+            <div class="tools">
+                <input id="qf" placeholder="filter domain / country / city / format…">
+                <select id="qc"><option value="">all countries</option></select>
+                <label><input type="checkbox" id="qy"> with Cadence-A yield only</label>
+                <span id="qcount"></span>
+            </div>
+            <div class="twrap"><table class="q" id="queue-table"><thead><tr>
+                <th class="num">Pos</th><th>Domain</th><th>Country</th><th>City</th>
+                <th class="num">Pages</th><th class="num">Cadence-A yield</th><th class="num">Events held</th><th class="num">Upcoming</th>
+                <th>Formats</th><th>Genres</th><th>Method</th><th>Via</th><th>Previous probe</th>
+            </tr></thead><tbody></tbody></table></div>
+            <div class="more" id="qmore"></div>
+            <p class="legend">Order = the prober's order: pinned first (rank), then Cadence-A yield desc (events the LLM extractor once saved from the domain), then page count.
+                120 domains per hourly run. <i>Method</i> = how Cadence A last read the site (html / url_context / jsonld / error) — a hint at format. <i>Previous probe</i> = an earlier attempt whose 45-day wait has passed.</p>
+        </div>
+    </div>
+</main>
+
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtTs = iso => iso ? iso.replace('T', ' ').slice(0, 16) + 'Z' : '—';
+const chips = (arr, cls) => (arr || []).map(x => `<span class="chip ${cls}">${esc(x)}</span>`).join('') || '<span class="dim">—</span>';
+const statusChip = s => `<span class="chip ${s === 'ok' ? 'ok' : (s === 'error' || s === 'drift') ? 'bad' : s === 'empty' ? 'warn' : ''}">${esc(s)}</span>`;
+const PAGE = 300;
+let DATA = null;
+
+// ── collapsible sections (remembered per browser) ──
+const collapsed = (() => { try { return JSON.parse(localStorage.getItem('queue.collapsed') || '{}'); } catch { return {}; } })();
+function applyToggle(key) {
+    const body = document.getElementById(key + '-body');
+    const btn = document.querySelector(`.toggle[data-t="${key}"]`);
+    const c = !!collapsed[key];
+    body.hidden = c; btn.textContent = c ? '+' : '−';
+}
+document.querySelectorAll('.toggle').forEach(b => {
+    const k = b.dataset.t;
+    if (collapsed[k] === undefined) collapsed[k] = (k === 'nc');
+    b.addEventListener('click', () => { collapsed[k] = !collapsed[k]; try { localStorage.setItem('queue.collapsed', JSON.stringify(collapsed)); } catch {} applyToggle(k); });
+    applyToggle(k);
+});
+
+// ── pins ──
+document.getElementById('pin-btn').addEventListener('click', async () => {
+    const text = document.getElementById('pin-text').value.trim();
+    const note = document.getElementById('pin-note').value.trim();
+    const out = document.getElementById('pin-result');
+    if (!text) { out.className = 'err'; out.textContent = 'Paste at least one domain.'; return; }
+    const btn = document.getElementById('pin-btn'); btn.disabled = true;
+    try {
+        const r = await fetch('/api/admin/queue/pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, note: note || null }) });
+        const j = await r.json();
+        if (j.error) { out.className = 'err'; out.textContent = j.error; }
+        else {
+            out.className = 'ok';
+            out.innerHTML = `Queued ${j.added} new, re-ranked ${j.updated}, bumped ${j.bumped} existing recipe(s). ` +
+                j.rows.map(x => `<b>${esc(x.domain)}</b>${x.country ? ' (' + esc(x.country) + ')' : ''} → ${esc(x.status)}`).join(' · ');
+            document.getElementById('pin-text').value = '';
+            await load(true);
+        }
+    } catch (e) { out.className = 'err'; out.textContent = 'Request failed: ' + e; }
+    btn.disabled = false;
+});
+async function unpin(domain) {
+    await fetch('/api/admin/queue/pins/' + encodeURIComponent(domain), { method: 'DELETE' });
+    await load(true);
+}
+
+// ── render ──
+function renderCards(s) {
+    const c = [
+        [s.recipes, 'recipes enrolled', `${s.recipes_due} due next sweep · ${s.recipes_enabled} enabled`],
+        [s.queue.toLocaleString(), 'domains in probe queue', `${s.queue_with_prior_yield.toLocaleString()} carried events under Cadence A`],
+        [s.queue_pinned, 'pinned ahead', 'human cut-ins, probed first'],
+        [s.needs_country, 'needs country', 'hits we cannot file yet'],
+        [s.parked.none.toLocaleString(), 'parked: nothing free', 're-probe after 45 days'],
+        [s.eta_hours_to_drain + 'h', 'to drain queue', `${s.hourly_batch}/hour · ≈ ${Math.round(s.eta_hours_to_drain / 24)} days`],
+    ];
+    document.getElementById('cards').innerHTML = c.map(([n, l, sub]) => `<div class="card"><div class="n">${n}</div><div class="l">${l}</div><div class="s">${sub}</div></div>`).join('');
+}
+
+function renderPins(pins) {
+    const tb = document.querySelector('#pins-table tbody');
+    document.getElementById('pins-sub').textContent = pins.length ? `${pins.filter(p => p.status === 'queued').length} queued · ${pins.length} total` : 'nothing pinned — paste domains above';
+    tb.innerHTML = pins.map(p => `<tr class="${p.status === 'queued' ? 'pinned' : ''}">
+        <td class="num">${p.rank}</td>
+        <td class="dom"><a href="https://${esc(p.domain)}" target="_blank" rel="noopener">${esc(p.domain)}</a></td>
+        <td>${esc(p.country || '—')}</td>
+        <td><span class="chip ${p.status === 'queued' ? 'pin' : p.status === 'recipe' ? 'ok' : ''}">${esc(p.status)}</span></td>
+        <td>${esc(p.outcome || '—')}</td><td>${esc(p.note || '')}</td><td class="dim">${fmtTs(p.created_at)}</td>
+        <td><span class="x" title="remove pin" onclick="unpin('${esc(p.domain)}')">✕</span></td></tr>`).join('') || '<tr><td colspan="8" class="dim">—</td></tr>';
+}
+
+let rShown = PAGE, qShown = PAGE;
+function recipeRows() {
+    const f = document.getElementById('rf').value.trim().toLowerCase();
+    const st = document.getElementById('rs').value;
+    const due = document.getElementById('rdue').checked;
+    return DATA.recipes.filter(r => (!st || r.last_status === st) && (!due || r.due) &&
+        (!f || [r.domain, r.country, r.city, r.kind, r.written_by, ...(r.formats || []), ...(r.genres || [])].join(' ').toLowerCase().includes(f)));
+}
+function renderRecipes() {
+    const rows = recipeRows();
+    document.getElementById('rcount').textContent = `${rows.length} of ${DATA.recipes.length}`;
+    document.getElementById('recipes-sub').textContent = `${DATA.summary.recipes_due} due on the next 3-hourly sweep`;
+    const tb = document.querySelector('#recipes-table tbody');
+    tb.innerHTML = rows.slice(0, rShown).map((r, i) => `<tr class="${r.pinned ? 'pinned' : ''} ${r.due ? 'due' : ''}">
+        <td class="num dim">${i + 1}</td>
+        <td class="dom"><a href="https://${esc(r.domain)}" target="_blank" rel="noopener">${esc(r.domain)}</a>${r.pinned ? ' 📌' : ''}${!r.enabled ? ' <span class="chip bad">disabled</span>' : ''}</td>
+        <td><span class="chip k">${esc(r.kind || '?')}</span></td>
+        <td class="dim">${esc((r.written_by || '').replace('auto-', ''))}</td>
+        <td>${esc(r.country || '—')}</td><td>${esc(r.city || '—')}</td>
+        <td class="num">${r.priority}</td>
+        <td class="${r.due ? '' : 'dim'}">${r.due ? '<b>due</b>' : fmtTs(r.next_run_at)}</td>
+        <td>${statusChip(r.last_status)}${r.drift ? ' <span class="chip bad">drift</span>' : ''}</td>
+        <td class="num">${r.last_fetched}→<b>${r.last_saved}</b></td>
+        <td class="num">${r.saved_total.toLocaleString()}</td>
+        <td class="num">${r.events.toLocaleString()}</td><td class="num">${r.upcoming.toLocaleString()}</td>
+        <td>${chips(r.formats, '')}</td><td>${chips(r.genres, 'g')}</td>
+        <td class="dim" title="${esc(r.last_error || '')}">${esc((r.last_error || '').slice(0, 60))}</td></tr>`).join('');
+    document.getElementById('rmore').innerHTML = rows.length > rShown ? `<button class="btn ghost" onclick="rShown+=${PAGE};renderRecipes()">show ${Math.min(PAGE, rows.length - rShown)} more</button>` : '';
+}
+
+function queueRows() {
+    const f = document.getElementById('qf').value.trim().toLowerCase();
+    const c = document.getElementById('qc').value;
+    const y = document.getElementById('qy').checked;
+    return DATA.queue.filter(q => (!c || (q.country || '—') === c) && (!y || q.prior_yield > 0) &&
+        (!f || [q.domain, q.country, q.city, q.method, ...(q.formats || []), ...(q.genres || [])].join(' ').toLowerCase().includes(f)));
+}
+function renderQueue() {
+    const rows = queueRows();
+    document.getElementById('qcount').textContent = `${rows.length.toLocaleString()} of ${DATA.queue.length.toLocaleString()}`;
+    document.getElementById('queue-sub').textContent = `${DATA.queue.length.toLocaleString()} domains · next hourly run takes the top ${DATA.summary.hourly_batch}`;
+    const tb = document.querySelector('#queue-table tbody');
+    tb.innerHTML = rows.slice(0, qShown).map(q => `<tr class="${q.pin_rank != null ? 'pinned' : ''}">
+        <td class="num dim">${q.pos}</td>
+        <td class="dom"><a href="${esc(q.url || 'https://' + q.domain)}" target="_blank" rel="noopener">${esc(q.domain)}</a>${q.pin_rank != null ? ' 📌' : ''}</td>
+        <td>${esc(q.country || '—')}${q.pin_country ? ' <span class="chip pin">pinned</span>' : ''}</td><td>${esc(q.city || '—')}</td>
+        <td class="num">${q.pages}</td><td class="num">${q.prior_yield}</td>
+        <td class="num">${q.events}</td><td class="num">${q.upcoming}</td>
+        <td>${chips(q.formats, '')}</td><td>${chips(q.genres, 'g')}</td>
+        <td class="dim">${esc(q.method || '—')}${q.pagination ? ' <span class="chip">paginated</span>' : ''}</td>
+        <td class="dim">${esc(q.via || '—')}</td>
+        <td class="dim">${q.prev_outcome ? `${esc(q.prev_outcome)} · ${fmtTs(q.prev_probed_at)} (×${q.attempts})` : '—'}</td></tr>`).join('');
+    document.getElementById('qmore').innerHTML = rows.length > qShown ? `<button class="btn ghost" onclick="qShown+=${PAGE};renderQueue()">show ${Math.min(PAGE, rows.length - qShown)} more</button>` : '';
+}
+
+function renderNC(rows) {
+    document.getElementById('nc-sub').textContent = `${rows.length} domains with events but no country`;
+    document.querySelector('#nc-table tbody').innerHTML = rows.map(r => `<tr class="${r.pinned ? 'pinned' : ''}">
+        <td class="dom"><a href="https://${esc(r.domain)}" target="_blank" rel="noopener">${esc(r.domain)}</a>${r.pinned ? ' 📌' : ''}</td>
+        <td><span class="chip k">${esc(r.detector || '?')}</span></td>
+        <td class="num">${r.events}</td><td class="num">${r.prior_yield}</td>
+        <td>${chips(r.cities, '')}</td><td class="dim">${fmtTs(r.probed_at)}</td></tr>`).join('') || '<tr><td colspan="6" class="dim">—</td></tr>';
+}
+
+async function load(refresh) {
+    const r = await fetch('/api/stats/queue' + (refresh ? '?refresh=1' : ''));
+    DATA = await r.json();
+    document.getElementById('asof').textContent = 'as of ' + fmtTs(DATA.as_of);
+    document.getElementById('sched').innerHTML = Object.entries(DATA.schedule).map(([k, v]) => `<b>${esc(k)}</b> — ${esc(v)}`).join('<br>');
+    renderCards(DATA.summary);
+    renderPins(DATA.pins);
+    const countries = [...new Set(DATA.queue.map(q => q.country || '—'))].sort();
+    const sel = document.getElementById('qc'); const cur = sel.value;
+    sel.innerHTML = '<option value="">all countries</option>' + countries.map(c => `<option${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('');
+    renderRecipes(); renderQueue(); renderNC(DATA.needs_country);
+    document.getElementById('loading').hidden = true;
+    document.getElementById('content').hidden = false;
+}
+['rf', 'rs', 'rdue'].forEach(id => document.getElementById(id).addEventListener('input', () => { rShown = PAGE; renderRecipes(); }));
+['qf', 'qc', 'qy'].forEach(id => document.getElementById(id).addEventListener('input', () => { qShown = PAGE; renderQueue(); }));
+load(false).catch(e => { document.getElementById('loading').textContent = 'Failed to load: ' + e; });
+</script>
+<script src="/build-badge.js?v=1"></script>
+</body>
+</html>

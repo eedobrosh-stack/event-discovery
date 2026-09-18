@@ -1,4 +1,6 @@
+import ast
 import math
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
@@ -1503,16 +1505,53 @@ def batch_runs(days: int = 7, limit: int = 300, db: Session = Depends(get_db)):
         .limit(limit)
         .all()
     )
+    # recipe_extract sub-rows (one per recipe run) → per-sweep breakdown so
+    # a "0 saved" sweep is explained: how many recipes fetched nothing
+    # (site empty / blocked), fetched only events we already had
+    # (all dupes), or died (fatal). Bucketed by the parent's time window.
+    sub = (
+        db.query(ScanLog.started_at, ScanLog.status, ScanLog.events_found, ScanLog.events_saved, ScanLog.notes)
+        .filter(ScanLog.started_at >= since, ScanLog.job_name == "recipe_extract", ScanLog.detail.isnot(None))
+        .order_by(ScanLog.started_at.asc())
+        .all()
+    )
+
+    def _breakdown(start, end):
+        b = {"recipes": 0, "ok": 0, "dupes_only": 0, "zero_fetch": 0, "error": 0, "dropped": {}}
+        for st, status, found, saved, notes in sub:
+            if st is None or st < start or (end is not None and st > end):
+                continue
+            b["recipes"] += 1
+            if status == "failed":
+                b["error"] += 1
+            elif (found or 0) == 0:
+                b["zero_fetch"] += 1
+            elif (saved or 0) == 0:
+                b["dupes_only"] += 1
+            else:
+                b["ok"] += 1
+            m = re.search(r"dropped=(\{.*?\})", notes or "")
+            if m:
+                try:
+                    for k, v in ast.literal_eval(m.group(1)).items():
+                        b["dropped"][k] = b["dropped"].get(k, 0) + int(v)
+                except Exception:
+                    pass
+        return b
+
     out = []
     for r in rows:
         dur = (r.finished_at - r.started_at).total_seconds() if (r.finished_at and r.started_at) else None
-        out.append({
+        row = {
             "job": r.job_name, "started_at": r.started_at.isoformat() if r.started_at else None,
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
             "duration_s": int(dur) if dur is not None else None,
             "status": r.status, "found": r.events_found or 0, "saved": r.events_saved or 0,
-            "notes": (r.notes or "")[:240],
-        })
+            "notes": (r.notes or "")[:400],
+        }
+        if r.job_name == "recipe_extract" and r.started_at:
+            row["breakdown"] = _breakdown(r.started_at, r.finished_at)
+        out.append(row)
     # Route 2 collect_events: roll per-city rows up per hour bucket
     city_rows = (
         db.query(ScanLog.started_at, ScanLog.finished_at, ScanLog.status, ScanLog.events_found, ScanLog.events_saved)
@@ -1547,3 +1586,222 @@ def batch_runs(days: int = 7, limit: int = 300, db: Session = Depends(get_db)):
     out.sort(key=lambda x: x["started_at"] or "", reverse=True)
     jobs = sorted({x["job"] for x in out})
     return {"since": since.isoformat(), "days": days, "jobs": jobs, "runs": out[:limit]}
+
+
+# ── Parse queue: everything Route 3 intends to parse, in order ────────────
+_QUEUE_CACHE: dict = {"at": None, "data": None}
+QUEUE_CACHE_TTL_S = 300
+
+
+def _domain_facets(db):
+    """Per-domain event facets from what we already hold:
+      • recipe domains: events keyed by Event.scrape_source (= source_name)
+      • pool domains:   Cadence A events keyed by Event.llm_source_id
+    → {key: {"events": n, "upcoming": n, "formats": {name: n}, "genres": {parent: n}}}
+    for both keyspaces ('src:<source_name>' and 'llm:<id>')."""
+    from app.models.genre import ArtistGenre, GenreTaxonomy
+    today = date.today()
+    upcoming_expr = func.sum(case((Event.start_date >= today, 1), else_=0))
+    facets: dict = defaultdict(lambda: {"events": 0, "upcoming": 0, "formats": {}, "genres": {}})
+
+    for key_col, prefix in ((Event.scrape_source, "src:"), (Event.llm_source_id, "llm:")):
+        for k, n, up in (db.query(key_col, func.count(Event.id), upcoming_expr)
+                         .filter(key_col.isnot(None)).group_by(key_col).all()):
+            f = facets[f"{prefix}{k}"]
+            f["events"] += int(n or 0)
+            f["upcoming"] += int(up or 0)
+        for k, name, n in (db.query(key_col, EventType.name, func.count(func.distinct(Event.id)))
+                           .join(event_event_types, event_event_types.c.event_id == Event.id)
+                           .join(EventType, EventType.id == event_event_types.c.event_type_id)
+                           .filter(key_col.isnot(None), EventType.name.isnot(None))
+                           .group_by(key_col, EventType.name).all()):
+            facets[f"{prefix}{k}"]["formats"][name] = int(n or 0)
+        for k, parent, n in (db.query(key_col, GenreTaxonomy.parent_genre, func.count(func.distinct(Event.id)))
+                             .join(ArtistGenre, ArtistGenre.normalized_name == func.lower(func.trim(Event.artist_name)))
+                             .join(GenreTaxonomy, GenreTaxonomy.sub_genre == ArtistGenre.primary_genre)
+                             .filter(key_col.isnot(None), GenreTaxonomy.parent_genre.isnot(None),
+                                     GenreTaxonomy.parent_genre != "UNKNOWN")
+                             .group_by(key_col, GenreTaxonomy.parent_genre).all()):
+            facets[f"{prefix}{k}"]["genres"][parent] = int(n or 0)
+    return facets
+
+
+def _top(d: dict, n: int = 3) -> list:
+    return [k for k, _ in sorted(d.items(), key=lambda kv: -kv[1])[:n]]
+
+
+def _merge_facets(*parts: dict) -> dict:
+    out = {"events": 0, "upcoming": 0, "formats": {}, "genres": {}}
+    for p in parts:
+        if not p:
+            continue
+        out["events"] += p["events"]
+        out["upcoming"] += p["upcoming"]
+        for k, v in p["formats"].items():
+            out["formats"][k] = out["formats"].get(k, 0) + v
+        for k, v in p["genres"].items():
+            out["genres"][k] = out["genres"].get(k, 0) + v
+    return out
+
+
+def _build_queue(db) -> dict:
+    from app.models import SourceRecipe, SourceProbe, QueuePin
+    from app.services.recipes import probe as PR
+    from app.services.recipes.schema import registered_domain as _rd
+    now = datetime.utcnow()
+    facets = _domain_facets(db)
+    pins = {p.domain: p for p in db.query(QueuePin).all()}
+
+    # LLMSource pages per domain (pool metadata: pages, country, city, method, pagination)
+    pool_meta: dict = defaultdict(lambda: {"pages": 0, "ids": [], "countries": {}, "cities": {},
+                                           "methods": {}, "pagination": False, "yield": 0, "via": {}})
+    for sid, url, country, city, saved, method, pag, via, state in (
+            db.query(LLMSource.id, LLMSource.url, LLMSource.country, LLMSource.city_name,
+                     LLMSource.events_saved_total, LLMSource.last_method, LLMSource.has_pagination,
+                     LLMSource.discovered_via, LLMSource.state).all()):
+        d = _rd(url)
+        if not d or "." not in d:
+            continue
+        m = pool_meta[d]
+        m["pages"] += 1
+        m["ids"].append(sid)
+        m["yield"] += saved or 0
+        if country:
+            m["countries"][country] = m["countries"].get(country, 0) + 1
+        if city:
+            m["cities"][city] = m["cities"].get(city, 0) + 1
+        if method:
+            m["methods"][method] = m["methods"].get(method, 0) + 1
+        if via:
+            m["via"][via] = m["via"].get(via, 0) + 1
+        m["pagination"] = m["pagination"] or bool(pag)
+
+    def pool_facets(dom):
+        m = pool_meta.get(dom)
+        return _merge_facets(*(facets.get(f"llm:{i}") for i in (m["ids"] if m else [])))
+
+    # 1) enrolled recipes in sweep order: enabled+due first (priority desc),
+    #    then enabled not-yet-due by next_run_at, then disabled.
+    recs = db.query(SourceRecipe).all()
+
+    def rec_key(r):
+        due = r.enabled and (r.next_run_at is None or r.next_run_at <= now)
+        return (0 if due else (1 if r.enabled else 2),
+                -(r.priority or 0) if due else 0,
+                (r.next_run_at or now).isoformat() if not due else "",
+                r.id)
+    recipes = []
+    for r in sorted(recs, key=rec_key):
+        f = _merge_facets(facets.get(f"src:{r.source_name}"), pool_facets(r.domain))
+        m = pool_meta.get(r.domain)
+        pin = pins.get(r.domain)
+        recipes.append({
+            "domain": r.domain, "source": r.source_name,
+            "kind": ((r.recipe or {}).get("parse") or {}).get("kind"),
+            "written_by": r.written_by, "enabled": bool(r.enabled),
+            "country": r.country, "city": r.city_name,
+            "priority": r.priority, "cadence_hours": r.cadence_hours,
+            "due": bool(r.enabled and (r.next_run_at is None or r.next_run_at <= now)),
+            "next_run_at": r.next_run_at.isoformat() if r.next_run_at else None,
+            "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+            "last_status": r.last_status, "drift": bool(r.drift_flag),
+            "last_fetched": r.last_fetched or 0, "last_saved": r.last_saved or 0,
+            "saved_total": r.saved_total or 0,
+            "events": f["events"], "upcoming": f["upcoming"],
+            "formats": _top(f["formats"]), "genres": _top(f["genres"]),
+            "pages": len(((r.recipe or {}).get("entry") or {}).get("urls") or []),
+            "pool_pages": m["pages"] if m else 0,
+            "last_error": (r.last_error or "")[:160] or None,
+            "pinned": bool(pin and pin.status in ("queued", "recipe")),
+        })
+
+    # 2) probe queue: exactly the prober's order, whole pool
+    cands = PR.select_candidates(db, 10 ** 6)
+    probes = {p.domain: p for p in db.query(SourceProbe).all()}
+    queue = []
+    for i, c in enumerate(cands, 1):
+        m = pool_meta.get(c["domain"])
+        f = pool_facets(c["domain"])
+        pr = probes.get(c["domain"])
+        queue.append({
+            "pos": i, "domain": c["domain"], "country": c["country"], "city": c["city"],
+            "pages": c["pages"], "prior_yield": c["prior_yield"],
+            "events": f["events"], "upcoming": f["upcoming"],
+            "formats": _top(f["formats"]), "genres": _top(f["genres"]),
+            "method": _top(m["methods"], 1)[0] if m and m["methods"] else None,
+            "pagination": bool(m and m["pagination"]),
+            "via": _top(m["via"], 1)[0] if m and m["via"] else None,
+            "pin_rank": c.get("pin_rank"),
+            "pin_country": (pins[c["domain"]].country if c["domain"] in pins else None),
+            "prev_outcome": pr.outcome if pr else None,
+            "prev_probed_at": pr.last_probed_at.isoformat() if (pr and pr.last_probed_at) else None,
+            "attempts": pr.attempts if pr else 0,
+            "url": c["urls"][0] if c["urls"] else None,
+        })
+
+    # 3) parked: probed and waiting for their re-probe window
+    parked = {"none": 0, "no_country": 0, "error": 0, "reserved": 0}
+    needs_country = []
+    for p in probes.values():
+        if p.outcome in parked:
+            parked[p.outcome] += 1
+        if p.outcome == "no_country":
+            m = pool_meta.get(p.domain)
+            needs_country.append({
+                "domain": p.domain, "detector": p.detector, "events": p.events_found or 0,
+                "prior_yield": p.prior_yield or 0,
+                "probed_at": p.last_probed_at.isoformat() if p.last_probed_at else None,
+                "cities": _top(m["cities"], 2) if m else [],
+                "pinned": p.domain in pins and pins[p.domain].status == "queued",
+            })
+    needs_country.sort(key=lambda x: (-x["events"], -x["prior_yield"]))
+
+    pin_rows = [{
+        "domain": p.domain, "rank": p.rank, "country": p.country, "note": p.note,
+        "status": p.status, "outcome": p.outcome,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "resolved_at": p.resolved_at.isoformat() if p.resolved_at else None,
+    } for p in sorted(pins.values(), key=lambda p: (0 if p.status == "queued" else 1, p.rank, p.id))]
+
+    due_n = sum(1 for r in recipes if r["due"])
+    return {
+        "as_of": now.isoformat(),
+        "schedule": {
+            "recipe_extract": "every 3h at :00 UTC (01,04,07,…); due recipes, priority desc; ≤500 recipes / 2h / 20k requests per sweep",
+            "recipe_probe": "hourly at :30 UTC; next 120 never-recipe'd domains, Cadence-A yield desc; pins first",
+            "recipe_auto_enroll": "weekly Sun 00:30 UTC; JSON-LD LLMSource domains → generic jsonld recipes",
+        },
+        "summary": {
+            "recipes": len(recipes), "recipes_due": due_n,
+            "recipes_enabled": sum(1 for r in recipes if r["enabled"]),
+            "queue": len(queue), "queue_pinned": sum(1 for q in queue if q["pin_rank"] is not None),
+            "queue_with_prior_yield": sum(1 for q in queue if q["prior_yield"] > 0),
+            "parked": parked, "needs_country": len(needs_country),
+            "pool_domains": len(pool_meta),
+            "hourly_batch": 120,
+            "eta_hours_to_drain": round(len(queue) / 120, 1),
+        },
+        "recipes": recipes, "queue": queue, "needs_country": needs_country[:500], "pins": pin_rows,
+    }
+
+
+@router.get("/queue")
+def parse_queue(refresh: int = 0, db: Session = Depends(get_db)):
+    """superca.ly/queue.html — every site Route 3 intends to parse, in the
+    order it will parse them: enrolled recipes (next 3-hourly sweep order),
+    then the prober's queue over the never-recipe'd LLMSource pool. Each row
+    carries what we know about the site (country / city / pages / Cadence-A
+    yield / events already held / formats / genres / extraction method).
+    Cached 5 min (the pool walk is ~30k rows); ?refresh=1 rebuilds."""
+    now = datetime.utcnow()
+    c = _QUEUE_CACHE
+    if not refresh and c["data"] is not None and c["at"] and (now - c["at"]).total_seconds() < QUEUE_CACHE_TTL_S:
+        return c["data"]
+    data = _build_queue(db)
+    c["at"], c["data"] = now, data
+    return data
+
+
+def invalidate_queue_cache() -> None:
+    _QUEUE_CACHE["at"] = None
+    _QUEUE_CACHE["data"] = None

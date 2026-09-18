@@ -34,6 +34,7 @@ from urllib.parse import urljoin, urlsplit
 from app.services.recipes import parse as P
 from app.services.recipes.fetch import Fetcher, BudgetExhausted, RobotsDisallowed
 from app.services.recipes.normalize import normalize
+from app.services.recipes.countries import canon_country
 from app.services.recipes.schema import registered_domain
 from app.services.recipes.sync import upsert_recipe
 
@@ -44,6 +45,13 @@ MIN_EVENTS = 3
 MAX_PAGES_PER_DOMAIN = 2
 REQUESTS_PER_DOMAIN = 8
 REPROBE_DAYS = 45
+# 'no_country' = detector HIT but no country to file the recipe under.
+# Until 2026-09-18 these were re-eligible immediately, so the same ~86
+# domains ate 70% of every hourly batch (probed=120, no_country=86).
+# Now they wait like everyone else (shorter, since a pin with a country
+# or a better inference can still rescue them), and the queue page lists
+# them under "needs country" for a human to pin with one.
+NO_COUNTRY_REPROBE_DAYS = 7
 CADENCE_HOURS = 48
 
 TRIBE_PATH = "/wp-json/tribe/events/v1/events?per_page=50&start_date=now"
@@ -109,7 +117,7 @@ def infer_country(events: list, domain: str) -> Optional[str]:
         c = (getattr(ev, "venue_country", None) or "").strip()
         if not c:
             continue
-        name = _ISO2.get(c.upper(), None) if len(c) <= 3 else c
+        name = _ISO2.get(c.upper(), None) if len(c) <= 3 else canon_country(c)
         if name:
             votes[name] = votes.get(name, 0) + 1
     if votes:
@@ -298,18 +306,25 @@ def _is_reserved(url: str) -> bool:
 def select_candidates(db, limit: int) -> list[dict]:
     """Domains with LLMSource pages, no SourceRecipe, and no fresh probe.
     Ordered by Cadence A yield desc so domains that demonstrably carried
-    events are cracked first."""
-    from app.models import LLMSource, SourceRecipe, SourceProbe
+    events are cracked first.
+
+    Human pins (QueuePin, superca.ly/queue.html) come first in rank order,
+    regardless of probe history, and may name domains that are not in the
+    LLMSource pool at all (the homepage becomes the entry URL)."""
+    from app.models import LLMSource, SourceRecipe, SourceProbe, QueuePin
     have_recipe = {d for (d,) in db.query(SourceRecipe.domain).all()}
-    cutoff = datetime.utcnow() - timedelta(days=REPROBE_DAYS)
+    pins = {p.domain: p for p in db.query(QueuePin).filter(QueuePin.status == "queued")
+            .order_by(QueuePin.rank.asc(), QueuePin.id.asc()).all()}
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=REPROBE_DAYS)
+    cutoff_nc = now - timedelta(days=NO_COUNTRY_REPROBE_DAYS)
     fresh = {}
     for pr in db.query(SourceProbe).all():
-        # skip: recipe already made, or probed recently (any outcome), or
-        # permanently reserved
-        # 'no_country' rows are HITS we could not file yet — re-eligible at
-        # once so a better country inference picks them up next run.
-        if pr.outcome in ("recipe", "reserved") or (
-                pr.outcome != "no_country" and pr.last_probed_at and pr.last_probed_at >= cutoff):
+        if pr.domain in pins:
+            continue                      # a pin overrides any history
+        if pr.outcome in ("recipe", "reserved"):
+            fresh[pr.domain] = pr
+        elif pr.last_probed_at and pr.last_probed_at >= (cutoff_nc if pr.outcome == "no_country" else cutoff):
             fresh[pr.domain] = pr
     rows = (db.query(LLMSource.url, LLMSource.country, LLMSource.city_name,
                      LLMSource.events_saved_total, LLMSource.last_event_count, LLMSource.state)
@@ -319,7 +334,7 @@ def select_candidates(db, limit: int) -> list[dict]:
         dom = registered_domain(url)
         if not dom or "." not in dom or dom in have_recipe or dom in fresh:
             continue
-        by_dom[dom].append((url, country, city, saved or 0, last or 0))
+        by_dom[dom].append((url, canon_country(country), city, saved or 0, last or 0))
     cands = []
     for dom, lst in by_dom.items():
         lst.sort(key=lambda t: (-t[3], -t[4], t[0]))
@@ -327,10 +342,31 @@ def select_candidates(db, limit: int) -> list[dict]:
         country = max(set(countries), key=countries.count) if countries else None
         cities = [ci for _, c, ci, _, _ in lst if ci and c == country]
         city = max(set(cities), key=cities.count) if cities else None
-        cands.append({"domain": dom, "urls": [u for u, *_ in lst], "country": country, "city": city,
-                      "prior_yield": sum(t[3] for t in lst), "pages": len(lst)})
-    cands.sort(key=lambda c: (-c["prior_yield"], -c["pages"], c["domain"]))
+        pin = pins.get(dom)
+        cands.append({"domain": dom, "urls": [u for u, *_ in lst],
+                      "country": canon_country(pin.country) if (pin and pin.country) else country,
+                      "city": city, "prior_yield": sum(t[3] for t in lst), "pages": len(lst),
+                      "pin_rank": pin.rank if pin else None})
+    # pinned domains outside the pool: probe the homepage
+    for dom, pin in pins.items():
+        if dom in by_dom or dom in have_recipe:
+            continue
+        cands.append({"domain": dom, "urls": [f"https://{dom}/", f"https://www.{dom}/"],
+                      "country": canon_country(pin.country), "city": None,
+                      "prior_yield": 0, "pages": 0, "pin_rank": pin.rank})
+    cands.sort(key=lambda c: (0 if c["pin_rank"] is not None else 1, c["pin_rank"] or 0,
+                              -c["prior_yield"], -c["pages"], c["domain"]))
     return cands[:limit]
+
+
+def _resolve_pin(db, domain: str, outcome: str) -> None:
+    from app.models import QueuePin
+    pin = db.query(QueuePin).filter(QueuePin.domain == domain, QueuePin.status == "queued").first()
+    if pin is None:
+        return
+    pin.status = "recipe" if outcome == "recipe" else "probed"
+    pin.outcome = outcome
+    pin.resolved_at = datetime.utcnow()
 
 
 def run_probe_batch(db, *, limit: int = 120, dry_run: bool = False,
@@ -339,7 +375,8 @@ def run_probe_batch(db, *, limit: int = 120, dry_run: bool = False,
     t0 = datetime.utcnow()
     cands = select_candidates(db, limit)
     summary = {"candidates": len(cands), "probed": 0, "recipes": 0, "none": 0, "error": 0,
-               "no_country": 0, "reserved": 0, "requests": 0, "by_detector": {}, "hits": [], "dry_run": dry_run}
+               "no_country": 0, "reserved": 0, "requests": 0, "by_detector": {}, "hits": [], "dry_run": dry_run,
+               "pinned": sum(1 for c in cands if c.get("pin_rank") is not None)}
     if dry_run:
         summary["sample"] = [(c["domain"], c["prior_yield"], c["pages"]) for c in cands[:20]]
         return summary
@@ -359,6 +396,7 @@ def run_probe_batch(db, *, limit: int = 120, dry_run: bool = False,
             pr.outcome = "reserved"
             pr.evidence = "Route 2 collector covers this domain"
             summary["reserved"] += 1
+            _resolve_pin(db, dom, "reserved")
             db.commit()
             continue
         res = probe_domain(dom, c["urls"], c["country"])
@@ -400,6 +438,7 @@ def run_probe_batch(db, *, limit: int = 120, dry_run: bool = False,
                 pr.outcome = "error"
                 pr.evidence = ("recipe " + up["verb"] + ": " + "; ".join(up.get("problems", [])[:2]) + " | " + pr.evidence)[:1500]
                 summary["error"] += 1
+        _resolve_pin(db, dom, pr.outcome)
         db.commit()
     summary["duration_s"] = int((datetime.utcnow() - t0).total_seconds())
     return summary
@@ -413,7 +452,7 @@ def probe_at_job() -> dict:
         logger.info(
             f"recipe_probe: candidates={s['candidates']} probed={s['probed']} recipes={s['recipes']} "
             f"{s['by_detector']} none={s['none']} error={s['error']} no_country={s['no_country']} "
-            f"reserved={s['reserved']} requests={s['requests']} {s.get('stopped', '')}"
+            f"reserved={s['reserved']} pinned={s.get('pinned', 0)} requests={s['requests']} {s.get('stopped', '')}"
         )
         return s
     finally:

@@ -1169,3 +1169,104 @@ def list_llm_sources(db: Session = Depends(get_db)):
             for s in rows
         ],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Parse-queue pins (superca.ly/queue.html "cut in line" box)
+# ═══════════════════════════════════════════════════════════════════════════
+from pydantic import BaseModel as _PinBase
+
+
+class QueuePinsIn(_PinBase):
+    # One domain per line. Optional country after a comma / tab / pipe:
+    #   eventim.de
+    #   somesite.com, Germany
+    text: str
+    note: Optional[str] = None
+
+
+def _parse_pin_lines(text: str) -> list[tuple[str, Optional[str]]]:
+    import re as _re
+    from app.services.recipes.schema import registered_domain
+    from app.services.recipes.countries import canon_country
+    out: list[tuple[str, Optional[str]]] = []
+    seen = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in _re.split(r"[,\t|]", line, maxsplit=1)]
+        dom = registered_domain(parts[0] if "://" in parts[0] else parts[0].split()[0])
+        if not dom or "." not in dom or dom in seen:
+            continue
+        country = canon_country(parts[1]) if len(parts) > 1 and parts[1] else None
+        if country is None and len(parts[0].split()) > 1:
+            country = canon_country(parts[0].split(None, 1)[1])
+        seen.add(dom)
+        out.append((dom, country))
+    return out
+
+
+@router.post("/queue/pins")
+def add_queue_pins(body: QueuePinsIn, db: Session = Depends(get_db)):
+    """Push domains to the front of the Route 3 line.
+
+    • Domain with a SourceRecipe → priority bumped to 100 and made due, so
+      the next 3-hourly sweep runs it first (pin closes as 'recipe').
+    • Otherwise → QueuePin(queued): the hourly prober takes pinned domains
+      before the yield-ordered pool, even if probed before ('none') or not
+      in the LLMSource pool at all. A supplied country rescues 'no_country'
+      hits and fills the recipe's country.
+    Ranks continue after the current max so paste order = line order."""
+    from app.models import QueuePin, SourceRecipe
+    from app.api.stats import invalidate_queue_cache
+    lines = _parse_pin_lines(body.text)
+    if not lines:
+        return {"added": 0, "bumped": 0, "updated": 0, "rows": [], "error": "no domains found"}
+    now = datetime.utcnow()
+    rank = (db.query(func.max(QueuePin.rank)).scalar() or 0)
+    added = bumped = updated = 0
+    rows = []
+    for dom, country in lines:
+        rec = db.query(SourceRecipe).filter(SourceRecipe.domain == dom).first()
+        pin = db.query(QueuePin).filter(QueuePin.domain == dom).first()
+        rank += 1
+        if pin is None:
+            pin = QueuePin(domain=dom, rank=rank, country=country, note=body.note, status="queued")
+            db.add(pin)
+            added += 1
+        else:
+            pin.rank = rank
+            pin.country = country or pin.country
+            pin.note = body.note or pin.note
+            pin.status = "queued"
+            pin.outcome = None
+            pin.resolved_at = None
+            updated += 1
+        if rec is not None:
+            rec.priority = max(rec.priority or 0, 100)
+            rec.next_run_at = now
+            rec.enabled = True
+            if country and not rec.country:
+                rec.country = country
+            pin.status = "recipe"
+            pin.outcome = "recipe exists — priority 100, due now"
+            pin.resolved_at = now
+            bumped += 1
+        rows.append({"domain": dom, "country": country, "rank": rank, "status": pin.status, "outcome": pin.outcome})
+    db.commit()
+    invalidate_queue_cache()
+    return {"added": added, "updated": updated, "bumped": bumped, "rows": rows}
+
+
+@router.delete("/queue/pins/{domain}")
+def delete_queue_pin(domain: str, db: Session = Depends(get_db)):
+    from app.models import QueuePin
+    from app.api.stats import invalidate_queue_cache
+    pin = db.query(QueuePin).filter(QueuePin.domain == domain.lower()).first()
+    if pin is None:
+        return {"deleted": 0}
+    db.delete(pin)
+    db.commit()
+    invalidate_queue_cache()
+    return {"deleted": 1, "domain": domain}

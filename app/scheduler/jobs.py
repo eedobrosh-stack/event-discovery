@@ -4365,6 +4365,7 @@ async def recipe_probe_job() -> None:
                 l.notes = (f"probed={summary.get('probed', 0)} recipes={summary.get('recipes', 0)} "
                            f"{summary.get('by_detector', {})} none={summary.get('none', 0)} "
                            f"error={summary.get('error', 0)} no_country={summary.get('no_country', 0)} "
+                           f"pinned={summary.get('pinned', 0)} "
                            f"requests={summary.get('requests', 0)} hits={summary.get('hits', [])[:10]} "
                            f"{summary.get('fatal', '')}")[:2000]
                 db.commit()

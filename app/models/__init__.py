@@ -18,5 +18,6 @@ from app.models.theme import Theme, EventTheme, INITIAL_THEMES
 from app.models.gemini_usage import GeminiUsage, record_gemini_usage
 from app.models.source_recipe import SourceRecipe, RECIPE_STATUSES
 from app.models.source_probe import SourceProbe, PROBE_OUTCOMES
+from app.models.queue_pin import QueuePin, PIN_STATUSES
 
-__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ArtistRelated", "ZeroResultSearch", "LLMSource", "LLM_SOURCE_STATES", "FetchAttempt", "BraveQueryCoverage", "SpotifyArtist", "SPOTIFY_ARTIST_STATUSES", "SpotifyBraveAttempt", "SPOTIFY_BRAVE_VARIANTS", "Theme", "EventTheme", "INITIAL_THEMES", "GeminiUsage", "record_gemini_usage", "SourceRecipe", "RECIPE_STATUSES", "SourceProbe", "PROBE_OUTCOMES"]
+__all__ = ["City", "Venue", "Event", "EventType", "event_event_types", "Performer", "PendingVenue", "ScanLog", "PlatformVenue", "JobState", "GenreTaxonomy", "ArtistGenre", "ArtistRelated", "ZeroResultSearch", "LLMSource", "LLM_SOURCE_STATES", "FetchAttempt", "BraveQueryCoverage", "SpotifyArtist", "SPOTIFY_ARTIST_STATUSES", "SpotifyBraveAttempt", "SPOTIFY_BRAVE_VARIANTS", "Theme", "EventTheme", "INITIAL_THEMES", "GeminiUsage", "record_gemini_usage", "SourceRecipe", "RECIPE_STATUSES", "SourceProbe", "PROBE_OUTCOMES", "QueuePin", "PIN_STATUSES"]

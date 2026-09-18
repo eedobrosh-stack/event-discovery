@@ -664,3 +664,79 @@ def test_probe_infers_country_from_events_then_tld():
     assert res["hit"]["country"] == "Israel"                      # from addressCountry IL
     assert infer_country([], "venue.co.uk") == "United Kingdom"    # TLD fallback
     assert infer_country([], "venue.com") is None
+
+
+# ── 2026-09-18: country aliases, queue pins, no_country cooldown ─────────
+def test_canon_country_aliases():
+    from app.services.recipes.countries import canon_country
+    assert canon_country("Deutschland") == "Germany"
+    assert canon_country("United States of America") == "United States"
+    assert canon_country("102#Italy") == "Italy"
+    assert canon_country(" UK ") == "United Kingdom"
+    assert canon_country("Elbonia") == "Elbonia"        # unknown passes through
+    assert canon_country(None) is None and canon_country("  ") is None
+
+
+def test_resolve_city_uses_canonical_country_and_city_fallback(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import City
+    from app.services.recipes.runner import _resolve_city
+    engine = create_engine(f"sqlite:///{tmp_path}/c.db"); Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    db.add(City(name="Munich", country="Germany", latitude=48.1, longitude=11.6))
+    db.commit()
+    assert _resolve_city(db, "Deutschland", "München").name == "Munich"   # alias + unknown city → any city in country
+    assert _resolve_city(db, "102#Germany", None).name == "Munich"
+    assert _resolve_city(db, "France", None) is None
+
+
+def test_select_candidates_pins_first_and_no_country_cooldown(tmp_path):
+    from datetime import datetime, timedelta
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import LLMSource, SourceProbe, QueuePin
+    from app.services.recipes import probe as PR
+    engine = create_engine(f"sqlite:///{tmp_path}/q.db"); Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    now = datetime.utcnow()
+    db.add(LLMSource(url="https://big.test/events", state="recurring", country="Spain", events_saved_total=500))
+    db.add(LLMSource(url="https://small.test/events", state="recurring", country="Deutschland", events_saved_total=5))
+    db.add(LLMSource(url="https://nc.test/events", state="recurring", country=None, events_saved_total=900))
+    db.add(LLMSource(url="https://old.test/events", state="recurring", country=None, events_saved_total=50))
+    # nc.test: a fresh no_country hit → must NOT be re-probed every hour any more
+    db.add(SourceProbe(domain="nc.test", outcome="no_country", last_probed_at=now - timedelta(hours=1), detector="jsonld", events_found=7))
+    # old.test: no_country but past the 7-day window → eligible again
+    db.add(SourceProbe(domain="old.test", outcome="no_country", last_probed_at=now - timedelta(days=8)))
+    # small.test was probed 'none' yesterday → parked … unless pinned
+    db.add(SourceProbe(domain="small.test", outcome="none", last_probed_at=now - timedelta(days=1)))
+    db.add(QueuePin(domain="small.test", rank=2))
+    db.add(QueuePin(domain="outside.test", rank=1, country="Israel"))     # not in the pool at all
+    db.commit()
+
+    cands = PR.select_candidates(db, 10)
+    doms = [c["domain"] for c in cands]
+    assert doms[:2] == ["outside.test", "small.test"], doms           # pins first, by rank
+    assert "nc.test" not in doms                                        # cooling down
+    assert doms[2:] == ["big.test", "old.test"]                         # then yield order
+    by = {c["domain"]: c for c in cands}
+    assert by["outside.test"]["urls"][0] == "https://outside.test/" and by["outside.test"]["country"] == "Israel"
+    assert by["small.test"]["country"] == "Germany"                     # LLMSource alias canonicalised
+    assert by["big.test"]["pin_rank"] is None and by["small.test"]["pin_rank"] == 2
+
+
+def test_parse_pin_lines():
+    from app.api.admin import _parse_pin_lines
+    lines = _parse_pin_lines("""
+        # comment
+        eventim.de
+        https://www.koelnticket.de/tickets, Deutschland
+        somesite.com | United States of America
+        Eventim.de
+        notadomain
+    """)
+    assert lines == [("eventim.de", None), ("koelnticket.de", "Germany"), ("somesite.com", "United States")]

@@ -530,6 +530,18 @@
             align-items: center;
             gap: 8px;
         }
+        .cad-chip { display:inline-block; font-size:.68rem; padding:1px 7px; border-radius:10px; background:#eef; color:#445; margin:1px 3px 1px 0; white-space:nowrap; }
+        .cad-chip.ok { background:#e3f6e3; color:#227722; }
+        .cad-chip.dup { background:#eef; color:#4a4aa0; }
+        .cad-chip.warn { background:#fff1d6; color:#8a5a00; }
+        .cad-chip.bad { background:#ffe3e3; color:#a11; }
+        .cad-chip.pin { background:#ffe9a8; color:#6b4a00; }
+        .cad-chip.dim { background:#f0f0f4; color:#888; }
+        .cad-table td.why { white-space:normal; max-width:320px; line-height:1.5; }
+        /* ── section collapse toggles ── */
+        .sec-toggle { border:1px solid #cfcfe0; background:#fff; color:#555; width:22px; height:22px; border-radius:5px; cursor:pointer; font-size:.95rem; line-height:1; padding:0; flex:none; }
+        .sec-toggle:hover { border-color:#7c6af7; color:#7c6af7; }
+        .sec-all { font-size:.78rem; color:#7c6af7; cursor:pointer; margin-left:12px; text-decoration:none; }
         .section-divider {
             border: none;
             border-top: 1px solid var(--border, #2a2a3a);
@@ -906,6 +918,11 @@
         <div class="stats-header">
             <h2>📡 Coverage Stats</h2>
             <span id="last-updated" style="color:#aaa; font-size:.8rem;"></span>
+            <span style="margin-left:auto; font-size:.8rem;">
+                <a href="/queue.html" style="color:#7c6af7; text-decoration:none;">🧾 Parse Queue →</a>
+                <a class="sec-all" id="sec-collapse-all">− collapse all</a>
+                <a class="sec-all" id="sec-expand-all">+ expand all</a>
+            </span>
         </div>
 
         <!-- ── Daily Pulse ─────────────────────────────────────────────────── -->
@@ -1603,6 +1620,35 @@
 
     // ── Daily Pulse ────────────────────────────────────────────────────────
     let _cadRuns = [];
+    // ── ± per section (state remembered in this browser) ──
+    (function initSectionToggles() {
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem('stats.collapsed') || '{}'); } catch (e) {}
+        const persist = () => { try { localStorage.setItem('stats.collapsed', JSON.stringify(saved)); } catch (e) {} };
+        const titles = [...document.querySelectorAll('.section-title')];
+        const sections = titles.map(t => {
+            const key = (t.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+            const body = [];
+            let n = t.nextElementSibling;
+            while (n && !n.classList.contains('section-title') && !n.classList.contains('section-divider')) {
+                body.push(n); n = n.nextElementSibling;
+            }
+            const btn = document.createElement('button');
+            btn.className = 'sec-toggle'; btn.type = 'button'; btn.title = 'collapse / expand';
+            t.insertBefore(btn, t.firstChild);
+            const apply = () => {
+                const c = !!saved[key];
+                body.forEach(el => { el.dataset.secHidden = c ? '1' : ''; el.style.display = c ? 'none' : ''; });
+                btn.textContent = c ? '+' : '−';
+            };
+            btn.addEventListener('click', () => { saved[key] = !saved[key]; persist(); apply(); });
+            return { key, apply };
+        });
+        sections.forEach(s => s.apply());
+        document.getElementById('sec-collapse-all').addEventListener('click', () => { sections.forEach(s => saved[s.key] = true); persist(); sections.forEach(s => s.apply()); });
+        document.getElementById('sec-expand-all').addEventListener('click', () => { saved = {}; persist(); sections.forEach(s => s.apply()); });
+    })();
+
     function fmtDur(s) {
         if (s == null) return '—';
         if (s < 60) return s + 's';
@@ -1630,17 +1676,68 @@
             }
             lastByJob[r.job] = r.started_at;
         });
+        // What a run actually did, so a "0 saved" row explains itself.
+        // recipe_probe / categorize / spotify_brave / seed_brave are not
+        // event collectors — their "saved" column means something else.
+        const NOT_COLLECTOR = {
+            recipe_probe: 'creates recipes, not events',
+            categorize_new_events: 'assigns types to existing events',
+            spotify_brave_query: 'discovers sources for Spotify artists',
+            seed_brave_from_zero_results: 'seeds sources from empty searches',
+            llm_discover_sources: 'discovers sources (Cadence B)',
+            cleanup_past: 'removes past events',
+            dedup_events: 'merges duplicates',
+        };
+        function outcome(r) {
+            const n = r.notes || '';
+            const kv = (k) => { const m = n.match(new RegExp(k + '=(\\d+)')); return m ? +m[1] : null; };
+            const chip = (t, cls) => `<span class="cad-chip ${cls || ''}">${t}</span>`;
+            if (r.job === 'recipe_extract' && r.breakdown) {
+                const b = r.breakdown;
+                if (!b.recipes) return chip('no recipes were due', 'dim');
+                const parts = [];
+                if (b.ok) parts.push(chip(`${b.ok} saved new`, 'ok'));
+                if (b.dupes_only) parts.push(chip(`${b.dupes_only} all already held`, 'dup'));
+                if (b.zero_fetch) parts.push(chip(`${b.zero_fetch} fetched nothing`, 'warn'));
+                if (b.error) parts.push(chip(`${b.error} failed`, 'bad'));
+                const dr = Object.entries(b.dropped || {}).filter(([k]) => k !== 'dup_in_run').map(([k, v]) => `${k} ${v}`).join(', ');
+                return `${b.recipes} recipes: ` + parts.join(' ') + (dr ? `<br><span class="cad-gap">dropped in parse: ${esc(dr)}</span>` : '');
+            }
+            if (r.job === 'recipe_probe') {
+                const rec = kv('recipes'), none = kv('none'), nc = kv('no_country'), err = kv('error'), pin = kv('pinned');
+                const parts = [];
+                if (rec) parts.push(chip(`${rec} new recipe${rec === 1 ? '' : 's'}`, 'ok'));
+                if (none) parts.push(chip(`${none} nothing free`, 'dim'));
+                if (nc) parts.push(chip(`${nc} needs country`, 'warn'));
+                if (err) parts.push(chip(`${err} error`, 'bad'));
+                if (pin) parts.push(chip(`${pin} pinned`, 'pin'));
+                return parts.join(' ') || chip('probed domains', 'dim');
+            }
+            if (r.job === 'categorize_new_events') {
+                const ap = kv('applied'); return ap != null ? chip(`${ap} events typed`, ap ? 'ok' : 'dim') : chip(NOT_COLLECTOR[r.job], 'dim');
+            }
+            if (NOT_COLLECTOR[r.job]) return chip(NOT_COLLECTOR[r.job], 'dim');
+            if (r.job === 'collect_events') return chip(`${esc(r.notes || '')}`, 'dim');
+            if (!r.saved && r.found) return chip('all already held', 'dup');
+            if (!r.saved && !r.found) return chip('nothing found', 'warn');
+            return '';
+        }
         const html = `<table class="cad-table"><thead><tr>
-            <th>Started (UTC)</th><th>Job</th><th class="num">Duration</th><th class="num">Found</th><th>New events saved</th><th>Status</th><th>Notes</th>
+            <th>Started (UTC)</th><th>Job</th><th class="num">Duration</th><th class="num">Found</th><th>New events saved</th><th>What happened</th><th>Status</th><th>Notes</th>
         </tr></thead><tbody>` + runs.map(r => {
+            const isProbe = r.job === 'recipe_probe';
             const w = Math.max(2, Math.round((r.saved || 0) * 160 / maxSaved));
             const gap = gapById.get(r);
+            const savedCell = isProbe
+                ? `<span class="cad-gap">${(r.saved || 0)} recipe${r.saved === 1 ? '' : 's'} (not events)</span>`
+                : `<span class="cad-bar" style="width:${w}px"></span>${(r.saved || 0).toLocaleString()}`;
             return `<tr>
                 <td class="ts">${fmtTs(r.started_at)}${gap ? `<br><span class="cad-gap">+${fmtDur(Math.round(gap))} after previous</span>` : ''}</td>
                 <td class="job">${esc(r.job)}</td>
                 <td class="num">${fmtDur(r.duration_s)}</td>
                 <td class="num">${(r.found || 0).toLocaleString()}</td>
-                <td><span class="cad-bar" style="width:${w}px"></span>${(r.saved || 0).toLocaleString()}</td>
+                <td>${savedCell}</td>
+                <td class="why">${outcome(r)}</td>
                 <td class="st-${esc(r.status)}">${esc(r.status)}</td>
                 <td class="notes" title="${esc(r.notes || '')}">${esc(r.notes || '')}</td>
             </tr>`;

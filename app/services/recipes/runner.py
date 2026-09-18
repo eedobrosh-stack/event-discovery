@@ -367,12 +367,19 @@ def _resolve_city(db, country: Optional[str], city_name: Optional[str]):
     """Same rule as Cadence A: named city in country → any city in
     country (venue_city per event drives the final assignment) → None."""
     from app.models import City
+    from app.services.recipes.countries import canon_country
+    country = canon_country(country)
     city = None
     if city_name:
         q = db.query(City).filter(City.name == city_name)
         if country:
             q = q.filter(City.country == country)
         city = q.first()
+        if city is None and country:
+            # LLM-written city names drift ("München" vs "Munich"): any city
+            # in the country beats failing the whole recipe — venue_city per
+            # event drives the final assignment anyway.
+            city = db.query(City).filter(City.country == country).first()
     if city is None and country:
         city = db.query(City).filter(City.country == country).first()
     return city
@@ -386,6 +393,8 @@ def group_events_by_city(db, events: list, country: Optional[str], default_city)
     and are counted in the returned `unresolved` Counter."""
     from app.models import City
     from collections import Counter
+    from app.services.recipes.countries import canon_country
+    country = canon_country(country)
     groups: dict = {}
     cache: dict = {}
     unresolved: Counter = Counter()
