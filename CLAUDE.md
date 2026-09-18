@@ -37,7 +37,12 @@ also works as Project knowledge if pasted into a claude.ai Project.
 **Route 2 — Hand-coded collectors** (the bulk of events). Each source has
 a `BaseCollector` subclass in `app/services/collectors/scrapers/`. They're
 registered in `app/scheduler/jobs.py` (top of file, ~line 60) and invoked
-per priority city by `collect_all_events`. Sources include Ticketmaster,
+per priority city by `collect_all_events` (every 12h, 4 of the 91
+PRIORITY_CITIES per run, rotating → a city every ~11 days). Since
+2026-09-18 the run *waits* up to 90 min for `_heavy_job_lock` instead of
+skipping (skipping had silently halved it to one run/day for months),
+and `collect_home_market_events` runs the Israeli cities daily at 03:15
+UTC on top of the rotation (HOME_MARKET_CITIES). Sources include Ticketmaster,
 Bandsintown, Eventbrite, ResidentAdvisor, Dice, Songkick, Skiddle, Xceed,
 Meetup, Lu.ma, plus dedicated venue scrapers (Barby, Cameri, Hatarbut,
 Leaan, Smarticket, Tickchak, Mevalim, NYC venues, IsraelSites, etc.).

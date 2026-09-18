@@ -301,24 +301,105 @@ def _set_batch_index(value: int) -> None:
         logger.warning(f"_set_batch_index: DB write failed ({e}); cursor not persisted")
 
 
-async def collect_all_events():
-    """Scrape one batch of cities per run (CITY_BATCH_SIZE cities), rotating
-    through PRIORITY_CITIES on each invocation so all cities are covered
-    across multiple runs without ever loading all 34 into a single process.
-    At the default 6h interval + batch size 4: all ~34 cities refresh ~every 48h.
+# How long a Route 2 collect run may wait for `_heavy_job_lock` before
+# giving up. Until 2026-09-18 the run was *skipped* whenever another heavy
+# job held the lock; with recipe_extract sweeping every 3h (up to 2h each)
+# and the prober hourly, the 08:18 slot collided every day and only the
+# 20:18 run survived — 91 cities × 4 per run at one run/day = a city every
+# ~23 days. Waiting (bounded) restores the configured cadence.
+COLLECT_LOCK_WAIT_S = 90 * 60
 
-    The batch cursor is persisted in the job_state table so an OOM-kill +
-    restart doesn't reset rotation back to batch 1.
-    """
+# Home market: these cities get a dedicated daily collect on top of the
+# global rotation, so Israeli venue collectors (Barby, Cameri, Leaan,
+# Hatarbut, Tickchak, Smarticket, IsraelSites) never go stale for weeks.
+HOME_MARKET_CITIES: list[tuple[str, str]] = [c for c in PRIORITY_CITIES if c[1] == "Israel"]
+
+
+async def _acquire_heavy_lock(label: str, wait_s: int = COLLECT_LOCK_WAIT_S) -> bool:
+    """Wait up to `wait_s` for the heavy-job lock. False = gave up."""
+    if _heavy_job_lock.locked():
+        logger.info(f"{label}: another heavy job is running — waiting up to {wait_s // 60} min")
+    try:
+        await asyncio.wait_for(_heavy_job_lock.acquire(), timeout=wait_s)
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(f"{label}: heavy-job lock still held after {wait_s // 60} min — skipping this run")
+        return False
+
+
+async def _collect_cities(batch_names: list[tuple[str, str]], label: str) -> None:
+    """Run every Route 2 collector for each (city, country) in `batch_names`.
+    Caller must hold `_heavy_job_lock`. One ScanLog(collect_events, city)
+    row per city — the same rows the stats dashboards already read."""
     import gc
     from sqlalchemy import and_, or_
 
-    if _heavy_job_lock.locked():
-        logger.info("collect_all_events: another heavy job is running — skipping this run")
+    if not batch_names:
         return
+    with SessionLocal() as id_db:
+        city_ids = [
+            row[0]
+            for row in id_db.query(City.id).filter(
+                or_(*[
+                    and_(City.name == name, City.country == country)
+                    for name, country in batch_names
+                ])
+            ).all()
+        ]
 
-    async with _heavy_job_lock:
-        # Pick the current batch of city names
+    for city_id in city_ids:
+        # Fresh session per city — nothing leaks across cities
+        with SessionLocal() as db:
+            city = db.query(City).get(city_id)
+            if not city:
+                continue
+            logger.info(f"{label}: collecting events for {city.name}...")
+            log = ScanLog(job_name="collect_events", detail=city.name, status="running")
+            db.add(log)
+            db.commit()
+            db.refresh(log)
+            try:
+                stats = await registry.collect_all(city, db)
+                logger.info(f"{city.name} stats: {stats}")
+                # Surface systemic auth failures as a FAILED run rather than
+                # success/found=0 (the Bandsintown blind spot). Other
+                # collectors may still have saved events for this city.
+                auth_fails = [
+                    k for k, v in stats.items()
+                    if isinstance(v, dict) and "auth_error" in v
+                ]
+                log.status = "failed" if auth_fails else "success"
+                log.events_found = sum(v.get("fetched", 0) for v in stats.values() if isinstance(v, dict))
+                log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
+                log.notes = (
+                    (f"AUTH FAILURE {auth_fails} — " if auth_fails else "")
+                    + str(stats)
+                )
+            except Exception as e:
+                logger.error(f"Error collecting {city.name}: {e}")
+                log.status = "failed"
+                log.notes = str(e)
+            finally:
+                log.finished_at = datetime.utcnow()
+                db.commit()
+        gc.collect()  # after session closes + all objects are released
+
+
+async def collect_all_events():
+    """Scrape one batch of cities per run (CITY_BATCH_SIZE cities), rotating
+    through PRIORITY_CITIES on each invocation so all cities are covered
+    across multiple runs without ever loading all of them into one process.
+    At the 12h interval + batch size 4: all 91 cities refresh every ~11 days.
+
+    The batch cursor is persisted in the job_state table so an OOM-kill +
+    restart doesn't reset rotation back to batch 1.
+
+    Waits (bounded) for the heavy-job lock instead of skipping — see
+    COLLECT_LOCK_WAIT_S.
+    """
+    if not await _acquire_heavy_lock("collect_all_events"):
+        return
+    try:
         total = len(PRIORITY_CITIES)
         cursor = _get_batch_index()
         start = cursor % total
@@ -333,55 +414,23 @@ async def collect_all_events():
             f"collect_all_events: batch {start//CITY_BATCH_SIZE + 1} — "
             f"{[c[0] for c in batch_names]}"
         )
+        await _collect_cities(batch_names, "collect_all_events")
+    finally:
+        _heavy_job_lock.release()
 
-        # Resolve city IDs in a short-lived session
-        with SessionLocal() as id_db:
-            city_ids = [
-                row[0]
-                for row in id_db.query(City.id).filter(
-                    or_(*[
-                        and_(City.name == name, City.country == country)
-                        for name, country in batch_names
-                    ])
-                ).all()
-            ]
 
-        for city_id in city_ids:
-            # Fresh session per city — nothing leaks across cities
-            with SessionLocal() as db:
-                city = db.query(City).get(city_id)
-                if not city:
-                    continue
-                logger.info(f"Collecting events for {city.name}...")
-                log = ScanLog(job_name="collect_events", detail=city.name, status="running")
-                db.add(log)
-                db.commit()
-                db.refresh(log)
-                try:
-                    stats = await registry.collect_all(city, db)
-                    logger.info(f"{city.name} stats: {stats}")
-                    # Surface systemic auth failures as a FAILED run rather than
-                    # success/found=0 (the Bandsintown blind spot). Other
-                    # collectors may still have saved events for this city.
-                    auth_fails = [
-                        k for k, v in stats.items()
-                        if isinstance(v, dict) and "auth_error" in v
-                    ]
-                    log.status = "failed" if auth_fails else "success"
-                    log.events_found = sum(v.get("fetched", 0) for v in stats.values() if isinstance(v, dict))
-                    log.events_saved = sum(v.get("saved", 0) for v in stats.values() if isinstance(v, dict))
-                    log.notes = (
-                        (f"AUTH FAILURE {auth_fails} — " if auth_fails else "")
-                        + str(stats)
-                    )
-                except Exception as e:
-                    logger.error(f"Error collecting {city.name}: {e}")
-                    log.status = "failed"
-                    log.notes = str(e)
-                finally:
-                    log.finished_at = datetime.utcnow()
-                    db.commit()
-            gc.collect()  # after session closes + all objects are released
+async def collect_home_market_events():
+    """Daily: every Route 2 collector for the home-market cities
+    (HOME_MARKET_CITIES = the Israeli entries of PRIORITY_CITIES),
+    independent of the global rotation. Same ScanLog rows as
+    collect_all_events, so stats.html needs no change."""
+    if not await _acquire_heavy_lock("collect_home_market"):
+        return
+    try:
+        logger.info(f"collect_home_market: {[c[0] for c in HOME_MARKET_CITIES]}")
+        await _collect_cities(HOME_MARKET_CITIES, "collect_home_market")
+    finally:
+        _heavy_job_lock.release()
 
 
 async def collect_venue_websites():
