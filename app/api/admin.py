@@ -2,7 +2,7 @@ import csv
 import io
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
@@ -179,56 +179,53 @@ def get_stats(db: Session = Depends(get_db)):
 
 
 async def _run_scrape(city_ids: Optional[List[int]], city_names: Optional[List[str]]):
-    """Background scrape job — opens its own DB session so it outlives the request."""
+    """Background scrape — resolves the cities, then runs them through the
+    same lock-guarded, ScanLog-writing path as the scheduler
+    (`_collect_cities`), so an admin-triggered run shows up in Batch
+    cadence and never overlaps a recipe sweep or the rotation."""
     import logging
-    from sqlalchemy import and_, or_
     from app.database import SessionLocal
-    from app.scheduler.jobs import PRIORITY_CITIES
+    from app.scheduler.jobs import _acquire_heavy_lock, _collect_cities, _heavy_job_lock
     _log = logging.getLogger(__name__)
-    db = SessionLocal()
-    try:
+    with SessionLocal() as db:
         if city_ids:
-            cities = db.query(City).filter(City.id.in_(city_ids)).all()
-        elif city_names:
-            cities = db.query(City).filter(
-                func.lower(City.name).in_([n.lower() for n in city_names])
-            ).all()
+            q = db.query(City.name, City.country).filter(City.id.in_(city_ids))
         else:
-            # Default: run all priority cities (same as the scheduler job)
-            cities = db.query(City).filter(
-                or_(*[
-                    and_(City.name == name, City.country == country)
-                    for name, country in PRIORITY_CITIES
-                ])
-            ).all()
-        _log.info(f"Admin scrape: {len(cities)} cities to process")
-        for city in cities:
-            stats = await registry.collect_all(city, db)
-            _log.info(f"Scrape done for {city.name}: {stats}")
+            q = db.query(City.name, City.country).filter(
+                func.lower(City.name).in_([n.lower() for n in (city_names or [])])
+            )
+        batch = [(n, c) for n, c in q.all()]
+    _log.info(f"Admin scrape: {len(batch)} cities to process: {[b[0] for b in batch]}")
+    if not batch:
+        return
+    if not await _acquire_heavy_lock("admin_scrape"):
+        return
+    try:
+        await _collect_cities(batch, "admin_scrape")
     finally:
-        db.close()
+        _heavy_job_lock.release()
 
 
 @router.post("/scrape")
 async def trigger_scrape(
     background_tasks: BackgroundTasks,
-    sources: Optional[List[str]] = None,
-    city_ids: Optional[List[int]] = None,
-    city_names: Optional[List[str]] = None,
+    city_ids: Optional[List[int]] = Query(None),
+    city_names: Optional[List[str]] = Query(None),
 ):
     """Kick off a scrape in the background and return immediately.
 
-    - No params → runs all priority cities (same as scheduler)
-    - city_ids=[1,2] → specific cities by DB id
-    - city_names=["Barcelona","Istanbul"] → specific cities by name
+    - city_ids=1&city_ids=2          → specific cities by DB id
+    - city_names=Tel%20Aviv&city_names=Haifa → specific cities by name
+    Cities are required: the old no-param default ran all 91 priority
+    cities in one unlocked, unlogged task (an OOM risk on the 2 GB box)
+    and was easy to hit by accident — repeated query params were not
+    declared with Query(), so they fell through to the default.
     """
+    if not city_ids and not city_names:
+        return {"error": "pass city_ids=… or city_names=… (repeat the param per city); "
+                         "the scheduler already rotates all priority cities"}
     background_tasks.add_task(_run_scrape, city_ids, city_names)
-    if city_ids:
-        label = f"city_ids={city_ids}"
-    elif city_names:
-        label = f"cities={city_names}"
-    else:
-        label = "all priority cities"
+    label = f"city_ids={city_ids}" if city_ids else f"cities={city_names}"
     return {"message": f"Scrape started in background for {label}"}
 
 
