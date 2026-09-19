@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # response — never used as a blanket fetcher, to keep cost bounded
     # to ~$0.04/request × actual-CF-failure-count/day.
     SCRAPINGBEE_API_KEY: str = ""
+    # Shared secret for POST /api/admin/recipes/{domain}/relay (Mac-side
+    # recipe relay). Empty = relay endpoints disabled (503).
+    RELAY_TOKEN: str = ""
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""

@@ -63,6 +63,9 @@ class Fetcher:
                         "Accept-Language": "en,he;q=0.8"}
         self.headers.update(cfg.get("headers") or {})
         self.body_template = cfg.get("body")
+        # "json" (default) posts the rendered body as JSON; "form" URL-encodes
+        # it (WordPress admin-ajax.php and most PHP endpoints read $_POST).
+        self.body_format = (cfg.get("body_format") or "json").lower()
         self.delay = float(cfg.get("delay_seconds", 1.0))
         self.timeout = float(cfg.get("timeout", 20))
         self.impersonate = bool(cfg.get("impersonate", False))
@@ -134,9 +137,14 @@ class Fetcher:
             s = s.replace("{%s}" % k, str(v))
         return json.loads(s)
 
-    def get(self, url: str, *, values: Optional[dict] = None) -> Response:
-        """GET (or POST when the recipe says so). Raises BudgetExhausted /
-        RobotsDisallowed / httpx.HTTPError after retries."""
+    def get(self, url: str, *, values: Optional[dict] = None,
+            method: Optional[str] = None) -> Response:
+        """GET (or POST when the recipe says so). `method` overrides the
+        recipe's fetch.method for one call — the detail hop always GETs
+        even when the listing is a POST (admin-ajax load-more endpoints).
+        Raises BudgetExhausted / RobotsDisallowed / httpx.HTTPError after
+        retries."""
+        method = (method or self.method).upper()
         if self.requests_made >= self.max_requests:
             raise BudgetExhausted(f"{self.max_requests} requests")
         if not self._allowed(url):
@@ -148,11 +156,12 @@ class Fetcher:
             self.requests_made += 1
             try:
                 if self.impersonate:
-                    resp = self._get_impersonated(url, values)
+                    resp = self._get_impersonated(url, values, method=method)
                 else:
                     body = self._render_body(values)
-                    if self.method == "POST":
-                        r = self._client.post(url, json=body)
+                    if method == "POST":
+                        r = (self._client.post(url, data=body) if self.body_format == "form"
+                             else self._client.post(url, json=body))
                     else:
                         r = self._client.get(url)
                     resp = Response(str(r.url), r.status_code, r.text, dict(r.headers))
@@ -164,7 +173,7 @@ class Fetcher:
                     if resp.status in (403, 429) and not self.impersonate and self.auto_impersonate:
                         try:
                             self.requests_made += 1
-                            alt = self._get_impersonated(url, values)
+                            alt = self._get_impersonated(url, values, method=method)
                             if alt.status < 400:
                                 self.impersonate = True
                                 self.switched_to_impersonation = True
@@ -180,13 +189,16 @@ class Fetcher:
                 time.sleep(2.0 * (attempt + 1))
         raise last_exc or RuntimeError("fetch failed")
 
-    def _get_impersonated(self, url: str, values: Optional[dict]) -> Response:
+    def _get_impersonated(self, url: str, values: Optional[dict],
+                          method: Optional[str] = None) -> Response:
         from curl_cffi import requests as cffi  # lazy; optional at dev time
         kw = dict(impersonate="chrome120", timeout=self.timeout,
                   headers={k: v for k, v in self.headers.items()
                            if k.lower() != "user-agent"})
-        if self.method == "POST":
-            r = cffi.post(url, json=self._render_body(values), **kw)
+        if (method or self.method).upper() == "POST":
+            body = self._render_body(values)
+            r = (cffi.post(url, data=body, **kw) if self.body_format == "form"
+                 else cffi.post(url, json=body, **kw))
         else:
             r = cffi.get(url, **kw)
         return Response(str(r.url), r.status_code, r.text, dict(r.headers))

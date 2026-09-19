@@ -4264,7 +4264,7 @@ async def recipe_extract_job(
         now = datetime.utcnow()
         try:
             due = (
-                db.query(SourceRecipe.id, SourceRecipe.domain)
+                db.query(SourceRecipe.id, SourceRecipe.domain, SourceRecipe.recipe)
                 .filter(SourceRecipe.enabled.is_(True))
                 .filter((SourceRecipe.next_run_at.is_(None))
                         | (SourceRecipe.next_run_at <= now))
@@ -4272,6 +4272,10 @@ async def recipe_extract_job(
                 .limit(max_recipes_per_run)
                 .all()
             )
+            # "relay": "mac" recipes are fetched+parsed off-box (Cloudflare
+            # geo-walls Render's IP) and posted to /api/admin/recipes/{domain}/relay;
+            # running them here would just log a 403 and mark them drifting.
+            due = [(rid, dom) for rid, dom, rec in due if not (rec or {}).get("relay")]
         finally:
             db.close()
 

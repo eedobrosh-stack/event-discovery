@@ -229,6 +229,17 @@ shows Tel Aviv before Gush Dan).
   month-rollover unblocks itself. When LLM jobs mysteriously skip
   with empty results, first probe the breaker via SSH — don't assume
   the job is broken.
+- **Mac relay for geo-walled sites** (2026-09-20, katedra.co.il): Cloudflare
+  403s Render's Oregon IP on some Israeli sites but serves an Israeli IP.
+  A recipe with `"relay": "mac"` is skipped by `recipe_extract_job` and
+  instead run by `~/.claude/scripts/supercaly-relay/relay.py` on Eedo's Mac
+  (launchd `com.eedob.supercaly-relay`, 06:20 + 18:20), which imports this
+  repo's `run_recipe`, then `GET /api/admin/recipes/{domain}/known-ids` and
+  `POST /api/admin/recipes/{domain}/relay` (header `X-Relay-Token` =
+  `RELAY_TOKEN` env on Render = keychain `supercaly-relay`). The endpoint
+  persists via `runner.persist_result` (same path as on-box runs) and
+  updates the recipe's health columns. `fetch.body_format: "form"` exists
+  for WordPress admin-ajax listings; the detail hop always GETs.
 - **Render-only ops** for prod-touching scripts. Run them over SSH
   to the Render box for `dedupe_us_cities.py`,
   `backfill_mevalim_artist_name.py`, `improve_genre_via_brave.py`,

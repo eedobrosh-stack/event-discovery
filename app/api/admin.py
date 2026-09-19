@@ -1,8 +1,9 @@
 import csv
+import hmac
 import io
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Header, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
@@ -1201,6 +1202,68 @@ def _parse_pin_lines(text: str) -> list[tuple[str, Optional[str]]]:
             country = canon_country(parts[0].split(None, 1)[1])
         seen.add(dom)
         out.append((dom, country))
+    return out
+
+
+# ── Route 3 relay: recipes fetched+parsed off-box ────────────────────────────
+def _relay_auth(token: Optional[str]) -> None:
+    """Shared-secret check for the relay endpoints. RELAY_TOKEN unset →
+    the feature is off (503, so a misconfigured Render env is loud);
+    wrong/missing header → 401."""
+    from fastapi import HTTPException
+    if not settings.RELAY_TOKEN:
+        raise HTTPException(status_code=503, detail="relay disabled: RELAY_TOKEN not set")
+    if not token or not hmac.compare_digest(token, settings.RELAY_TOKEN):
+        raise HTTPException(status_code=401, detail="bad relay token")
+
+
+def _relay_recipe(db: Session, domain: str):
+    from fastapi import HTTPException
+    from app.models import SourceRecipe
+    row = db.query(SourceRecipe).filter(SourceRecipe.domain == domain).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no recipe for {domain}")
+    if not (row.recipe or {}).get("relay"):
+        raise HTTPException(status_code=409, detail=f"{domain} is not a relay recipe (set \"relay\": \"mac\")")
+    return row
+
+
+@router.get("/recipes/{domain}/known-ids")
+def relay_known_ids(domain: str, x_relay_token: Optional[str] = Header(None),
+                    db: Session = Depends(get_db)) -> dict:
+    """source_ids already held for this recipe's source, so the off-box
+    runner can skip the detail hop for events prod already knows
+    (same `is_new` contract execute_recipe_row gives run_recipe)."""
+    _relay_auth(x_relay_token)
+    row = _relay_recipe(db, domain)
+    ids = [sid for (sid,) in db.query(Event.source_id)
+           .filter(Event.scrape_source == row.source_name, Event.source_id.isnot(None)).all()]
+    return {"domain": domain, "source_name": row.source_name, "recipe_version": row.recipe_version,
+            "recipe": row.recipe, "known_ids": ids}
+
+
+@router.post("/recipes/{domain}/relay")
+def relay_ingest(domain: str, payload: dict = Body(...), x_relay_token: Optional[str] = Header(None),
+                 db: Session = Depends(get_db)) -> dict:
+    """Ingest a RunResult produced off-box (Mac relay). Persists through
+    the exact path execute_recipe_row uses (persist_result → _save_events,
+    venue_city/venue_country grouping) and updates the recipe's health
+    columns, so /queue.html, drift detection and the QA checks see a
+    relay recipe like any other. Body = runner.result_to_payload(result)."""
+    from app.models import SourceRecipe
+    from app.services.recipes.runner import (persist_result, result_from_payload,
+                                             _update_health)
+    _relay_auth(x_relay_token)
+    row = _relay_recipe(db, domain)
+    result = result_from_payload(payload, domain=domain, source_name=row.source_name)
+    persist_result(db, row, result)
+    row = db.query(SourceRecipe).get(row.id)
+    _update_health(row, result, datetime.utcnow())
+    row.written_by = row.written_by or "relay"
+    db.commit()
+    out = result.summary()
+    out["relay"] = (row.recipe or {}).get("relay")
+    out["last_status"] = row.last_status
     return out
 
 

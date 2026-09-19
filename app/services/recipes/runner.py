@@ -14,6 +14,9 @@ Two entry points:
                                   (the same ingest path every collector
                                   uses), updates health/drift columns.
                                   Called by the nightly job in a thread.
+  persist_result(db, row, result) the persist half of execute_recipe_row,
+                                  also fed by POST /api/admin/recipes/{domain}/relay
+                                  when a "relay": "mac" recipe ran off-box.
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ import logging
 import time
 import traceback
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
@@ -229,7 +232,7 @@ def _detail_hop(fetcher: Fetcher, rows: list[dict], doc: dict, result: RunResult
             if sid and not is_new(str(sid)):
                 continue
         try:
-            resp = fetcher.get(url)
+            resp = fetcher.get(url, method="GET")   # detail pages are plain pages even when the listing is a POST
         except BudgetExhausted as e:
             result.errors.append(f"request budget exhausted ({e}) during detail hop; partial")
             result.budget_hit = True
@@ -524,41 +527,110 @@ def execute_recipe_row(row_id: int, *, dry_run: bool = False,
 
         result = run_recipe(doc, is_new=is_new, max_requests=max_requests)
 
-        if not dry_run and result.events and not result.fatal:
-            try:
-                city = _resolve_city(db, row.country or doc.get("country"),
-                                     row.city_name or doc.get("city_name"))
-                if city is None:
-                    result.fatal = (f"no City resolvable for country={row.country!r} "
-                                    f"city={row.city_name!r}; events not persisted")
-                else:
-                    reg = CollectorRegistry()
-                    groups, unresolved, skipped = group_events_by_city(
-                        db, result.events, row.country or doc.get("country"), city)
-                    saved = 0
-                    for grp_city, grp_events in groups:
-                        saved += reg._save_events(grp_events, grp_city, db)
-                    db.commit()
-                    result.saved = saved
-                    result.city_groups = len(groups)
-                    if unresolved:
-                        result.errors.append(
-                            "unresolved venue_city → default city: "
-                            + ", ".join(f"{k}×{v}" for k, v in unresolved.most_common(8)))
-                    if skipped:
-                        result.errors.append(
-                            "skipped, foreign venue_country but city unknown: "
-                            + ", ".join(f"{k}×{v}" for k, v in skipped.most_common(8)))
-            except Exception as e:
-                db.rollback()
-                result.fatal = f"persist failed: {type(e).__name__}: {str(e)[:300]}"
-                logger.error("recipe %s persist failed:\n%s", row.domain,
-                             traceback.format_exc())
-
         if not dry_run:
+            persist_result(db, row, result)
             row = db.query(SourceRecipe).get(row_id)  # re-attach after commit
             _update_health(row, result, datetime.utcnow())
             db.commit()
         return result.summary()
     finally:
         db.close()
+
+
+def persist_result(db, row, result: RunResult) -> None:
+    """Persist a RunResult's events under the recipe row's default city via
+    CollectorRegistry._save_events (the ingest path every collector uses).
+    Shared by execute_recipe_row (on-box run) and the relay endpoint
+    (events fetched+parsed off-box). Sets result.saved / city_groups /
+    errors / fatal in place; never raises."""
+    from app.services.collectors.registry import CollectorRegistry
+    if not result.events or result.fatal:
+        return
+    doc = dict(row.recipe or {})
+    try:
+        city = _resolve_city(db, row.country or doc.get("country"),
+                             row.city_name or doc.get("city_name"))
+        if city is None:
+            result.fatal = (f"no City resolvable for country={row.country!r} "
+                            f"city={row.city_name!r}; events not persisted")
+            return
+        reg = CollectorRegistry()
+        groups, unresolved, skipped = group_events_by_city(
+            db, result.events, row.country or doc.get("country"), city)
+        saved = 0
+        for grp_city, grp_events in groups:
+            saved += reg._save_events(grp_events, grp_city, db)
+        db.commit()
+        result.saved = saved
+        result.city_groups = len(groups)
+        if unresolved:
+            result.errors.append(
+                "unresolved venue_city → default city: "
+                + ", ".join(f"{k}×{v}" for k, v in unresolved.most_common(8)))
+        if skipped:
+            result.errors.append(
+                "skipped, foreign venue_country but city unknown: "
+                + ", ".join(f"{k}×{v}" for k, v in skipped.most_common(8)))
+    except Exception as e:
+        db.rollback()
+        result.fatal = f"persist failed: {type(e).__name__}: {str(e)[:300]}"
+        logger.error("recipe %s persist failed:\n%s", row.domain, traceback.format_exc())
+
+
+# ── relay transport: RunResult ⇄ JSON ────────────────────────────────────
+_RAW_DATE_FIELDS = ("start_date", "end_date")
+
+
+def raw_event_to_dict(ev) -> dict:
+    d = asdict(ev)
+    for k in _RAW_DATE_FIELDS:
+        if d.get(k) is not None:
+            d[k] = d[k].isoformat()
+    return d
+
+
+def raw_event_from_dict(d: dict):
+    from datetime import date as _date
+    from app.services.collectors.base import RawEvent
+    allowed = {f.name for f in fields(RawEvent)}
+    kw = {k: v for k, v in d.items() if k in allowed}
+    for k in _RAW_DATE_FIELDS:
+        v = kw.get(k)
+        if isinstance(v, str):
+            kw[k] = _date.fromisoformat(v[:10])
+    if kw.get("raw_categories") is None:
+        kw["raw_categories"] = []
+    return RawEvent(**kw)
+
+
+def result_to_payload(result: RunResult) -> dict:
+    """What the Mac relay POSTs: everything the health bookkeeping and the
+    persist step need, events as plain dicts (dates ISO)."""
+    return {
+        "domain": result.domain, "source_name": result.source_name,
+        "events": [raw_event_to_dict(e) for e in result.events],
+        "rows": result.fetched, "pages": list(result.pages),
+        "detail_fetched": result.detail_fetched, "requests": result.requests,
+        "dropped": dict(result.dropped), "samples": {k: str(v)[:300] for k, v in result.samples.items()},
+        "errors": list(result.errors), "fatal": result.fatal,
+        "duration_s": round(result.duration_s, 1), "budget_hit": result.budget_hit,
+        "followed": result.followed,
+    }
+
+
+def result_from_payload(payload: dict, *, domain: str, source_name: str) -> RunResult:
+    r = RunResult(domain=domain, source_name=source_name)
+    r.events = [raw_event_from_dict(e) for e in (payload.get("events") or [])]
+    # rows drives .fetched (health: drift on zero fetch) — keep the remote count
+    r.rows = [None] * max(int(payload.get("rows") or 0), len(r.events))
+    r.pages = list(payload.get("pages") or [])
+    r.detail_fetched = int(payload.get("detail_fetched") or 0)
+    r.requests = int(payload.get("requests") or 0)
+    r.dropped = Counter(payload.get("dropped") or {})
+    r.samples = dict(payload.get("samples") or {})
+    r.errors = [str(x) for x in (payload.get("errors") or [])]
+    r.fatal = payload.get("fatal") or None
+    r.duration_s = float(payload.get("duration_s") or 0.0)
+    r.budget_hit = bool(payload.get("budget_hit"))
+    r.followed = int(payload.get("followed") or 0)
+    return r

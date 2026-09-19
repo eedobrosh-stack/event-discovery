@@ -14,6 +14,13 @@ RECIPE_VERSION = 1
 PARSE_KINDS = ("jsonld", "api", "html", "ics")
 PAGINATE_MODES = ("none", "next_link", "page_param", "cursor", "next_url")
 FETCH_METHODS = ("GET", "POST")
+BODY_FORMATS = ("json", "form")
+# Recipes a Render-side fetch cannot run (Cloudflare geo/IP walls on
+# Israeli sites, 2026-09-20 katedra.co.il): "relay": "mac" hands the
+# fetch+parse to the Mac-side relay (~/.claude/scripts/supercaly-relay),
+# which POSTs the normalised events to /api/admin/recipes/{domain}/relay.
+# The scheduler skips relay recipes; persistence and health stay identical.
+RELAYS = ("mac",)
 RENDER_MODES = ("none", "browser")
 
 # RawEvent fields a recipe may populate. Anything else is rejected so a
@@ -148,6 +155,8 @@ def validate_recipe(doc: dict) -> list[str]:
         fetch = {}
     if fetch.get("method", "GET") not in FETCH_METHODS:
         errs.append(f"fetch.method: one of {FETCH_METHODS}")
+    if fetch.get("body_format", "json") not in BODY_FORMATS:
+        errs.append(f"fetch.body_format: one of {BODY_FORMATS}")
     if fetch.get("render", "none") not in RENDER_MODES:
         errs.append(f"fetch.render: one of {RENDER_MODES}")
     if fetch.get("render") == "browser":
@@ -223,6 +232,9 @@ def validate_recipe(doc: dict) -> list[str]:
     ca = doc.get("city_aliases")
     if ca is not None and (not isinstance(ca, dict) or not all(isinstance(v, str) for v in ca.values())):
         errs.append("city_aliases: object of {raw city text: canonical City.name}")
+
+    if "relay" in doc and doc["relay"] not in RELAYS:
+        errs.append(f"relay: one of {RELAYS} (fetch+parse run off-box, events posted back)")
 
     # optional git-controlled scheduling knobs
     if "priority" in doc and not isinstance(doc["priority"], int):

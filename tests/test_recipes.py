@@ -30,9 +30,10 @@ class FakeFetcher:
         self.max_requests = 400
         self.urls: list[str] = []
 
-    def get(self, url, *, values=None):
+    def get(self, url, *, values=None, method=None):
         self.requests_made += 1
         self.urls.append(url)
+        self.methods = getattr(self, "methods", []) + [method]
         if url not in self.pages:
             return Response(url, 404, "", {})
         return Response(url, self.status.get(url, 200), self.pages[url], {})
@@ -604,7 +605,7 @@ def test_fetcher_falls_back_to_impersonation_on_403(monkeypatch):
     class R:  # minimal httpx-like response
         def __init__(self, code, text): self.status_code, self.text, self.url, self.headers = code, text, "https://x.test/e", {}
     monkeypatch.setattr(f._client, "get", lambda url: calls.__setitem__("plain", calls["plain"] + 1) or R(403, "blocked"))
-    monkeypatch.setattr(f, "_get_impersonated", lambda url, values: calls.__setitem__("imp", calls["imp"] + 1) or Response(url, 200, "<html>ok</html>", {}))
+    monkeypatch.setattr(f, "_get_impersonated", lambda url, values, method=None: calls.__setitem__("imp", calls["imp"] + 1) or Response(url, 200, "<html>ok</html>", {}))
     r = f.get("https://x.test/e")
     assert r.status == 200 and f.impersonate is True and f.switched_to_impersonation
     r2 = f.get("https://x.test/e2")           # subsequent calls go straight to impersonation
@@ -797,3 +798,178 @@ def test_parse_pin_lines():
         notadomain
     """)
     assert lines == [("eventim.de", None), ("koelnticket.de", "Germany"), ("somesite.com", "United States")]
+
+
+# ── relay (off-box fetch) ────────────────────────────────────────────────
+def test_fetcher_body_format_form_posts_urlencoded(monkeypatch):
+    """WordPress admin-ajax.php reads $_POST: a JSON body is ignored and the
+    handler answers '0'. fetch.body_format=form must send data=, not json=."""
+    from app.services.recipes.fetch import Fetcher
+    calls = []
+
+    class FakeResp:
+        url = "https://x.test/wp-admin/admin-ajax.php"; status_code = 200; text = "<ok/>"; headers = {}
+
+    class FakeClient:
+        def post(self, url, **kw):
+            calls.append(kw); return FakeResp()
+
+        def get(self, url):
+            raise AssertionError("GET used for a POST recipe")
+
+    for fmt, key in (("form", "data"), ("json", "json"), (None, "json")):
+        cfg = {"method": "POST", "body": {"action": "load_more", "offset": 0}, "delay_seconds": 0.5}
+        if fmt:
+            cfg["body_format"] = fmt
+        f = Fetcher(cfg, respect_robots=False)
+        f._client = FakeClient()
+        f.get("https://x.test/wp-admin/admin-ajax.php")
+        assert list(calls[-1].keys()) == [key], (fmt, calls[-1])
+        assert calls[-1][key] == {"action": "load_more", "offset": 0}
+
+
+def test_detail_hop_gets_even_when_listing_posts():
+    """katedra.co.il: the listing is a POST to admin-ajax.php, the detail
+    pages are ordinary GET pages. The hop must not inherit fetch.method."""
+    from app.services.recipes.fetch import Fetcher
+    calls = []
+
+    class FakeResp:
+        def __init__(self, url): self.url = url; self.status_code = 200; self.headers = {}
+        text = "<html><div class='p'>75 ₪</div></html>"
+
+    class FakeClient:
+        def post(self, url, **kw): calls.append(("POST", url)); return FakeResp(url)
+        def get(self, url): calls.append(("GET", url)); return FakeResp(url)
+
+    f = Fetcher({"method": "POST", "body_format": "form", "body": {"a": 1}, "delay_seconds": 0.5}, respect_robots=False)
+    f._client = FakeClient()
+    f.get("https://x.test/ajax")
+    f.get("https://x.test/detail/1", method="GET")
+    assert calls == [("POST", "https://x.test/ajax"), ("GET", "https://x.test/detail/1")]
+    doc = _base()
+    doc["fetch"] = {"method": "POST", "body": {"a": 1}, "delay_seconds": 0.5}
+    doc["detail"] = {"url_field": "purchase_link", "parse": {"kind": "html", "fields": {"price": {"sel": ".p", "regex": "(\\d+)"}}}}
+    doc["parse"]["fields"]["purchase_link"] = {"sel": "a", "attr": "href"}
+    listing = f"<div class='ev'><span class='t'>A</span><time datetime='{NEXT_WEEK}'></time><a href='https://example.org/d/1'>x</a></div>"
+    ff = FakeFetcher({"https://example.org/events": listing, "https://example.org/d/1": "<div class='p'>75 ₪</div>"})
+    res = run_recipe(doc, fetcher=ff)
+    assert ff.methods == [None, "GET"] and res.events[0].price == 75.0
+
+
+def test_validate_recipe_relay_and_body_format():
+    doc = _base()
+    doc["relay"] = "mac"
+    doc["fetch"] = {"method": "POST", "body_format": "form", "body": {"a": 1}}
+    assert validate_recipe(doc) == []
+    doc["relay"] = "moon"
+    assert any(e.startswith("relay:") for e in validate_recipe(doc))
+    doc["relay"] = "mac"
+    doc["fetch"]["body_format"] = "xml"
+    assert any(e.startswith("fetch.body_format") for e in validate_recipe(doc))
+
+
+def test_result_payload_roundtrip_preserves_events_and_health_counts():
+    from app.services.recipes.runner import result_to_payload, result_from_payload
+    doc = _base()
+    doc["parse"] = {"kind": "api", "items": "", "fields": {
+        "source_id": "id", "name": "n", "start_datetime": "d", "venue_name": "v",
+        "venue_city": "c", "venue_country": "k", "price": "p", "raw_categories": "cats"}}
+    body = json.dumps([{"id": "a1", "n": "Alpha", "d": f"{NEXT_WEEK}T19:30:00", "v": "Hall", "c": "Haifa",
+                        "k": "Israel", "p": "75", "cats": ["x", "y"]}])
+    res = run_recipe(doc, fetcher=FakeFetcher({"https://example.org/events": body}))
+    res.errors.append("detail https://example.org/e/1: HTTP 500")
+    payload = json.loads(json.dumps(result_to_payload(res)))     # what travels over HTTPS
+    back = result_from_payload(payload, domain=doc["domain"], source_name=doc["source_name"])
+    assert back.fetched == res.fetched == 1 and back.requests == res.requests
+    assert back.errors == res.errors and back.fatal is None
+    a, b = res.events[0], back.events[0]
+    assert (a.name, a.start_date, a.start_time, a.venue_name, a.venue_city, a.venue_country, a.price,
+            a.price_currency, a.source, a.source_id, a.raw_categories) == \
+           (b.name, b.start_date, b.start_time, b.venue_name, b.venue_city, b.venue_country, b.price,
+            b.price_currency, b.source, b.source_id, b.raw_categories)
+    assert b.start_date == date.fromisoformat(NEXT_WEEK)
+
+
+def _relay_db(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import City, SourceRecipe
+    engine = create_engine(f"sqlite:///{tmp_path}/relay.db")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add_all([City(name="Tel Aviv", country="Israel", timezone="Asia/Jerusalem", latitude=32.0, longitude=34.7),
+                City(name="Haifa", country="Israel", timezone="Asia/Jerusalem", latitude=32.8, longitude=35.0)])
+    doc = _base()
+    doc.update({"relay": "mac", "country": "Israel", "city_name": "Tel Aviv", "source_name": "relay_test"})
+    db.add(SourceRecipe(domain=doc["domain"], source_name="relay_test", recipe=doc, recipe_version=1,
+                        enabled=True, priority=5, cadence_hours=48, country="Israel", city_name="Tel Aviv"))
+    db.commit()
+    return Session, db
+
+
+def test_relay_endpoint_persists_through_the_recipe_path(tmp_path, monkeypatch):
+    """POST /api/admin/recipes/{domain}/relay: token gate, persist via
+    persist_result (venue_city grouping), health columns updated, and the
+    known-ids feed reflects what was saved."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database import get_db
+    from app.config import settings
+    from app.models import Event, SourceRecipe
+    Session, db = _relay_db(tmp_path)
+
+    def override():
+        s = Session()
+        try:
+            yield s
+        finally:
+            s.close()
+    app.dependency_overrides[get_db] = override
+    try:
+        client = TestClient(app)
+        payload = {"events": [
+            {"name": "Lecture A", "start_date": NEXT_WEEK, "start_time": "19:00", "venue_name": "Hall A",
+             "venue_city": "Haifa", "venue_country": "Israel", "source": "relay_test", "source_id": "a1",
+             "price": 75.0, "price_currency": "ILS", "purchase_link": "https://x.test/a1", "raw_categories": []},
+            {"name": "Lecture B", "start_date": NEXT_WEEK, "venue_name": "Hall B", "venue_city": "Tel Aviv",
+             "venue_country": "Israel", "source": "relay_test", "source_id": "b1", "raw_categories": []}],
+            "rows": 2, "pages": ["https://x.test/events"], "requests": 3, "duration_s": 4.2, "errors": []}
+        # disabled when the env var is unset
+        monkeypatch.setattr(settings, "RELAY_TOKEN", "")
+        assert client.post("/api/admin/recipes/example.org/relay", json=payload).status_code == 503
+        monkeypatch.setattr(settings, "RELAY_TOKEN", "s3cret")
+        assert client.post("/api/admin/recipes/example.org/relay", json=payload,
+                           headers={"X-Relay-Token": "nope"}).status_code == 401
+        assert client.get("/api/admin/recipes/example.org/known-ids", headers={"X-Relay-Token": "s3cret"}).json()["known_ids"] == []
+        assert client.post("/api/admin/recipes/nope.test/relay", json=payload,
+                           headers={"X-Relay-Token": "s3cret"}).status_code == 404
+        r = client.post("/api/admin/recipes/example.org/relay", json=payload, headers={"X-Relay-Token": "s3cret"})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["saved"] == 2 and out["city_groups"] == 2 and out["last_status"] == "ok" and out["relay"] == "mac"
+        s = Session()
+        evs = {e.source_id: e for e in s.query(Event).filter(Event.scrape_source == "relay_test").all()}
+        assert set(evs) == {"a1", "b1"}
+        assert evs["a1"].venue.city.name == "Haifa" and evs["b1"].venue.city.name == "Tel Aviv"
+        assert evs["a1"].price == 75.0 and evs["a1"].price_currency == "ILS"
+        row = s.query(SourceRecipe).filter_by(domain="example.org").one()
+        assert (row.runs_total, row.last_fetched, row.last_saved, row.last_requests) == (1, 2, 2, 3)
+        assert row.next_run_at is not None and row.consecutive_zero_fetch == 0
+        s.close()
+        ids = client.get("/api/admin/recipes/example.org/known-ids", headers={"X-Relay-Token": "s3cret"}).json()
+        assert sorted(ids["known_ids"]) == ["a1", "b1"] and ids["recipe"]["relay"] == "mac"
+        # second post of the same events: nothing new saved, health still ok, no duplicates
+        r2 = client.post("/api/admin/recipes/example.org/relay", json=payload, headers={"X-Relay-Token": "s3cret"}).json()
+        assert r2["saved"] == 0 and r2["last_status"] in ("ok", "empty")
+        s = Session(); assert s.query(Event).filter(Event.scrape_source == "relay_test").count() == 2; s.close()
+        # a fatal remote run is recorded as an error run, events untouched
+        r3 = client.post("/api/admin/recipes/example.org/relay", headers={"X-Relay-Token": "s3cret"},
+                         json={"events": [], "rows": 0, "requests": 1, "fatal": "HTTP 403 at listing"}).json()
+        assert r3["fatal"] == "HTTP 403 at listing" and r3["last_status"] == "error"
+    finally:
+        app.dependency_overrides.clear()
+        db.close()

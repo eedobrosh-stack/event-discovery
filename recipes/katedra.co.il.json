@@ -1,0 +1,62 @@
+{
+  "recipe_version": 1,
+  "domain": "katedra.co.il",
+  "source_name": "katedra_co_il",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "language": "he",
+  "timezone": "Asia/Jerusalem",
+  "priority": 20,
+  "cadence_hours": 48,
+  "relay": "mac",
+  "fetch": {
+    "method": "POST",
+    "body_format": "form",
+    "body": {"action": "load_more_content_archive_meeting", "offset": 0, "meetingTypeId": ""},
+    "delay_seconds": 2,
+    "timeout": 40,
+    "headers": {"Accept-Language": "he,en;q=0.8", "X-Requested-With": "XMLHttpRequest"}
+  },
+  "entry": {
+    "urls": ["https://www.katedra.co.il/wp-admin/admin-ajax.php"]
+  },
+  "parse": {
+    "kind": "html",
+    "item": "figure.series-item",
+    "date_format": "%d.%m.%Y",
+    "fields": {
+      "name": "h3 a",
+      "purchase_link": {"sel": "h3 a", "attr": "href", "absolute": true},
+      "source_id": {"sel": "h3 a", "attr": "href", "regex": "/meeting/([^/]+/?(?:[^/]+/)?)$"},
+      "image_url": {"sel": "img", "attr": "src", "absolute": true},
+      "raw_categories": {"sel": ".series-meta a", "all": true},
+      "venue_address": {"sel": ".caption-wrap ul li", "index": 0},
+      "venue_name": {"sel": ".caption-wrap ul li", "index": 0, "regex": "^([^,/]+?)\\s*(?:,|/|$)"},
+      "venue_city": {"sel": ".caption-wrap ul li", "index": 0, "regex": "^(?:[^,]*,){1,2}\\s*([^,/]+?)\\s*(?:/.*)?$"},
+      "is_online": {"sel": ".caption-wrap ul li", "index": 0, "regex": "^(Zoom)$"},
+      "start_date": {"sel": ".caption-wrap ul li", "index": 1, "regex": "(\\d{1,2}\\.\\d{1,2}\\.\\d{4})"},
+      "start_time": {"sel": ".caption-wrap ul li", "index": 1, "regex": "(\\d{1,2}:\\d{2})"},
+      "description": {"sel": ".tag_text"}
+    }
+  },
+  "detail": {
+    "url_field": "purchase_link",
+    "max_per_run": 40,
+    "only_new": true,
+    "parse": {
+      "kind": "html",
+      "fields": {
+        "price": {"sel": ".ktdra-prices .price-col-price", "index": 0, "regex": "(\\d[\\d,]*)"},
+        "start_time": {"sel": ".meeting-meta .series-caption li", "index": 1, "regex": "(\\d{1,2}:\\d{2})"}
+      }
+    }
+  },
+  "defaults": {"price_currency": "ILS", "venue_country": "Israel"},
+  "city_aliases": {
+    "ת\"א": "Tel Aviv", "תל אביב": "Tel Aviv", "תל-אביב": "Tel Aviv", "ת״א": "Tel Aviv",
+    "כפר שמריהו": "Kfar Shmaryahu", "רמת-גן": "Ramat Gan", "רמת גן": "Ramat Gan",
+    "ירושלים": "Jerusalem", "חיפה": "Haifa", "הרצליה": "Herzliya", "ים המלח": "Israel - Other",
+    "הרי ירושלים": "Jerusalem"
+  },
+  "notes": "הקתדרה במוז\"א (Eretz Israel Museum lecture centre, Tel Aviv). Cloudflare 403s Render's IP (probe 2026-09-19), so this recipe is fetched by the Mac relay (Israeli IP) and posted back. Listing = the theme's admin-ajax load-more call (all upcoming meetings in one response); series rows carry only the NEXT meeting date. Detail hop adds ticket price + series start time. Zoom-only rows → is_online."
+}
