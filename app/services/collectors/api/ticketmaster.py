@@ -60,6 +60,7 @@ COUNTRY_ISO = {
     "Switzerland": "CH", "Turkey": "TR",
 }
 from app.services.collectors.base import BaseCollector, RawEvent, CollectorAuthError
+from app.services.collectors.addon_filter import ticket_addon_reason
 from app.services.collectors.category_mapper import map_category
 
 
@@ -207,6 +208,15 @@ class TicketmasterCollector(BaseCollector):
         name = event_name or artist_name or "Untitled Event"
         if artist_name and artist_name != name and artist_name not in name:
             name = f"{name} - {artist_name}"
+
+        # Ticketmaster sells upsells (Premium Seating, Parking, Suite
+        # Reservation, VIP M&G Add-On, "LN Artist Upsell" attractions) as
+        # separate events on the same date/venue as the real show. They
+        # are not events — drop them here so they never reach the DB.
+        addon = ticket_addon_reason(name)
+        if addon:
+            logger.debug(f"ticketmaster: dropping add-on listing [{addon}] {name[:80]!r}")
+            return None
 
         venue_data = (ev.get("_embedded", {}).get("venues") or [{}])[0]
 

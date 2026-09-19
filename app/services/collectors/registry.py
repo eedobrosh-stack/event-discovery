@@ -10,6 +10,7 @@ from sqlalchemy import or_
 from app.models import Event, Venue, City, EventType, Performer, event_event_types
 from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name, CollectorAuthError
 from app.services.youtube_lookup import lookup_youtube_video
+from app.services.collectors.addon_filter import ticket_addon_reason
 
 # Reject events dated more than this far in the future. Real inventory
 # tops out around 2-3 years (far-out conferences, the occasional tour);
@@ -164,6 +165,20 @@ class CollectorRegistry:
                         f"(> {MAX_FUTURE_DAYS}d ceiling)"
                     )
                     continue
+
+                # Ticketmaster upsell SKUs ("Premium Seating", "Parking
+                # permit", "Suite Reservation", "VIP M&G Add-On") arrive as
+                # events. The collector's _transform already drops them;
+                # this guard covers admin/scrape and any other TM entry
+                # point so the rule lives in one predicate (addon_filter).
+                if raw.source == "ticketmaster":
+                    addon = ticket_addon_reason(raw.name)
+                    if addon:
+                        logger.info(
+                            f"Skipping Ticketmaster add-on listing [{addon}] "
+                            f"'{(raw.name or '')[:60]}' @ {raw.start_date}"
+                        )
+                        continue
 
                 # Dedup: check by source+source_id
                 existing = db.query(Event).filter_by(
