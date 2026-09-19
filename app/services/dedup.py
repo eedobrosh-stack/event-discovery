@@ -13,6 +13,9 @@ Source priority (higher = preferred):
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
+from datetime import date
 from difflib import SequenceMatcher
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -20,6 +23,64 @@ from sqlalchemy import func
 from app.models import Event
 
 logger = logging.getLogger(__name__)
+
+_NON_WORD = re.compile(r"[^\w\s]+")
+_WS = re.compile(r"\s+")
+
+
+def normalize_title(name: str | None) -> str:
+    r"""Case- and punctuation-insensitive key for an event title.
+
+    NFKC-fold, lowercase, replace every non-alphanumeric run with a space,
+    collapse whitespace. "TECHSPO Philadelphia 2026!" and "techspo
+    philadelphia, 2026" both become "techspo philadelphia 2026". Unicode
+    letters survive (\w is unicode-aware), so Hebrew/German titles key
+    correctly. Returns "" for empty input."""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKC", name).lower()
+    s = _NON_WORD.sub(" ", s).replace("_", " ")
+    return _WS.sub(" ", s).strip()
+
+
+def _times_compatible(a: str | None, b: str | None) -> bool:
+    """False only when both times are set and differ (matinee vs evening)."""
+    ta = (a or "").strip()
+    tb = (b or "").strip()
+    return not (ta and tb and ta != tb)
+
+
+def find_null_venue_duplicate(
+    db: Session,
+    name: str | None,
+    start_date: date | None,
+    start_time: str | None = None,
+) -> Event | None:
+    """Return an existing venue-less Event with the same normalised title
+    and start_date (and a non-contradicting start_time), or None.
+
+    Used at ingest for incoming events that have no venue / are online:
+    the LLM extractor and jsonld recipes save the same virtual event once
+    per source page, each with its own source_id, so the (scrape_source,
+    source_id) check never catches them and the venue-keyed similarity
+    check cannot run. Only rows with ``venue_id IS NULL`` are candidates,
+    so same-named shows that *have* a venue are never affected.
+
+    Candidates are fetched as light tuples (id, name, start_time) for the
+    date and compared in Python — the null-venue pool per date is a few
+    hundred rows at most, and SQL cannot do the punctuation folding."""
+    key = normalize_title(name)
+    if not key or start_date is None:
+        return None
+    rows = (
+        db.query(Event.id, Event.name, Event.start_time)
+        .filter(Event.start_date == start_date, Event.venue_id.is_(None))
+        .all()
+    )
+    for ev_id, ev_name, ev_time in rows:
+        if normalize_title(ev_name) == key and _times_compatible(start_time, ev_time):
+            return db.get(Event, ev_id)
+    return None
 
 SOURCE_PRIORITY: dict[str, int] = {
     "ticketmaster": 10,

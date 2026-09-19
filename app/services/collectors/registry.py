@@ -11,6 +11,7 @@ from app.models import Event, Venue, City, EventType, Performer, event_event_typ
 from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name, CollectorAuthError
 from app.services.youtube_lookup import lookup_youtube_video
 from app.services.collectors.addon_filter import ticket_addon_reason
+from app.services.dedup import find_null_venue_duplicate
 
 # Reject events dated more than this far in the future. Real inventory
 # tops out around 2-3 years (far-out conferences, the occasional tour);
@@ -260,6 +261,28 @@ class CollectorRegistry:
                     if updated:
                         db.commit()
                     continue
+
+                # Online / venue-less dedup: the LLM extractor and the
+                # jsonld recipes see the same virtual event on many source
+                # pages ("TECHSPO Philadelphia" x23, "Live 2026: Chicago
+                # Marketing" x25 — 2026-09-18 QA report) and each page gets
+                # its own source_id, so the (source, source_id) check above
+                # never fires and the venue-keyed check below cannot run.
+                # Same normalised title + same date + no venue on either
+                # side (+ non-contradicting start_time) → duplicate. Narrow
+                # by design: events *with* a venue are untouched, so two
+                # legit same-named shows at different venues still both
+                # save.
+                if not raw.venue_name or raw.is_online:
+                    dup = find_null_venue_duplicate(
+                        db, raw.name, raw.start_date, raw.start_time
+                    )
+                    if dup is not None:
+                        logger.debug(
+                            f"Skipping venue-less duplicate of event {dup.id} "
+                            f"'{(raw.name or '')[:60]}' @ {raw.start_date} from {raw.source}"
+                        )
+                        continue
 
                 # Cross-source dedup: same venue + date + similar name
                 if raw.venue_name:

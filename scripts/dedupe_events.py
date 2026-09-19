@@ -60,6 +60,19 @@ Safety:
 
 Idempotent — re-running after a clean apply finds nothing.
 
+``--null-venue`` mode (2026-09-19) — the complementary pass for events
+with NO venue: online/virtual events that the LLM extractor and jsonld
+recipes saved once per source page ("TECHSPO Philadelphia" x23, "Live
+2026: Chicago Marketing" x25 — same date, venue_id NULL, one row per
+LLMSource page, so different source_ids). Buckets on
+``(start_date, normalize_title(name))`` using the same
+``app.services.dedup.normalize_title`` key the ingest guard now uses,
+does NOT require distinct scrape_sources (the multiplicity here is
+intra-source), keeps the time-compatibility split, and folds with the
+same canonical-pick + backfill + event_types union. ``--city-id`` /
+``--venue-id`` are meaningless in this mode (no venue → no city) and
+are rejected; use the date bounds to scope.
+
 Usage:
     PYTHONPATH=. python3 scripts/dedupe_events.py --city-id 239 \\
         --start-date 2026-05-01 --end-date 2026-07-01
@@ -93,6 +106,7 @@ from sqlalchemy import and_, or_  # noqa: E402
 
 from app.database import SessionLocal  # noqa: E402
 from app.models import Event, Venue  # noqa: E402
+from app.services.dedup import normalize_title  # noqa: E402
 
 # Optional columns we backfill from duplicates onto canonical when
 # canonical has null/empty in that column. The first dup with a
@@ -174,30 +188,59 @@ def _load_events(
     return q.all()
 
 
-def _group_candidates(events: list[Event]) -> list[list[Event]]:
+def _load_null_venue_events(db, start: date | None, end: date | None) -> list[Event]:
+    q = db.query(Event).filter(Event.venue_id.is_(None))
+    if start is not None:
+        q = q.filter(Event.start_date >= start)
+    if end is not None:
+        q = q.filter(Event.start_date <= end)
+    return q.all()
+
+
+def _group_candidates(
+    events: list[Event],
+    *,
+    null_venue: bool = False,
+) -> list[list[Event]]:
     """Bucket by (start_date, venue_id, identifier). Within each bucket,
     keep only buckets where ≥2 distinct ``scrape_source`` values appear
     AND time predicates are compatible across all members. Returns a
-    list of dup clusters (length ≥ 2)."""
+    list of dup clusters (length ≥ 2).
+
+    ``null_venue=True`` flips to the venue-less mode: only rows with
+    ``venue_id IS NULL`` are considered, the bucket key is
+    ``(start_date, normalize_title(name))`` and the distinct-source
+    requirement is dropped (those duplicates are one source × many
+    pages)."""
     buckets: dict[tuple, list[Event]] = {}
     for e in events:
-        if e.venue_id is None:
-            continue
-        ident = _identifier(e)
-        if ident is None:
-            continue
-        key = (e.start_date, e.venue_id, ident)
+        if null_venue:
+            if e.venue_id is not None:
+                continue
+            ident = normalize_title(e.name)
+            if not ident:
+                continue
+            key = (e.start_date, None, ident)
+        else:
+            if e.venue_id is None:
+                continue
+            ident = _identifier(e)
+            if ident is None:
+                continue
+            key = (e.start_date, e.venue_id, ident)
         buckets.setdefault(key, []).append(e)
 
+    min_sources = 1 if null_venue else 2
     clusters: list[list[Event]] = []
     for members in buckets.values():
         if len(members) < 2:
             continue
         # Require ≥2 distinct scrape_sources in the bucket — otherwise
         # whatever multiplicity is here is an intra-source artifact
-        # we don't want to touch.
+        # we don't want to touch. (Not in null-venue mode: there the
+        # intra-source multiplicity IS the bug.)
         sources = {(m.scrape_source or "") for m in members}
-        if len(sources) < 2:
+        if len(sources) < min_sources:
             continue
         # Time-compatibility check: all pairs must be compatible. If
         # not, split the bucket into sub-clusters where each sub-cluster
@@ -225,7 +268,7 @@ def _group_candidates(events: list[Event]) -> list[list[Event]]:
                 sub[t].append(m)
         for t in non_empty_times:
             m_list = sub[t]
-            if len(m_list) >= 2 and len({(m.scrape_source or "") for m in m_list}) >= 2:
+            if len(m_list) >= 2 and len({(m.scrape_source or "") for m in m_list}) >= min_sources:
                 clusters.append(m_list)
     return clusters
 
@@ -321,7 +364,12 @@ def main() -> None:
                         help="Inclusive lower bound on Event.start_date (YYYY-MM-DD).")
     parser.add_argument("--end-date", type=str, default=None,
                         help="Inclusive upper bound on Event.start_date (YYYY-MM-DD).")
+    parser.add_argument("--null-venue", action="store_true",
+                        help="Venue-less mode: dedupe events with venue_id IS NULL on "
+                             "(start_date, normalised name), any source mix.")
     args = parser.parse_args()
+    if args.null_venue and (args.city_id or args.venue_id):
+        parser.error("--null-venue cannot be combined with --city-id / --venue-id")
 
     start = _parse_date(args.start_date)
     end = _parse_date(args.end_date)
@@ -332,14 +380,18 @@ def main() -> None:
     if args.venue_id: scope_parts.append(f"venue_id={args.venue_id}")
     if start: scope_parts.append(f"start≥{start}")
     if end: scope_parts.append(f"end≤{end}")
+    if args.null_venue: scope_parts.append("venue_id IS NULL")
     scope = ", ".join(scope_parts) if scope_parts else "ALL EVENTS"
     log.info(f"mode={mode} scope=[{scope}]")
 
     db = SessionLocal()
     try:
-        events = _load_events(db, args.city_id, args.venue_id, start, end)
+        if args.null_venue:
+            events = _load_null_venue_events(db, start, end)
+        else:
+            events = _load_events(db, args.city_id, args.venue_id, start, end)
         log.info(f"loaded {len(events)} event rows in scope")
-        clusters = _group_candidates(events)
+        clusters = _group_candidates(events, null_venue=args.null_venue)
         log.info(f"duplicate clusters: {len(clusters)}")
         if not clusters:
             log.info("nothing to do.")
@@ -366,7 +418,7 @@ def main() -> None:
             plan.append(res)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        suffix = "apply" if args.apply else "dryrun"
+        suffix = ("nullvenue_" if args.null_venue else "") + ("apply" if args.apply else "dryrun")
         audit_path = ROOT / "data" / f"dedupe_events_{ts}_{suffix}.json"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         audit_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2, default=str))
