@@ -53,6 +53,41 @@ def _decode_entities(s, max_iters: int = 5):
     return prev
 
 
+def canonical_artist_spelling(db, artist_name):
+    """Return the spelling we already use for this artist, if any.
+
+    Lookup key = lower(trim(name)) — the same key artist_genre.normalized_name
+    and performers.normalized_name are unique on (indexed, so this is one
+    cheap lookup per event). Only case / whitespace variants are unified
+    here; punctuation variants ("Six: The Musical" / "SIX the Musical") are
+    handled by scripts/canonicalize_artist_names.py, which uses a broader
+    key and is run as a backfill.
+    """
+    if not artist_name or not artist_name.strip():
+        return artist_name
+    from app.models.genre import ArtistGenre
+    key = artist_name.strip().lower()
+    cache = getattr(db, "_artist_spelling_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            db._artist_spelling_cache = cache
+        except Exception:
+            pass
+    if key in cache:
+        return cache[key] or artist_name
+    known = None
+    ag = db.query(ArtistGenre.artist_name).filter(ArtistGenre.normalized_name == key).first()
+    if ag and ag[0] and ag[0].strip():
+        known = ag[0].strip()
+    else:
+        perf = db.query(Performer.name).filter(Performer.normalized_name == key).first()
+        if perf and perf[0] and perf[0].strip():
+            known = perf[0].strip()
+    cache[key] = known
+    return known or artist_name.strip()
+
+
 class CollectorRegistry:
     def __init__(self):
         self._collectors: list[BaseCollector] = []
@@ -319,6 +354,12 @@ class CollectorRegistry:
                     )
                     if matched_performer:
                         artist_name = matched_performer.name
+
+                # One spelling per artist: if we already know this artist
+                # under another casing/punctuation ("RUSH" vs "Rush",
+                # "Bill Bailey" vs "BILL BAILEY"), reuse the known spelling
+                # so chips, genre rows and YouTube links don't split.
+                artist_name = canonical_artist_spelling(db, artist_name)
 
                 # Create event
                 event = Event(

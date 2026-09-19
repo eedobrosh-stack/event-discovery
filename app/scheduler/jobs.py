@@ -125,6 +125,10 @@ registry.register(ChooseChicagoCollector())
 
 # (city_name, country) — must match City.country values exactly (full names).
 # Specifying country prevents collecting UK events into "London, Canada" etc.
+# One spelling per city: Montréal / Zürich / Köln / "Prague, Czechia" were
+# removed 2026-09-19 — each was a second rotation slot for a city already in
+# the list (scripts/merge_duplicate_cities.py folds their DB rows into
+# Montreal / Zurich / Cologne / Prague).
 PRIORITY_CITIES = [
     # ── United States ───────────────────────────────────────────────────────
     ("New York",       "United States"),
@@ -205,7 +209,6 @@ PRIORITY_CITIES = [
     ("New Orleans",    "United States"),
     # ── Canada ─────────────────────────────────────────────────────────
     ("Montreal",       "Canada"),
-    ("Montréal",       "Canada"),
     # ── United Kingdom ─────────────────────────────────────────────────
     ("Birmingham",     "United Kingdom"),
     ("Glasgow",        "United Kingdom"),
@@ -219,10 +222,8 @@ PRIORITY_CITIES = [
     # ── Continental Europe ─────────────────────────────────────────────
     ("Vienna",         "Austria"),
     ("Prague",         "Czech Republic"),
-    ("Prague",         "Czechia"),
     ("Budapest",       "Hungary"),
     ("Zurich",         "Switzerland"),
-    ("Zürich",         "Switzerland"),
     ("Copenhagen",     "Denmark"),
     ("Stockholm",      "Sweden"),
     ("Oslo",           "Norway"),
@@ -230,7 +231,6 @@ PRIORITY_CITIES = [
     ("Warsaw",         "Poland"),
     ("Hamburg",        "Germany"),
     ("Cologne",        "Germany"),
-    ("Köln",           "Germany"),
     ("Frankfurt",      "Germany"),
     # ── Asia / Middle East / Pacific ───────────────────────────────────
     ("Tokyo",          "Japan"),
