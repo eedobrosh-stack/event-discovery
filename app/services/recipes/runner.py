@@ -389,32 +389,75 @@ def group_events_by_city(db, events: list, country: Optional[str], default_city)
     """_save_events assigns every event of a batch to ONE City (venue_city
     only lands in Venue.physical_city), so a multi-city recipe (Bravo:
     Beersheba / Modi'in / Kfar Saba …) must be persisted per resolved
-    city. → {City: [events]}; unknown cities fall back to default_city
-    and are counted in the returned `unresolved` Counter."""
+    city. → ([(City, [events])], unresolved, skipped).
+
+    Resolution order per event (2026-09-20):
+      1. venue_city inside canon_country(venue_country) when the event names
+         a country other than the recipe's. Nationwide / foreign listings
+         (livenation.com under country=Israel emitted "Houston", "US") used
+         to miss the Israel-only lookup and fall back to the recipe city,
+         which is how "House of Blues (Houston)" ended up in Tel Aviv.
+      2. venue_city inside the recipe country (the original rule).
+      3. default_city — unless the event's venue_country is a KNOWN other
+         country (some City row carries it): then the city is simply one we
+         don't track yet, and homing it under Tel Aviv would be wrong, so
+         the event is skipped and counted in `skipped`. Unknown country
+         strings and same-country misses still fall back to default_city
+         and are counted in `unresolved` (unchanged behaviour)."""
     from app.models import City
     from collections import Counter
     from app.services.recipes.countries import canon_country
     country = canon_country(country)
+    home_country = canon_country(getattr(default_city, "country", None)) or country
+
+    # canonical country → raw City.country spellings ("Czechia" and "Czech
+    # Republic" both resolve); doubles as the set of KNOWN countries.
+    raw_by_canon: dict = {}
+    for (raw,) in db.query(City.country).distinct():
+        c = canon_country(raw)
+        if c:
+            raw_by_canon.setdefault(c, set()).add(raw)
+
+    def lookup(name: str, ctry: Optional[str]):
+        q = db.query(City).filter(City.name == name)
+        if ctry:
+            raws = raw_by_canon.get(ctry)
+            if not raws:
+                return None
+            q = q.filter(City.country.in_(sorted(raws)))
+        # prefer canonical rows over aliases (canonical_city_id set)
+        return q.order_by(City.canonical_city_id.isnot(None), City.id).first()
+
     groups: dict = {}
     cache: dict = {}
     unresolved: Counter = Counter()
+    skipped: Counter = Counter()
     for ev in events:
         name = (ev.venue_city or "").strip()
+        ev_country = canon_country(getattr(ev, "venue_country", None))
+        foreign = bool(ev_country and ev_country != home_country and ev_country != country)
         city = None
         if name:
-            if name not in cache:
-                q = db.query(City).filter(City.name == name)
-                if country:
-                    q = q.filter(City.country == country)
-                cache[name] = q.first()
-            city = cache[name]
-            if city is None:
+            key = (name, ev_country if foreign else None)
+            if key not in cache:
+                hit = None
+                if foreign:
+                    hit = lookup(name, ev_country)
+                if hit is None:
+                    hit = lookup(name, country)
+                cache[key] = hit
+            city = cache[key]
+        if city is None:
+            if foreign and ev_country in raw_by_canon:
+                skipped[f"{name or '?'} ({ev_country})"] += 1
+                continue
+            if name:
                 unresolved[name] += 1
         city = city or default_city
         if city is None:
             continue
         groups.setdefault(city.id, (city, []))[1].append(ev)
-    return [v for v in groups.values()], unresolved
+    return [v for v in groups.values()], unresolved, skipped
 
 
 def _update_health(row, result: RunResult, now: datetime) -> None:
@@ -490,7 +533,7 @@ def execute_recipe_row(row_id: int, *, dry_run: bool = False,
                                     f"city={row.city_name!r}; events not persisted")
                 else:
                     reg = CollectorRegistry()
-                    groups, unresolved = group_events_by_city(
+                    groups, unresolved, skipped = group_events_by_city(
                         db, result.events, row.country or doc.get("country"), city)
                     saved = 0
                     for grp_city, grp_events in groups:
@@ -502,6 +545,10 @@ def execute_recipe_row(row_id: int, *, dry_run: bool = False,
                         result.errors.append(
                             "unresolved venue_city → default city: "
                             + ", ".join(f"{k}×{v}" for k, v in unresolved.most_common(8)))
+                    if skipped:
+                        result.errors.append(
+                            "skipped, foreign venue_country but city unknown: "
+                            + ", ".join(f"{k}×{v}" for k, v in skipped.most_common(8)))
             except Exception as e:
                 db.rollback()
                 result.fatal = f"persist failed: {type(e).__name__}: {str(e)[:300]}"

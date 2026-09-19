@@ -495,10 +495,53 @@ def test_group_events_by_city_uses_venue_city_then_default(tmp_path):
             {"name": "c", "start_date": NEXT_WEEK, "venue_city": "Nowhere", "_page_url": "u"},
             {"name": "d", "start_date": NEXT_WEEK, "_page_url": "u"}]
     events = normalize(rows, _base()).events
-    groups, unresolved = group_events_by_city(db, events, "Israel", tlv)
+    groups, unresolved, skipped = group_events_by_city(db, events, "Israel", tlv)
     by_name = {c.name: sorted(e.name for e in evs) for c, evs in groups}
     assert by_name == {"Beersheba": ["a"], "Tel Aviv": ["b", "c", "d"]}
     assert unresolved == {"Nowhere": 1}
+    assert skipped == {}
+
+
+def test_group_events_by_city_resolves_foreign_venue_country_before_default(tmp_path):
+    """QA 2026-09-20: livenation.com recipe #243 (country=Israel, city=Tel
+    Aviv) emitted US venues; 'Houston' missed the Israel-only lookup and
+    fell back to Tel Aviv → 'House of Blues (Houston)' under Tel Aviv."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import app.models  # noqa: F401
+    from app.database import Base
+    from app.models import City
+    from app.services.recipes.runner import group_events_by_city
+    engine = create_engine(f"sqlite:///{tmp_path}/c.db")
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    tlv = City(name="Tel Aviv", country="Israel", timezone="Asia/Jerusalem", latitude=32.0, longitude=34.7)
+    hou = City(name="Houston", country="United States", state="TX", timezone="America/Chicago")
+    # a city that exists in two countries: the venue's country must decide
+    par_fr = City(name="Paris", country="France", timezone="Europe/Paris")
+    par_ca = City(name="Paris", country="Canada", timezone="America/Toronto")
+    db.add_all([tlv, hou, par_fr, par_ca]); db.commit()
+    rows = [
+        # venue_country "US" → canon "United States" → Houston found there
+        {"name": "houston", "start_date": NEXT_WEEK, "venue_city": "Houston", "venue_country": "US", "_page_url": "u"},
+        # foreign country we know (City rows exist) but city we don't track → skipped, not Tel Aviv
+        {"name": "anaheim", "start_date": NEXT_WEEK, "venue_city": "Anaheim", "venue_country": "US", "_page_url": "u"},
+        # ambiguous name resolved inside the event's own country
+        {"name": "paris", "start_date": NEXT_WEEK, "venue_city": "Paris", "venue_country": "Canada", "_page_url": "u"},
+        # country we have no City rows for → old behaviour: default city + unresolved
+        {"name": "elbonia", "start_date": NEXT_WEEK, "venue_city": "Elbon", "venue_country": "Elbonia", "_page_url": "u"},
+        # no venue_country in the row → normalize fills the recipe country → default city
+        {"name": "local", "start_date": NEXT_WEEK, "venue_city": "Tel Aviv", "_page_url": "u"},
+    ]
+    events = normalize(rows, _base()).events
+    assert events[0].venue_country == "US" and events[4].venue_country == "Israel"
+    groups, unresolved, skipped = group_events_by_city(db, events, "Israel", tlv)
+    by_city = {(c.name, c.country): sorted(e.name for e in evs) for c, evs in groups}
+    assert by_city == {("Houston", "United States"): ["houston"],
+                       ("Paris", "Canada"): ["paris"],
+                       ("Tel Aviv", "Israel"): ["elbonia", "local"]}
+    assert unresolved == {"Elbon": 1}
+    assert skipped == {"Anaheim (United States)": 1}
 
 
 def test_auto_enroll_jsonld_groups_domains_and_respects_git_recipes(tmp_path):
