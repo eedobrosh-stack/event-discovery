@@ -1,0 +1,79 @@
+{
+  "recipe_version": 1,
+  "domain": "israel-opera.co.il",
+  "source_name": "israel_opera",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "language": "he",
+  "timezone": "Asia/Jerusalem",
+  "priority": 45,
+  "cadence_hours": 48,
+  "entry": {
+    "urls": [
+      "https://www.israel-opera.co.il/show_type/%d7%90%d7%95%d7%a4%d7%a8%d7%94/",
+      "https://www.israel-opera.co.il/show_type/%d7%9e%d7%95%d7%96%d7%99%d7%a7%d7%94/",
+      "https://www.israel-opera.co.il/show_type/%d7%9e%d7%97%d7%95%d7%9c/",
+      "https://www.israel-opera.co.il/show_type/%d7%9e%d7%95%d7%a4%d7%a2%d7%99%d7%9d-%d7%90%d7%95%d7%a8%d7%97%d7%99%d7%9d/",
+      "https://www.israel-opera.co.il/show_type/%d7%9e%d7%95%d7%a4%d7%a2%d7%99%d7%9d-%d7%9e%d7%99%d7%95%d7%97%d7%93%d7%99%d7%9d/",
+      "https://www.israel-opera.co.il/show_type/%d7%a1%d7%99%d7%95%d7%a8%d7%99%d7%9d/"
+    ],
+    "follow": {
+      "selector": "a[href*='israel-opera.co.il/show/']",
+      "regex": "^(https://www\\.israel-opera\\.co\\.il/show/[^/?#]+/?)$",
+      "max_links": 150
+    },
+    "paginate": {
+      "mode": "none"
+    }
+  },
+  "fetch": {
+    "delay_seconds": 1.5,
+    "timeout": 30,
+    "headers": {
+      "Accept-Language": "he,en;q=0.8"
+    }
+  },
+  "parse": {
+    "kind": "html",
+    "item": ".show-date-entry, tr.shows-table-row",
+    "date_format": "%d/%m/%Y",
+    "page_fields": {
+      "name": {
+        "sel": "h1",
+        "regex": "^\\s*[\"“”]?(.+?)[\"“”]?\\s*$"
+      },
+      "description": ".elementor-widget-theme-post-excerpt",
+      "image_url": {
+        "sel": "meta[property='og:image']",
+        "attr": "content"
+      }
+    },
+    "fields": {
+      "start_date": {
+        "sel": ".show-date-date, .shows-date",
+        "regex": "(\\d{1,2}/\\d{1,2}/\\d{4})"
+      },
+      "start_time": {
+        "sel": ".show-date-details, .shows-time",
+        "regex": "(\\d{1,2}:\\d{2})"
+      },
+      "purchase_link": {
+        "sel": "a.carousel-ticket-bttn, a.shows-ticket-button",
+        "attr": "href"
+      },
+      "source_id": {
+        "sel": "a.carousel-ticket-bttn, a.shows-ticket-button",
+        "attr": "href",
+        "regex": "/order/(\\d+)"
+      }
+    }
+  },
+  "defaults": {
+    "venue_name": "בית האופרה תל אביב",
+    "venue_address": "שד' שאול המלך 19, תל אביב-יפו",
+    "venue_city": "Tel Aviv",
+    "venue_country": "Israel",
+    "price_currency": "ILS"
+  },
+  "notes": "The Israeli Opera (Tel Aviv Performing Arts Center). WordPress + Elementor; WP REST wp/v2/show hides ACF (no dates), so: 6 show_type taxonomy pages (opera, music, dance, guest, special, tours) → entry.follow every /show/<slug>/ page (~70 productions incl. archive, past rows dropped) → one row per performance. Two page templates: the swiper (.show-date-entry: .show-date-date dd/mm/yyyy, .show-date-details 'day | HH:MM', a.carousel-ticket-bttn) and the table (tr.shows-table-row: .shows-date / .shows-time / a.shows-ticket-button); the union selectors cover both. name = production title (h1, quotes stripped); artist_name intentionally empty (opera/ballet: no single performer). Purchase link = tickets.israel-opera.co.il/order/<id> (also the source_id; rows without a ticket button, e.g. galas, get the hashed id). No prices on the site. Venue defaulted to the opera house (the site is its own programme; the footer address is the only venue text). Not geo-walled: 200 to the plain Supercaly UA from the Mac."
+}
