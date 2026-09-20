@@ -163,6 +163,11 @@ def normalize(rows: list[dict], recipe: dict) -> NormalizeResult:
             for k, v in defaults.items():
                 if getattr(ev, k, None) in (None, "", [], "USD") and v is not None:
                     setattr(ev, k, v)
+            # city aliases apply here too — eventim.co.il (2026-09-20) emitted
+            # 'חיפה' / 'באר שבע' via JSON-LD and every show fell to the default city
+            vc = _str(ev.venue_city)
+            if vc and aliases:
+                ev.venue_city = aliases.get(vc, aliases.get(vc.replace("-", " "), vc))
             res.events.append(ev)
             continue
 

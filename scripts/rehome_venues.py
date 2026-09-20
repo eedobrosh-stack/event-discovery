@@ -132,8 +132,32 @@ def pick_target(cands: list[dict], vlat=None, vlon=None) -> dict:
     return sorted(cands, key=lambda c: (c["canonical_city_id"] is not None, -c["venues"], c["id"]))[0]
 
 
+def load_city_aliases() -> dict:
+    """Hebrew (and other) spellings → City.name, gathered from every recipe's
+    city_aliases plus the shared Tickchak map. Lets physical_city='חיפה'
+    resolve to the Haifa row when a recipe saved the venue under its
+    default city before the alias existed (eventim/goshow, 2026-09-20)."""
+    import glob, json
+    m: dict = {}
+    try:
+        from app.services.collectors.scrapers.tickchak import HEB_TO_EN_CITY
+        m.update(HEB_TO_EN_CITY)
+    except Exception:
+        pass
+    for path in sorted(glob.glob(str(ROOT / "recipes" / "*.json"))):
+        try:
+            m.update(json.load(open(path, encoding="utf-8")).get("city_aliases") or {})
+        except Exception:
+            pass
+    return {k.strip(): v for k, v in m.items()}
+
+
+SAME_COUNTRY_MIN_KM = 15.0
+
+
 def plan(cities, by_key, upcoming, venues, names_in_city, *, source=None, min_upcoming=0, venue_id=None,
-         geo=False):
+         geo=False, same_country=False, aliases=None):
+    aliases = aliases or {}
     moves, collisions = [], []
     for v in venues:
         if venue_id and v["id"] != venue_id:
@@ -148,7 +172,9 @@ def plan(cities, by_key, upcoming, venues, names_in_city, *, source=None, min_up
         if n_up < min_upcoming or (source and source not in up):
             continue
         pcountry = canon_country(v["physical_country"]) or cur["ccountry"]
-        cands = by_key.get((norm(v["physical_city"]), pcountry))
+        pcity = (v["physical_city"] or "").strip()
+        pcity = aliases.get(pcity, aliases.get(pcity.replace("-", " "), pcity))
+        cands = by_key.get((norm(pcity), pcountry))
         if not cands:
             continue
         cands = [c for c in cands if c["id"] != cur["id"] and not linked(c, cur)]
@@ -158,12 +184,19 @@ def plan(cities, by_key, upcoming, venues, names_in_city, *, source=None, min_up
         if target["ccountry"] != cur["ccountry"]:
             why = f"{cur['ccountry']} → {target['ccountry']}"
         else:
-            if not geo:
-                continue
             d = km(cur["latitude"], cur["longitude"], target["latitude"], target["longitude"])
-            if d is None or d <= FAR_KM:
-                continue
-            why = f"{round(d)} km"
+            if same_country and target["name"] != "Israel - Other":
+                # physical_city names a DIFFERENT known city in the same country
+                # (default-city fallback at ingest); move unless they are neighbours
+                if d is not None and d <= SAME_COUNTRY_MIN_KM:
+                    continue
+                why = f"physical_city {v['physical_city']!r} → {target['name']}" + (f" ({round(d)} km)" if d is not None else "")
+            else:
+                if not geo:
+                    continue
+                if d is None or d <= FAR_KM:
+                    continue
+                why = f"{round(d)} km"
         row = {"venue_id": v["id"], "venue": v["name"], "from": cur, "to": target, "upcoming": n_up,
                "sources": dict(up.most_common(3)), "why": why,
                "physical": f"{v['physical_city']}, {v['physical_country']}"}
@@ -224,6 +257,9 @@ def main():
     ap.add_argument("--venue-id", type=int, default=None, help="only this venue")
     ap.add_argument("--geo", action="store_true",
                     help="also propose same-country targets > 150 km away (see docstring for why this is opt-in)")
+    ap.add_argument("--same-country", action="store_true",
+                    help="also move venues whose physical_city (via recipe city_aliases, e.g. חיפה→Haifa) names another city "
+                         "of the SAME country > 15 km away — the default-city fallback at ingest")
     ap.add_argument("--merge-collisions", action="store_true",
                     help="when the target city already has a same-name venue, repoint events to it and drop the mis-homed row")
     ap.add_argument("--show", type=int, default=80, help="rows to print per list")
@@ -232,7 +268,8 @@ def main():
     db = SessionLocal()
     try:
         moves, collisions = plan(*load(db), source=args.source, min_upcoming=args.min_upcoming,
-                                 venue_id=args.venue_id, geo=args.geo)
+                                 venue_id=args.venue_id, geo=args.geo, same_country=args.same_country,
+                                 aliases=load_city_aliases() if args.same_country else None)
         if args.limit:
             moves = moves[: args.limit]
         tot_up = sum(m["upcoming"] for m in moves)

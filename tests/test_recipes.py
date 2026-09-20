@@ -1029,3 +1029,15 @@ def test_fetcher_renders_page_into_form_body():
         assert fx._render_body({}) == {"page": "{page}", "cat": "music"}
     finally:
         fx.close()
+
+
+def test_jsonld_events_get_city_aliases_too():
+    """eventim.co.il 2026-09-20: JSON-LD rows skipped the alias step, so
+    'חיפה' never became 'Haifa' and every show fell to the default city."""
+    doc = _base()
+    doc["city_aliases"] = {"חיפה": "Haifa"}
+    ld = {"@type": "Event", "name": "Show", "startDate": f"{NEXT_WEEK}T20:00:00", "url": "https://example.org/e/1",
+          "location": {"@type": "Place", "name": "Hall", "address": {"@type": "PostalAddress", "addressLocality": "חיפה", "addressCountry": "IL"}}}
+    rows = [{"_jsonld": ld, "_page_url": "https://example.org/events"}]
+    ev = normalize(rows, doc).events[0]
+    assert ev.venue_city == "Haifa"

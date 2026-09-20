@@ -139,7 +139,26 @@
     "קרית שמונה": "Kiryat Shmona",
     "יקנעם": "Yokneam",
     "מעלה אדומים": "Maale Adumim",
-    "אריאל": "Ariel"
+    "אריאל": "Ariel",
+    "נמל יפו": "Tel Aviv",
+    "יפו": "Tel Aviv",
+    "נמל תל אביב": "Tel Aviv",
+    "ראשל\"צ": "Rishon LeZion",
+    "ראשל״צ": "Rishon LeZion",
+    "פרדס חנה - כרכור": "Pardes Hanna",
+    "פרדס חנה-כרכור": "Pardes Hanna",
+    "נמל קיסריה": "Israel - Other",
+    "נחל ציפורי": "Israel - Other",
+    "גבעת ברנר": "Israel - Other",
+    "קיבוץ חמדיה": "Israel - Other",
+    "כפר שמריהו": "Herzliya",
+    "עומר": "Beersheba",
+    "מעלות": "Israel - Other",
+    "ערד": "Israel - Other",
+    "דימונה": "Israel - Other",
+    "מצפה רמון": "Israel - Other",
+    "ים המלח": "Israel - Other",
+    "עין גדי": "Israel - Other"
   },
   "notes": "GoShow (Israeli ticketing platform, goshow.co.il). Instead of one platform_venues row per venue (35+ venue pages, and platform_registry has no goshow handler so such rows would never be scraped), the 7 category listings are crawled: each is a server-rendered list of 30 rows plus a jQuery load-more that POSTs {page: N} back to the same URL and returns <li> fragments (the ?page= query string is ignored, hence fetch.method POST + body {page} templated by page_param). An empty fragment ends pagination. Row = one dated show: name/link/blurb in .resultData, poster in the sibling .resultLiImg, '<venue>, <city>' in .closeShowTitleNew (city via city_aliases; every row carried a city on 2026-09-20), 'יום X dd.mm.yyyy בשעה HH:MM' in .closeShowDateNew. source_id = show/event ids from the /event/{show}/{event}/ URL. artist_name mirrors the title (mostly concerts and stand-up; the platform parser in scrapers/goshow.py does the same). No prices on the listing. Not geo-walled: 200 to the plain Supercaly UA from the Mac and no 403 trail on prod."
 }
