@@ -1454,13 +1454,17 @@ def admin_llm_sources_page():
     return FileResponse("frontend/llm-sources.html")
 
 
-# Alternative Google-style homepage. Same backend, single search input
-# plus a "Searching in <city> · change location" geo strip. StaticFiles
-# html=True doesn't reliably resolve extensionless /v2 → v2.html (same
-# reason /admin needs an explicit route above).
-@app.get("/v2")
-def v2_homepage():
+# Homepage = the Google-style page (frontend/v2.html) since 2026-09-21
+# (roadmap #2); the classic two-input page stays reachable at /v2. The
+# explicit "/" route wins over the StaticFiles mount's index.html.
+@app.get("/")
+def homepage():
     return FileResponse("frontend/v2.html")
+
+
+@app.get("/v2")
+def classic_homepage():
+    return FileResponse("frontend/index.html")
 
 # Serve frontend
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -261,7 +261,8 @@
             .v2-search-row { flex-direction: column; }
             .v2-btn { padding: 12px 18px; font-size: 0.9rem; }
         }
-    </style>
+        .v2-geo-hint { opacity: .7; font-weight: normal; }
+</style>
 </head>
 <body>
 <div class="v2-center">
@@ -305,7 +306,7 @@
 
     <!-- Footer links -->
     <div class="home-links">
-        <a href="/">Classic Homepage</a>
+        <a href="/v2">Classic Homepage</a>
         <a href="/stats.html">📡 Coverage Stats</a>
         <a href="/results.html">Browse</a>
     </div>
@@ -318,7 +319,7 @@
      and the submit → results.html handoff via sessionStorage. The
      element IDs above match what home.js touches so its setup
      functions wire up without modification. -->
-<script src="/home.js?v=9"></script>
+<script src="/home.js?v=10"></script>
 
 <!-- v2-specific glue. Adds the "Searching in <city> · change location"
      strip on top of the home.js scaffolding and reveals the city input
@@ -355,107 +356,84 @@
         });
     }
 
-    // Resolve a geo city/country pair to a Supercaly row. Tries (in
-    // order): exact name match within the geo country → startswith
-    // match (catches "Tel Aviv" → "Tel Aviv-Yafo" where ipapi returns
-    // a shorter form than our canonical) → country-level COUNTRY:<n>
-    // filter → text-only fallback. The same matching ladder mirrors
-    // navigateToResults() in home.js so the URL it produces is
-    // identical to what the original homepage would have submitted.
-    function resolveCity(cities, countries, geoCity, geoCountry) {
-        const gc = geoCity.toLowerCase();
-        const gco = geoCountry.toLowerCase();
+    // ── Location resolution (roadmap #3, 2026-09-21) ──────────────────
+    // Order: (1) the city the visitor last searched/accepted (localStorage)
+    // → (2) the browser's own position → /api/geo/nearest → (3) IP lookup,
+    // but COUNTRY level only. IP geolocation is what used to say "Haifa"
+    // to every Israeli visitor (ISP address blocks are registered there),
+    // so an IP-derived CITY is never shown as "your location" any more.
+    const LS_KEY = 'supercaly_location';
 
-        if (geoCity) {
-            // Pass 1 — exact city name match, scoped to the geo country
-            // when both are known (avoids "Cambridge, UK" matching
-            // "Cambridge, MA").
-            let m = cities.find(c =>
-                c.name.toLowerCase() === gc &&
-                (!gco || (c.country || '').toLowerCase() === gco)
-            );
-            if (m) return { kind: 'city', row: m };
-
-            // Pass 2 — exact match anywhere (no country constraint).
-            m = cities.find(c => c.name.toLowerCase() === gc);
-            if (m) return { kind: 'city', row: m };
-
-            // Pass 3 — startswith match scoped to geo country.
-            // "Tel Aviv" → "Tel Aviv-Yafo", "New York" → "New York City".
-            m = cities.find(c => {
-                const cn = c.name.toLowerCase();
-                return (cn.startsWith(gc + '-') || cn.startsWith(gc + ' ')) &&
-                       (!gco || (c.country || '').toLowerCase() === gco);
-            });
-            if (m) return { kind: 'city', row: m };
-        }
-
-        if (geoCountry) {
-            // Country-level fallback. /api/cities/countries returns the
-            // distinct list of countries that have events, so a match
-            // here means "filter to all events in <country>".
-            const cm = countries.find(c => c.name.toLowerCase() === gco);
-            if (cm) return { kind: 'country', row: cm };
-        }
-
+    function loadSaved() {
+        try {
+            const v = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+            if (v && v.id && v.label && Date.now() - (v.ts || 0) < 180 * 86400e3) return v;
+        } catch {}
         return null;
+    }
+    function save(id, label) {
+        try { localStorage.setItem(LS_KEY, JSON.stringify({ id: String(id), label, ts: Date.now() })); } catch {}
+    }
+    function seed(id, label) {
+        cityIn.value   = label;
+        cityIdIn.value = String(id);
+    }
+    // Whatever city the visitor actually submits becomes the remembered one
+    // (home.js navigates on submit; the id is in the hidden input by then).
+    window.addEventListener('pagehide', () => {
+        if (cityIdIn.value && cityIn.value.trim()) save(cityIdIn.value, cityIn.value.trim());
+    });
+
+    function browserPosition() {
+        return new Promise((resolve) => {
+            if (!('geolocation' in navigator)) return resolve(null);
+            navigator.geolocation.getCurrentPosition(
+                p => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
+                () => resolve(null),
+                { timeout: 6000, maximumAge: 15 * 60e3 });
+        });
     }
 
     (async function() {
-        // Same-origin /api/geo instead of hitting ipapi.co directly.
-        // Ad-blockers (uBlock/EasyPrivacy) routinely kill the
-        // third-party IP-lookup call in the browser; routing through
-        // our own backend bypasses that. The backend (app/api/geo.py)
-        // does the actual ipapi lookup server-side, with per-IP
-        // caching so we burn the upstream quota at most once per
-        // user per 24h.
-        let geo = null;
-        try {
-            const r = await fetch('/api/geo');
-            geo = await r.json();
-        } catch {}
-        if (!geo) { renderGeoLine('', false); return; }
-
-        const geoCity    = (geo.city || '').trim();
-        const geoCountry = (geo.country_name || '').trim();
-        const displayLabel = geoCity && geoCountry
-            ? geoCity + ', ' + geoCountry
-            : (geoCity || geoCountry);
-        if (!displayLabel) { renderGeoLine('', false); return; }
-
-        // Render the strip immediately so the UI doesn't wait on the
-        // city-resolution fetches — the user can already see WHERE
-        // we think they are. The cityId resolution lands a moment
-        // later and silently seeds the hidden inputs.
-        renderGeoLine(displayLabel, true);
-
-        try {
-            const [citiesR, countriesR] = await Promise.all([
-                fetch('/api/cities'),
-                fetch('/api/cities/countries'),
-            ]);
-            const cities = await citiesR.json();
-            const countries = await countriesR.json();
-
-            const resolved = resolveCity(cities, countries, geoCity, geoCountry);
-            if (resolved?.kind === 'city') {
-                cityIn.value   = resolved.row.name;
-                cityIdIn.value = String(resolved.row.id);
-            } else if (resolved?.kind === 'country') {
-                cityIn.value   = resolved.row.name;
-                cityIdIn.value = 'COUNTRY:' + resolved.row.name;
-            } else {
-                // No Supercaly match — best-effort: seed text so
-                // navigateToResults' name-match ladder gets a shot,
-                // even though it'll likely fall through to Global.
-                cityIn.value = geoCity || geoCountry;
-            }
-        } catch {
-            // Network blip resolving cities — keep the geo strip
-            // visible; the user can click "change location" if their
-            // first search returns global results.
-            cityIn.value = geoCity || geoCountry;
+        const saved = loadSaved();
+        if (saved) {
+            seed(saved.id, saved.label);
+            renderGeoLine(saved.label, true);
+            return;
         }
+
+        // (2) precise: the device's position → our nearest canonical city
+        const pos = await browserPosition();
+        if (pos) {
+            try {
+                const r = await fetch(`/api/geo/nearest?lat=${pos.lat.toFixed(4)}&lon=${pos.lon.toFixed(4)}`);
+                const near = await r.json();
+                if (near && near.id) {
+                    const label = near.name + ', ' + near.country;
+                    seed(near.id, label);
+                    save(near.id, label);
+                    renderGeoLine(label, true);
+                    return;
+                }
+            } catch {}
+        }
+
+        // (3) IP → country only
+        let geo = null;
+        try { geo = await (await fetch('/api/geo')).json(); } catch {}
+        const geoCountry = ((geo && geo.country_name) || '').trim();
+        if (!geoCountry) { renderGeoLine('', false); return; }
+        try {
+            const countries = await (await fetch('/api/cities/countries')).json();
+            const cm = countries.find(c => c.name.toLowerCase() === geoCountry.toLowerCase());
+            if (cm) {
+                seed('COUNTRY:' + cm.name, cm.name);
+                renderGeoLine(cm.name + ' <span class="v2-geo-hint">(set your city for closer results)</span>', true);
+                return;
+            }
+        } catch {}
+        cityIn.value = geoCountry;
+        renderGeoLine(geoCountry, true);
     })();
 })();
 </script>

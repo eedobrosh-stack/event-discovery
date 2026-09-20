@@ -219,3 +219,61 @@ async def geo(request: Request) -> dict:
     # for a low-stakes UX hint like geo prefilling.
     _cache_put(ip, payload)
     return payload
+
+
+# ── nearest Supercaly city to a browser-reported position ─────────────────
+# Why: IP geolocation puts Israeli users in Haifa (ISP address blocks are
+# registered there), so the homepage now asks the browser for its position
+# and resolves it HERE against our own City rows instead of trusting ipapi's
+# city. Canonical rows only (aliases hide behind canonical_city_id); among
+# rows within MAJOR_RADIUS_KM the one with the most venues wins, so a user
+# standing in Givatayim lands on Tel Aviv, not on a 5-venue suburb row.
+import math
+from fastapi import Depends, Query
+from sqlalchemy import func as _f
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.models import City, Venue
+
+MAJOR_RADIUS_KM = 25.0
+MAJOR_MIN_VENUES = 20
+MAX_RADIUS_KM = 300.0
+
+
+def _haversine_km(lat1, lon1, lat2, lon2) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(a))
+
+
+def nearest_city(db: Session, lat: float, lon: float) -> Optional[dict]:
+    dlat = MAX_RADIUS_KM / 111.0
+    dlon = MAX_RADIUS_KM / max(20.0, 111.0 * math.cos(math.radians(lat)))
+    rows = (db.query(City.id, City.name, City.country, City.latitude, City.longitude,
+                     _f.count(Venue.id).label("venues"))
+            .outerjoin(Venue, Venue.city_id == City.id)
+            .filter(City.canonical_city_id.is_(None), City.latitude.isnot(None), City.longitude.isnot(None),
+                    City.latitude.between(lat - dlat, lat + dlat), City.longitude.between(lon - dlon, lon + dlon))
+            .group_by(City.id).all())
+    cands = []
+    for r in rows:
+        if abs(r.latitude) < 0.01 and abs(r.longitude) < 0.01:
+            continue
+        d = _haversine_km(lat, lon, r.latitude, r.longitude)
+        if d <= MAX_RADIUS_KM:
+            cands.append((d, r))
+    if not cands:
+        return None
+    major = [c for c in cands if c[0] <= MAJOR_RADIUS_KM and c[1].venues >= MAJOR_MIN_VENUES]
+    d, r = (max(major, key=lambda c: c[1].venues) if major else min(cands, key=lambda c: c[0]))
+    return {"id": r.id, "name": r.name, "country": r.country, "distance_km": round(d, 1),
+            "venues": r.venues, "nearest_any": min(cands, key=lambda c: c[0])[1].name}
+
+
+@router.get("/nearest")
+def geo_nearest(lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
+                db: Session = Depends(get_db)) -> dict:
+    """Browser position → the Supercaly city to search in. {} when nothing
+    within MAX_RADIUS_KM (the frontend then falls back to country level)."""
+    return nearest_city(db, lat, lon) or {}

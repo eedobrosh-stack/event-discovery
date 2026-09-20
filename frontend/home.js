@@ -340,7 +340,7 @@ function setupCityAutocomplete() {
 async function detectCityPlaceholder() {
     const input = document.getElementById("home-city-input");
     try {
-        const r   = await fetch("https://ipapi.co/json/");
+        const r   = await fetch("/api/geo");   // same-origin; ipapi.co is blocked by ad-blockers
         const geo = await r.json();
         const city    = geo.city || "";
         const country = geo.country_name || "";
