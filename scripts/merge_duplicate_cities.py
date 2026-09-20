@@ -156,12 +156,27 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry run)")
     ap.add_argument("--limit", type=int, default=None, help="only the first N merge groups")
+    ap.add_argument("--pair", action="append", default=[], metavar="DUP_ID:CANON_ID",
+                    help="explicit merge (repeatable) for pairs the name key cannot see, e.g. Hebrew "
+                         "endonym rows: --pair 5101:236 (ירושלים → Jerusalem). Replaces the automatic plan.")
     args = ap.parse_args()
 
     db = SessionLocal()
     try:
         cities = load_cities(db)
-        merges = plan(cities)
+        if args.pair:
+            by_id = {c["id"]: c for c in cities}
+            merges = []
+            for pr in args.pair:
+                d_id, c_id = (int(x) for x in pr.split(":"))
+                if d_id not in by_id or c_id not in by_id:
+                    sys.exit(f"--pair {pr}: unknown city id")
+                if by_id[c_id]["canonical_city_id"]:
+                    sys.exit(f"--pair {pr}: canonical #{c_id} is itself an alias of #{by_id[c_id]['canonical_city_id']}")
+                merges.append({"country": by_id[c_id]["country"], "key": f"pair {pr}",
+                               "canonical": by_id[c_id], "dups": [by_id[d_id]]})
+        else:
+            merges = plan(cities)
         if args.limit:
             merges = merges[: args.limit]
         tot_dups = sum(len(m["dups"]) for m in merges)

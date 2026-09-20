@@ -23,7 +23,9 @@ def client(tmp_path):
     giv = City(name="Givatayim", country="Israel", latitude=32.0723, longitude=34.8100)
     yafo = City(name="Tel Aviv-yafo", country="Israel", latitude=32.078, longitude=34.794)   # alias row
     haifa = City(name="Haifa", country="Israel", latitude=32.7940, longitude=34.9896)
-    db.add_all([tlv, giv, yafo, haifa]); db.commit()
+    beer = City(name="Beersheba", country="Israel")          # no coords: position = venue centroid
+    db.add_all([tlv, giv, yafo, haifa, beer]); db.commit()
+    db.add_all([Venue(name=f"BS venue {i}", city_id=beer.id, latitude=31.25 + i * 0.001, longitude=34.79) for i in range(4)])
     yafo.canonical_city_id = tlv.id
     db.add_all([Venue(name=f"TLV venue {i}", city_id=tlv.id) for i in range(30)])
     db.add_all([Venue(name=f"Giv venue {i}", city_id=giv.id) for i in range(3)])
@@ -68,3 +70,8 @@ def test_nearest_skips_alias_rows_and_finds_haifa(client):
 def test_nearest_empty_when_far_from_everything(client):
     assert client.get("/api/geo/nearest", params={"lat": 51.5, "lon": -0.12}).json() == {}
     assert client.get("/api/geo/nearest", params={"lat": 95, "lon": 0}).status_code == 422
+
+
+def test_nearest_uses_venue_centroid_when_city_has_no_coords(client):
+    r = client.get("/api/geo/nearest", params={"lat": 31.252, "lon": 34.791}).json()
+    assert r["name"] == "Beersheba" and r["distance_km"] < 1

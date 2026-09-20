@@ -250,17 +250,25 @@ def _haversine_km(lat1, lon1, lat2, lon2) -> float:
 def nearest_city(db: Session, lat: float, lon: float) -> Optional[dict]:
     dlat = MAX_RADIUS_KM / 111.0
     dlon = MAX_RADIUS_KM / max(20.0, 111.0 * math.cos(math.radians(lat)))
-    rows = (db.query(City.id, City.name, City.country, City.latitude, City.longitude,
+    # A city's position is its own lat/lon, else the centroid of its
+    # geocoded venues (885 cities with venues had no coords on 2026-09-21,
+    # Jerusalem and Haifa among them; scripts/backfill_city_coords.py fills
+    # them, this keeps the endpoint honest meanwhile).
+    rows = (db.query(City.id, City.name, City.country,
+                     _f.coalesce(City.latitude, _f.avg(Venue.latitude)).label("lat"),
+                     _f.coalesce(City.longitude, _f.avg(Venue.longitude)).label("lon"),
                      _f.count(Venue.id).label("venues"))
             .outerjoin(Venue, Venue.city_id == City.id)
-            .filter(City.canonical_city_id.is_(None), City.latitude.isnot(None), City.longitude.isnot(None),
-                    City.latitude.between(lat - dlat, lat + dlat), City.longitude.between(lon - dlon, lon + dlon))
-            .group_by(City.id).all())
+            .filter(City.canonical_city_id.is_(None))
+            .group_by(City.id)
+            .having(_f.coalesce(City.latitude, _f.avg(Venue.latitude)).between(lat - dlat, lat + dlat))
+            .having(_f.coalesce(City.longitude, _f.avg(Venue.longitude)).between(lon - dlon, lon + dlon))
+            .all())
     cands = []
     for r in rows:
-        if abs(r.latitude) < 0.01 and abs(r.longitude) < 0.01:
+        if r.lat is None or r.lon is None or (abs(r.lat) < 0.01 and abs(r.lon) < 0.01):
             continue
-        d = _haversine_km(lat, lon, r.latitude, r.longitude)
+        d = _haversine_km(lat, lon, r.lat, r.lon)
         if d <= MAX_RADIUS_KM:
             cands.append((d, r))
     if not cands:
