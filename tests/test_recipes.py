@@ -238,6 +238,28 @@ def test_api_parse_and_cursor_pagination():
     assert b.purchase_link == "https://example.org/e/8"
 
 
+def test_api_parse_html_fragment_response():
+    body = {"status": True, "htmldata": """
+        <div class="event"><a class="title" href="/e/1">Fragment Show</a>
+          <span class="city">Tel Aviv</span>
+          <time class="date">22.09.2026</time>
+        </div>
+    """}
+    cfg = {
+        "kind": "api", "items": "htmldata", "html_item": ".event",
+        "fields": {
+            "name": ".title",
+            "source_id": {"sel": ".title", "attr": "href", "regex": "/e/(\\d+)"},
+            "venue_city": ".city",
+            "start_date": ".date",
+        },
+    }
+    rows = P.parse_api(body, cfg, "https://example.org/ajax")
+    assert rows[0]["name"] == "Fragment Show"
+    assert rows[0]["source_id"] == "1"
+    assert rows[0]["venue_city"] == "Tel Aviv"
+
+
 # ── jsonld + ics ─────────────────────────────────────────────────────────
 def test_jsonld_recipe_uses_existing_converter():
     html = f"""<html><head><script type="application/ld+json">

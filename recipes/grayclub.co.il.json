@@ -1,0 +1,94 @@
+{
+  "recipe_version": 1,
+  "domain": "grayclub.co.il",
+  "source_name": "grayclub_co_il",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "language": "he",
+  "timezone": "Asia/Jerusalem",
+  "priority": 45,
+  "cadence_hours": 48,
+  "entry": {
+    "urls": [
+      "https://grayclub.co.il/wp-admin/admin-ajax.php"
+    ],
+    "paginate": {
+      "mode": "page_param",
+      "param": "page",
+      "start": 0,
+      "max_pages": 80
+    }
+  },
+  "fetch": {
+    "method": "POST",
+    "body_format": "form",
+    "body": {
+      "action": "load_more_shows",
+      "posts_per_page": "{page}",
+      "load_more_shows": "6",
+      "categorytermid": "",
+      "discount_category": ""
+    },
+    "delay_seconds": 1,
+    "timeout": 30,
+    "headers": {
+      "Accept-Language": "he,en;q=0.8",
+      "X-Requested-With": "XMLHttpRequest"
+    }
+  },
+  "parse": {
+    "kind": "api",
+    "items": "htmldata",
+    "html_item": ".article-list",
+    "date_format": "%d.%m.%Y",
+    "fields": {
+      "name": ".singer-name",
+      "artist_name": ".singer-name",
+      "purchase_link": {
+        "sel": "a.divImg",
+        "attr": "href",
+        "absolute": true
+      },
+      "source_id": {
+        "sel": "a.divImg",
+        "attr": "href",
+        "regex": "/event/(\\d+/\\d+)"
+      },
+      "image_url": {
+        "sel": "a.divImg img",
+        "attr": "src",
+        "absolute": true
+      },
+      "venue_name": {
+        "const": "Gray Club"
+      },
+      "venue_city": ".club-title",
+      "venue_country": {
+        "const": "Israel"
+      },
+      "start_date": {
+        "sel": ".date-time",
+        "regex": "(\\d{1,2}\\.\\d{1,2}\\.\\d{4})"
+      },
+      "start_time": {
+        "sel": ".divContent p",
+        "regex": "(\\d{1,2}:\\d{2})"
+      },
+      "raw_categories": {
+        "sel": ".singer-name",
+        "all": true
+      }
+    }
+  },
+  "defaults": {
+    "price_currency": "ILS"
+  },
+  "city_aliases": {
+    "תל אביב": "Tel Aviv",
+    "תלאביב": "Tel Aviv",
+    "תל-אביב": "Tel Aviv",
+    "יהוד": "Yehud",
+    "מודיעין": "Modiin"
+  },
+  "notes": "Gray Club (מועדון הגריי), Israeli live-music and comedy venue group. The homepage renders the first 12 upcoming shows as .article-list cards; the public WordPress admin-ajax endpoint then returns six more cards per POST with action=load_more_shows and posts_per_page equal to the current offset (12, 18, 24, ...). Each card has the show title, club branch, date, doors time, image, and stable /event/{show}/{event}/ URL. The site exposes branches in Yehud, Modiin, and Tel Aviv; the venue is normalized to Gray Club and the branch is retained as venue_city. The listing provides doors time rather than show time, so it is used as start_time. No geo-wall observed from the Mac during authoring (2026-09-21)."
+}

@@ -79,6 +79,15 @@ def _strip_html(s: Any) -> Any:
 def parse_api(body: Any, cfg: dict, page_url: str) -> list[dict]:
     """body is the decoded JSON (dict or list). cfg = recipe.parse."""
     items = get_path(body, cfg.get("items", ""))
+    # A few WordPress load-more endpoints return JSON metadata plus an
+    # HTML fragment (usually under ``htmldata``).  Let an API recipe hand
+    # that fragment to the normal HTML parser instead of requiring a
+    # bespoke collector for an otherwise deterministic response.
+    if isinstance(items, str) and cfg.get("html_item"):
+        return parse_html(items, {
+            "item": cfg["html_item"],
+            "fields": cfg.get("fields") or {},
+        }, page_url)
     if isinstance(items, dict):
         # some APIs return {"123": {...}, "124": {...}}
         items = list(items.values())

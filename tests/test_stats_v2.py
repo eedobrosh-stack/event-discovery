@@ -1,7 +1,7 @@
 """Stats v2 endpoint (roadmap #5): one JSON, optional country scope."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,12 +24,17 @@ def client(tmp_path):
     db.add_all([il, uk]); db.commit()
     v1 = Venue(name="Barby", city_id=il.id); v2 = Venue(name="O2", city_id=uk.id)
     db.add_all([v1, v2]); db.commit()
-    nxt = date.today() + timedelta(days=3)
+    # The endpoint's "upcoming"/"aged out" split uses SQLite's date('now'),
+    # which is UTC — anchor the fixture to UTC "today" too, or this flakes
+    # whenever local time has crossed midnight but UTC hasn't (Israel is
+    # always ahead of UTC).
+    today = datetime.now(timezone.utc).date()
+    nxt = today + timedelta(days=3)
     db.add_all([
         Event(name="Local show", artist_name="Omri Mor", start_date=nxt, venue_id=v1.id, scrape_source="mevalim", source_id="a"),
         Event(name="Tour A", artist_name="Deep Purple", start_date=nxt, venue_id=v1.id, scrape_source="tmisrael", source_id="b"),
         Event(name="Tour B", artist_name="Deep Purple", start_date=nxt, venue_id=v2.id, scrape_source="ticketmaster", source_id="c"),
-        Event(name="Old", artist_name="Gone", start_date=date.today() - timedelta(days=1), venue_id=v2.id, scrape_source="x", source_id="d"),
+        Event(name="Old", artist_name="Gone", start_date=today - timedelta(days=1), venue_id=v2.id, scrape_source="x", source_id="d"),
     ])
     db.commit(); db.close()
 
