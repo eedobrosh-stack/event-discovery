@@ -1,0 +1,145 @@
+{
+  "recipe_version": 1,
+  "domain": "goshow.co.il",
+  "source_name": "goshow_co_il",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "language": "he",
+  "timezone": "Asia/Jerusalem",
+  "priority": 40,
+  "cadence_hours": 48,
+  "entry": {
+    "urls": [
+      "https://www.goshow.co.il/event/category/music",
+      "https://www.goshow.co.il/event/category/standup",
+      "https://www.goshow.co.il/event/category/kids",
+      "https://www.goshow.co.il/event/category/shows",
+      "https://www.goshow.co.il/event/category/lectures",
+      "https://www.goshow.co.il/event/category/festivals",
+      "https://www.goshow.co.il/event/category/misc"
+    ],
+    "paginate": {
+      "mode": "page_param",
+      "param": "page",
+      "max_pages": 10
+    }
+  },
+  "fetch": {
+    "method": "POST",
+    "body_format": "form",
+    "body": {
+      "page": "{page}"
+    },
+    "delay_seconds": 1.5,
+    "timeout": 30,
+    "headers": {
+      "Accept-Language": "he,en;q=0.8",
+      "X-Requested-With": "XMLHttpRequest"
+    }
+  },
+  "parse": {
+    "kind": "html",
+    "item": "li:has(.resultData)",
+    "date_format": "%d.%m.%Y",
+    "fields": {
+      "name": ".resultData .resultLiText a",
+      "artist_name": ".resultData .resultLiText a",
+      "purchase_link": {
+        "sel": ".resultData .resultLiText a",
+        "attr": "href",
+        "absolute": true
+      },
+      "source_id": {
+        "sel": ".resultData .resultLiText a",
+        "attr": "href",
+        "regex": "/event/(\\d+/\\d+)"
+      },
+      "description": ".resultData .resultLiText p",
+      "image_url": {
+        "sel": ".resultLiImg img",
+        "attr": "src",
+        "absolute": true
+      },
+      "venue_name": {
+        "sel": ".closeShowTitleNew",
+        "regex": "^\\s*([^,]+?)\\s*(?:,|$)"
+      },
+      "venue_city": {
+        "sel": ".closeShowTitleNew",
+        "regex": ",\\s*([^,]+?)\\s*$"
+      },
+      "start_date": {
+        "sel": ".closeShowDateNew",
+        "regex": "(\\d{1,2}\\.\\d{1,2}\\.\\d{4})"
+      },
+      "start_time": {
+        "sel": ".closeShowDateNew",
+        "regex": "(\\d{1,2}:\\d{2})"
+      }
+    }
+  },
+  "defaults": {
+    "venue_country": "Israel",
+    "price_currency": "ILS"
+  },
+  "city_aliases": {
+    "תל אביב-יפו": "Tel Aviv",
+    "תל אביב יפו": "Tel Aviv",
+    "תל אביב": "Tel Aviv",
+    "תל-אביב": "Tel Aviv",
+    "ת\"א": "Tel Aviv",
+    "ירושלים": "Jerusalem",
+    "חיפה": "Haifa",
+    "באר שבע": "Beersheba",
+    "באר-שבע": "Beersheba",
+    "נתניה": "Netanya",
+    "הרצליה": "Herzliya",
+    "רמת גן": "Ramat Gan",
+    "רמת-גן": "Ramat Gan",
+    "ראשון לציון": "Rishon LeZion",
+    "ראשון-לציון": "Rishon LeZion",
+    "פתח תקווה": "Petah Tikva",
+    "פתח-תקווה": "Petah Tikva",
+    "כפר סבא": "Kfar Saba",
+    "רחובות": "Rehovot",
+    "מודיעין": "Modiin",
+    "רעננה": "Raanana",
+    "חולון": "Holon",
+    "אילת": "Eilat",
+    "אשדוד": "Ashdod",
+    "אשקלון": "Ashkelon",
+    "גבעתיים": "Givatayim",
+    "בת ים": "Bat Yam",
+    "הוד השרון": "Hod HaSharon",
+    "רמת השרון": "Ramat HaSharon",
+    "קרית אונו": "Kiryat Ono",
+    "לוד": "Lod",
+    "רמלה": "Ramla",
+    "יבנה": "Yavne",
+    "נס ציונה": "Ness Ziona",
+    "ראש העין": "Rosh HaAyin",
+    "שוהם": "Shoham",
+    "יהוד": "Yehud",
+    "טבריה": "Tiberias",
+    "עפולה": "Afula",
+    "נהריה": "Nahariya",
+    "כרמיאל": "Karmiel",
+    "עכו": "Acre",
+    "צפת": "Safed",
+    "חדרה": "Hadera",
+    "פרדס חנה": "Pardes Hanna",
+    "זכרון יעקב": "Zichron Yaakov",
+    "בנימינה": "Binyamina",
+    "קיסריה": "Israel - Other",
+    "בית שמש": "Beit Shemesh",
+    "קרית גת": "Kiryat Gat",
+    "קרית מוצקין": "Kiryat Motzkin",
+    "קרית ביאליק": "Kiryat Bialik",
+    "קרית ים": "Kiryat Yam",
+    "קרית שמונה": "Kiryat Shmona",
+    "יקנעם": "Yokneam",
+    "מעלה אדומים": "Maale Adumim",
+    "אריאל": "Ariel"
+  },
+  "notes": "GoShow (Israeli ticketing platform, goshow.co.il). Instead of one platform_venues row per venue (35+ venue pages, and platform_registry has no goshow handler so such rows would never be scraped), the 7 category listings are crawled: each is a server-rendered list of 30 rows plus a jQuery load-more that POSTs {page: N} back to the same URL and returns <li> fragments (the ?page= query string is ignored, hence fetch.method POST + body {page} templated by page_param). An empty fragment ends pagination. Row = one dated show: name/link/blurb in .resultData, poster in the sibling .resultLiImg, '<venue>, <city>' in .closeShowTitleNew (city via city_aliases; every row carried a city on 2026-09-20), 'יום X dd.mm.yyyy בשעה HH:MM' in .closeShowDateNew. source_id = show/event ids from the /event/{show}/{event}/ URL. artist_name mirrors the title (mostly concerts and stand-up; the platform parser in scrapers/goshow.py does the same). No prices on the listing. Not geo-walled: 200 to the plain Supercaly UA from the Mac and no 403 trail on prod."
+}

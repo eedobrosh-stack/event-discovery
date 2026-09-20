@@ -148,7 +148,11 @@ def _walk_pages(fetcher: Fetcher, start_url: str, values: dict, doc: dict,
             break
         seen_urls.add(url)
         try:
-            resp = fetcher.get(url, values=values)
+            # page_param also exposes the page number to POST-body
+            # templating ({"page": "{page}"}): goshow.co.il's category
+            # load-more reads the page from the form body, not the URL.
+            vals = {**values, "page": page_no} if mode == "page_param" else values
+            resp = fetcher.get(url, values=vals)
         except BudgetExhausted as e:
             # keep everything parsed so far — a capped run is a partial
             # run, not a failed one

@@ -998,3 +998,34 @@ def test_normalize_collapses_internal_whitespace():
              "venue_name": " Hall\t A ", "_page_url": "u"}]
     ev = normalize(rows, _base()).events[0]
     assert (ev.name, ev.artist_name, ev.venue_name) == ("A lecture", 'ד"ר יערה קידר', "Hall A")
+
+
+def test_page_param_templates_page_into_post_body():
+    """goshow.co.il: the category load-more is a POST whose page number
+    lives in the form body, so page_param must expose {page} to the body
+    template (the URL's ?page= alone is ignored by that server)."""
+    class RecordingFetcher(FakeFetcher):
+        def get(self, url, *, values=None, method=None):
+            self.values_seen = getattr(self, "values_seen", []) + [dict(values or {})]
+            return super().get(url, values=values, method=method)
+
+    f = RecordingFetcher({
+        "https://example.org/events?page=1": HTML_P2,
+        "https://example.org/events?page=2": "<html></html>",
+    })
+    doc = _html_recipe(entry={"urls": ["https://example.org/events"],
+                              "paginate": {"mode": "page_param", "param": "page", "max_pages": 5}})
+    doc["fetch"] = {"method": "POST", "body_format": "form", "body": {"page": "{page}"}}
+    res = run_recipe(doc, fetcher=f)
+    assert res.fetched == 1
+    assert [v.get("page") for v in f.values_seen] == [1, 2]
+
+
+def test_fetcher_renders_page_into_form_body():
+    from app.services.recipes.fetch import Fetcher
+    fx = Fetcher({"method": "POST", "body_format": "form", "body": {"page": "{page}", "cat": "music"}})
+    try:
+        assert fx._render_body({"page": 3}) == {"page": "3", "cat": "music"}
+        assert fx._render_body({}) == {"page": "{page}", "cat": "music"}
+    finally:
+        fx.close()
