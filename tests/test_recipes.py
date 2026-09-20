@@ -991,3 +991,10 @@ def test_save_events_fills_missing_artist_on_existing_row(db, city):
     # an already-set artist is never overwritten
     reg._save_events([RawEvent(**base, artist_name="Someone Else")], city, db)
     assert db.query(Event).filter_by(source_id="diana-21").one().artist_name == 'ד"ר יערה קידר'
+
+
+def test_normalize_collapses_internal_whitespace():
+    rows = [{"name": "A  lecture", "artist_name": 'ד"ר יערה\n            קידר', "start_date": NEXT_WEEK,
+             "venue_name": " Hall\t A ", "_page_url": "u"}]
+    ev = normalize(rows, _base()).events[0]
+    assert (ev.name, ev.artist_name, ev.venue_name) == ("A lecture", 'ד"ר יערה קידר', "Hall A")

@@ -113,7 +113,8 @@ def _str(v: Any) -> Optional[str]:
         return None
     if isinstance(v, list):
         v = " ".join(str(x) for x in v if x is not None)
-    s = str(v).strip()
+    # multi-line HTML text ("ד\"ר יערה\n        קידר") → single spaces
+    s = re.sub(r"\s+", " ", str(v)).strip()
     return s or None
 
 
