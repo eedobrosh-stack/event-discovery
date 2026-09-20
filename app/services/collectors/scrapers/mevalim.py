@@ -45,6 +45,7 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dateutil_parser
 
 from app.services.collectors.base import RawEvent, default_end_time
+from app.services.dedup import normalize_title
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +495,47 @@ async def _fetch_page_events(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _content_key(ev: RawEvent) -> tuple:
+    """Provider-independent identity of a show: normalised title + date +
+    normalised venue + start_time. Two offer URLs for the same show (the
+    same smarticket event under its ``/<slug>_<hash>`` and ``/event/<id>``
+    forms, or a zappa-club vs ticket4u link) collapse onto one key."""
+    return (
+        normalize_title(ev.name),
+        ev.start_date,
+        normalize_title(ev.venue_name),
+        (ev.start_time or "").strip(),
+    )
+
+
+def dedup_raw_events(per_page: list[list[RawEvent]]) -> list[RawEvent]:
+    """Flatten the per-page batches and drop repeats.
+
+    A single show appears on both the /{category}/{slug}/ page and one or
+    more /{category}/{city}/ archives, so the same event is collected many
+    times across pages. Two keys, either one matching → drop:
+
+    * ``source_id`` (= offer URL) — also collapses the archive-page vs
+      detail-page *name* variants of the same show ("מיקי" vs "מיקי מוכתר"
+      share the offer URL).
+    * content key (title + date + venue + time) — collapses the same show
+      under two *URL* shapes. Without it, the 2026-09-19 smarticket URL
+      flip produced two RawEvents per show inside a single run, and both
+      reached the DB as "new"."""
+    seen_ids: set[str] = set()
+    seen_keys: set[tuple] = set()
+    deduped: list[RawEvent] = []
+    for batch in per_page:
+        for ev in batch:
+            key = _content_key(ev)
+            if ev.source_id in seen_ids or key in seen_keys:
+                continue
+            seen_ids.add(ev.source_id)
+            seen_keys.add(key)
+            deduped.append(ev)
+    return deduped
+
+
 async def scrape_mevalim() -> list[RawEvent]:
     """Fetch every show + archive page from the Mevalim sitemap and return
     a deduplicated list of upcoming RawEvents across all IL cities."""
@@ -506,17 +548,7 @@ async def scrape_mevalim() -> list[RawEvent]:
         tasks = [_fetch_page_events(client, sem, url) for url in urls]
         per_page = await asyncio.gather(*tasks)
 
-    # Flatten + dedup by (source_id = offer URL). A single show appears on
-    # both the /{category}/{slug}/ page and one or more /{category}/{city}/
-    # archives, so we collect the same event many times across pages.
-    seen: set[str] = set()
-    deduped: list[RawEvent] = []
-    for batch in per_page:
-        for ev in batch:
-            if ev.source_id in seen:
-                continue
-            seen.add(ev.source_id)
-            deduped.append(ev)
+    deduped = dedup_raw_events(per_page)
 
     with_city = sum(1 for e in deduped if e.venue_city)
     logger.info(

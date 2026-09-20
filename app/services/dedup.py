@@ -18,7 +18,7 @@ import unicodedata
 from datetime import date
 from difflib import SequenceMatcher
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.models import Event
 
@@ -81,6 +81,56 @@ def find_null_venue_duplicate(
         if normalize_title(ev_name) == key and _times_compatible(start_time, ev_time):
             return db.get(Event, ev_id)
     return None
+
+def find_venue_duplicate(
+    db: Session,
+    *,
+    name: str | None,
+    start_date: date | None,
+    venue_name: str | None = None,
+    venue_id: int | None = None,
+    start_time: str | None = None,
+    scrape_source: str | None = None,
+    ratio: float = 0.85,
+) -> Event | None:
+    """Return an existing Event that is the same show as the incoming one,
+    keyed on content rather than on ``(scrape_source, source_id)``.
+
+    Match = same ``start_date`` AND same venue (``venue_id`` equal, or
+    ``venue_name`` equal case-insensitively) AND same title (normalised
+    titles equal, or ``SequenceMatcher`` ratio > ``ratio``) AND
+    non-contradicting ``start_time`` (matinee vs evening stay apart).
+    ``scrape_source`` narrows to one source when given.
+
+    Why this exists (2026-09-20): the mevalim collector keys rows on the
+    ticket provider's offer URL. smarticket/mishkan7 switched their URL
+    shape from ``/<hebrew_slug>_<hash>`` to ``/event/<id>`` and one run
+    created 943 second rows for shows already in the table. Any source
+    whose source_id is a third-party URL is exposed to the same flip, so
+    the content key is the safety net every ingest path should consult
+    before creating a row."""
+    if not name or start_date is None or (venue_id is None and not venue_name):
+        return None
+    q = db.query(Event).filter(Event.start_date == start_date)
+    venue_pred = []
+    if venue_id is not None:
+        venue_pred.append(Event.venue_id == venue_id)
+    if venue_name:
+        venue_pred.append(func.lower(Event.venue_name) == venue_name.strip().lower())
+    q = q.filter(or_(*venue_pred))
+    if scrape_source:
+        q = q.filter(Event.scrape_source == scrape_source)
+    key = normalize_title(name)
+    low = name.strip().lower()
+    for ev in q.all():
+        if not _times_compatible(start_time, ev.start_time):
+            continue
+        if normalize_title(ev.name) == key:
+            return ev
+        if SequenceMatcher(None, low, (ev.name or "").lower()).ratio() > ratio:
+            return ev
+    return None
+
 
 SOURCE_PRIORITY: dict[str, int] = {
     "ticketmaster": 10,

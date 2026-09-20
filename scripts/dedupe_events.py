@@ -175,8 +175,11 @@ def _load_events(
     venue_id: int | None,
     start: date | None,
     end: date | None,
+    source: str | None = None,
 ) -> list[Event]:
     q = db.query(Event).join(Venue, Event.venue_id == Venue.id)
+    if source is not None:
+        q = q.filter(Event.scrape_source == source)
     if city_id is not None:
         q = q.filter(Venue.city_id == city_id)
     if venue_id is not None:
@@ -201,6 +204,7 @@ def _group_candidates(
     events: list[Event],
     *,
     null_venue: bool = False,
+    same_source: bool = False,
 ) -> list[list[Event]]:
     """Bucket by (start_date, venue_id, identifier). Within each bucket,
     keep only buckets where ≥2 distinct ``scrape_source`` values appear
@@ -211,7 +215,14 @@ def _group_candidates(
     ``venue_id IS NULL`` are considered, the bucket key is
     ``(start_date, normalize_title(name))`` and the distinct-source
     requirement is dropped (those duplicates are one source × many
-    pages)."""
+    pages).
+
+    ``same_source=True`` (``--source NAME`` mode, 2026-09-20) also drops
+    the distinct-source requirement, for the case where ONE collector
+    created two rows for one show because its source_id was a
+    third-party URL whose shape changed (mevalim: smarticket/mishkan7
+    ``/<slug>_<hash>`` → ``/event/<id>``, 943 second rows in one run).
+    The caller restricts the loaded rows to that one source."""
     buckets: dict[tuple, list[Event]] = {}
     for e in events:
         if null_venue:
@@ -230,7 +241,7 @@ def _group_candidates(
             key = (e.start_date, e.venue_id, ident)
         buckets.setdefault(key, []).append(e)
 
-    min_sources = 1 if null_venue else 2
+    min_sources = 1 if (null_venue or same_source) else 2
     clusters: list[list[Event]] = []
     for members in buckets.values():
         if len(members) < 2:
@@ -364,12 +375,18 @@ def main() -> None:
                         help="Inclusive lower bound on Event.start_date (YYYY-MM-DD).")
     parser.add_argument("--end-date", type=str, default=None,
                         help="Inclusive upper bound on Event.start_date (YYYY-MM-DD).")
+    parser.add_argument("--source", type=str, default=None,
+                        help="Intra-source mode: only rows with this scrape_source, and "
+                             "clusters no longer need two distinct sources (for a source "
+                             "whose source_id URL shape changed, e.g. mevalim).")
     parser.add_argument("--null-venue", action="store_true",
                         help="Venue-less mode: dedupe events with venue_id IS NULL on "
                              "(start_date, normalised name), any source mix.")
     args = parser.parse_args()
     if args.null_venue and (args.city_id or args.venue_id):
         parser.error("--null-venue cannot be combined with --city-id / --venue-id")
+    if args.null_venue and args.source:
+        parser.error("--null-venue cannot be combined with --source")
 
     start = _parse_date(args.start_date)
     end = _parse_date(args.end_date)
@@ -381,6 +398,7 @@ def main() -> None:
     if start: scope_parts.append(f"start≥{start}")
     if end: scope_parts.append(f"end≤{end}")
     if args.null_venue: scope_parts.append("venue_id IS NULL")
+    if args.source: scope_parts.append(f"source={args.source} (intra-source)")
     scope = ", ".join(scope_parts) if scope_parts else "ALL EVENTS"
     log.info(f"mode={mode} scope=[{scope}]")
 
@@ -389,9 +407,11 @@ def main() -> None:
         if args.null_venue:
             events = _load_null_venue_events(db, start, end)
         else:
-            events = _load_events(db, args.city_id, args.venue_id, start, end)
+            events = _load_events(db, args.city_id, args.venue_id, start, end,
+                                  source=args.source)
         log.info(f"loaded {len(events)} event rows in scope")
-        clusters = _group_candidates(events, null_venue=args.null_venue)
+        clusters = _group_candidates(events, null_venue=args.null_venue,
+                                     same_source=bool(args.source))
         log.info(f"duplicate clusters: {len(clusters)}")
         if not clusters:
             log.info("nothing to do.")
@@ -418,7 +438,9 @@ def main() -> None:
             plan.append(res)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        suffix = ("nullvenue_" if args.null_venue else "") + ("apply" if args.apply else "dryrun")
+        suffix = (("nullvenue_" if args.null_venue else "")
+                  + (f"{args.source}_" if args.source else "")
+                  + ("apply" if args.apply else "dryrun"))
         audit_path = ROOT / "data" / f"dedupe_events_{ts}_{suffix}.json"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         audit_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2, default=str))

@@ -1959,6 +1959,114 @@ def _resolve_mevalim_city(city_name: str, db) -> "City":
     return new_city
 
 
+def _refresh_mevalim_event(existing: "Event", raw, venue: "Venue") -> None:
+    """Refresh the mutable fields of an existing mevalim row from a fresh
+    scrape (date/venue/price can change; artist_name is backfilled)."""
+    existing.start_date = raw.start_date
+    existing.start_time = raw.start_time
+    existing.end_date = raw.end_date
+    existing.end_time = raw.end_time
+    existing.price = raw.price
+    existing.price_currency = raw.price_currency
+    existing.purchase_link = raw.purchase_link
+    existing.venue_id = venue.id
+    existing.venue_name = raw.venue_name
+    # Backfill artist_name on every refresh — older rows ingested before
+    # the mevalim collector populated this field get fixed as the daily
+    # job re-touches them, with no separate migration needed.
+    if raw.artist_name and not existing.artist_name:
+        existing.artist_name = raw.artist_name
+
+
+def _upsert_mevalim_event(db, raw, venue: "Venue", et_cache: dict) -> str:
+    """Save one scraped mevalim show. Returns one of
+    ``"saved" | "updated" | "migrated" | "skipped_dup"``.
+
+    Order of checks:
+
+    1. Exact ``(scrape_source='mevalim', source_id)`` hit → refresh in
+       place. ``source_id`` is the ticket provider's offer URL.
+    2. Content match via ``find_venue_duplicate`` (same date + same venue
+       + same/similar title + non-contradicting start_time):
+         * the match is a mevalim row → it is the same show under a
+           *different* offer URL. Refresh it AND move its ``source_id`` /
+           ``purchase_link`` to the URL the provider serves today, so
+           the next run hits check 1 again. (2026-09-19: smarticket and
+           mishkan7 flipped ``/<slug>_<hash>`` → ``/event/<id>``; the
+           exact check missed and 943 duplicate rows were created in
+           one run. The slug form carries no numeric id, so no key can
+           be derived from both shapes — the content match is the only
+           stable identity, and it self-heals the key.)
+         * the match belongs to another collector (e.g. smarticket) →
+           skip, exactly like ``CollectorRegistry._save_events`` does for
+           every other source. This job never went through the registry,
+           which is why its guard never fired here.
+    3. Otherwise create the row and tag its event type.
+
+    A different showtime on the same day (matinee vs evening) is a
+    different show: ``find_venue_duplicate`` refuses to match when both
+    start_times are set and differ, so it is saved as a new row."""
+    from app.models import Event as _Event
+    from app.services.dedup import find_venue_duplicate
+
+    existing = db.query(_Event).filter_by(
+        scrape_source="mevalim", source_id=raw.source_id
+    ).first()
+    if existing:
+        _refresh_mevalim_event(existing, raw, venue)
+        return "updated"
+
+    dup = find_venue_duplicate(
+        db,
+        name=raw.name,
+        start_date=raw.start_date,
+        venue_name=raw.venue_name,
+        venue_id=venue.id,
+        start_time=raw.start_time,
+    )
+    if dup is not None:
+        if dup.scrape_source == "mevalim":
+            _refresh_mevalim_event(dup, raw, venue)
+            dup.source_id = raw.source_id
+            db.flush()
+            return "migrated"
+        logger.debug(
+            f"mevalim: skipping duplicate of {dup.scrape_source} event {dup.id} "
+            f"{raw.name!r} @ {raw.start_date} {raw.venue_name!r}"
+        )
+        return "skipped_dup"
+
+    new_ev = _Event(
+        name=raw.name,
+        artist_name=raw.artist_name,
+        start_date=raw.start_date,
+        start_time=raw.start_time,
+        end_date=raw.end_date,
+        end_time=raw.end_time,
+        price=raw.price,
+        price_currency=raw.price_currency,
+        purchase_link=raw.purchase_link,
+        image_url=raw.image_url,
+        venue_id=venue.id,
+        venue_name=raw.venue_name,
+        scrape_source="mevalim",
+        source_id=raw.source_id,
+        is_online=False,
+    )
+    db.add(new_ev)
+    db.flush()
+
+    # Assign event type from the first raw_category that has a mapping.
+    # Categories come from the sitemap URL prefix so they're authoritative
+    # for the show's genre.
+    for cat_name in (raw.raw_categories or []):
+        et = et_cache.get(cat_name)
+        if et and et not in new_ev.event_types:
+            new_ev.event_types.append(et)
+            break
+    return "saved"
+
+
 async def collect_mevalim_job():
     """
     Scrape mevalim.co.il and save upcoming events across all IL cities.
@@ -1981,7 +2089,7 @@ async def collect_mevalim_job():
         db.add(log)
         db.commit()
         db.refresh(log)
-        found = saved = updated = admitted_no_city = 0
+        found = saved = updated = admitted_no_city = migrated = skipped_dup = 0
         # Track venue names that the scraper couldn't resolve to a known city
         # so we can extend _HEBREW_CITIES on the next sweep instead of guessing.
         from collections import Counter
@@ -2030,62 +2138,16 @@ async def collect_mevalim_job():
                         db.add(venue)
                         db.flush()
 
-                    # Dedup by canonical offer URL (scraper sets source_id to
-                    # tickets.mevalim.co.il/event/{id}).
-                    existing = db.query(Event).filter_by(
-                        scrape_source="mevalim", source_id=raw.source_id
-                    ).first()
-                    if existing:
-                        # Refresh core fields in case date/venue/price changed
-                        existing.start_date   = raw.start_date
-                        existing.start_time   = raw.start_time
-                        existing.end_date     = raw.end_date
-                        existing.end_time     = raw.end_time
-                        existing.price        = raw.price
-                        existing.price_currency = raw.price_currency
-                        existing.purchase_link = raw.purchase_link
-                        existing.venue_id     = venue.id
-                        existing.venue_name   = raw.venue_name
-                        # Backfill artist_name on every refresh — older
-                        # rows ingested before the mevalim collector
-                        # populated this field will gradually get fixed
-                        # as the daily job re-touches them, with no
-                        # separate migration needed.
-                        if raw.artist_name and not existing.artist_name:
-                            existing.artist_name = raw.artist_name
+                    outcome = _upsert_mevalim_event(db, raw, venue, et_cache)
+                    if outcome == "updated":
                         updated += 1
-                        continue
-
-                    new_ev = Event(
-                        name=raw.name,
-                        artist_name=raw.artist_name,
-                        start_date=raw.start_date,
-                        start_time=raw.start_time,
-                        end_date=raw.end_date,
-                        end_time=raw.end_time,
-                        price=raw.price,
-                        price_currency=raw.price_currency,
-                        purchase_link=raw.purchase_link,
-                        image_url=raw.image_url,
-                        venue_id=venue.id,
-                        venue_name=raw.venue_name,
-                        scrape_source="mevalim",
-                        source_id=raw.source_id,
-                        is_online=False,
-                    )
-                    db.add(new_ev)
-                    db.flush()
-
-                    # Assign event type from the first raw_category that has a
-                    # mapping. Categories come from the sitemap URL prefix so
-                    # they're authoritative for the show's genre.
-                    for cat_name in (raw.raw_categories or []):
-                        et = et_cache.get(cat_name)
-                        if et and et not in new_ev.event_types:
-                            new_ev.event_types.append(et)
-                            break
-
-                    saved += 1
+                    elif outcome == "migrated":
+                        updated += 1
+                        migrated += 1
+                    elif outcome == "skipped_dup":
+                        skipped_dup += 1
+                    else:
+                        saved += 1
                 except Exception as e:
                     logger.debug(
                         f"collect_mevalim_job event error {raw.name!r}: {e}"
@@ -2108,11 +2170,13 @@ async def collect_mevalim_job():
             )
             log.notes = (
                 f"found={found} saved={saved} updated={updated} "
+                f"migrated={migrated} skipped_dup={skipped_dup} "
                 f"admitted_no_city={admitted_no_city}{unresolved_suffix}"
             )
             logger.info(
                 f"collect_mevalim_job done: found={found} saved={saved} "
-                f"updated={updated} admitted_no_city={admitted_no_city}"
+                f"updated={updated} migrated={migrated} skipped_dup={skipped_dup} "
+                f"admitted_no_city={admitted_no_city}"
                 f"{unresolved_suffix}"
             )
         except Exception as e:
