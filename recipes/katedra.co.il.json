@@ -35,9 +35,6 @@
     "date_format": "%d.%m.%Y",
     "fields": {
       "name": "h3 a",
-      "artist_name": {
-        "sel": ".ktdra-author .author-caption h5"
-      },
       "purchase_link": {
         "sel": "h3 a",
         "attr": "href",
@@ -110,6 +107,8 @@
         },
         "artist_name": {
           "sel": ".ktdra-author2 .lecturers_div strong",
+          "all": true,
+          "join": ", ",
           "regex": "^[:\\s]*(.+?)\\s*$"
         }
       }
@@ -133,5 +132,5 @@
     "ים המלח": "Israel - Other",
     "הרי ירושלים": "Jerusalem"
   },
-  "notes": "הקתדרה במוז\"א (Eretz Israel Museum lecture centre, Tel Aviv). Cloudflare 403s Render's IP (probe 2026-09-19), so this recipe is fetched by the Mac relay (Israeli IP) and posted back. Listing = the theme's admin-ajax load-more call (all upcoming meetings in one response); series rows carry only the NEXT meeting date. Detail hop adds ticket price + series start time. Zoom-only rows → is_online. artist_name = the lecturer (listing author caption, else the detail page's lecturer block)."
+  "notes": "הקתדרה במוז\"א (Eretz Israel Museum lecture centre, Tel Aviv). Cloudflare 403s Render's IP (probe 2026-09-19), so this recipe is fetched by the Mac relay (Israeli IP) and posted back. Listing = the theme's admin-ajax load-more call (all upcoming meetings in one response); series rows carry only the NEXT meeting date. Detail hop adds ticket price + series start time. Zoom-only rows → is_online. artist_name = the lecturer(s), joined from the detail page's lecturer blocks (series can have several; the listing caption shows only the first, so it is not used)."
 }
