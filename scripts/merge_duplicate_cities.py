@@ -169,8 +169,13 @@ def main():
             merges = []
             for pr in args.pair:
                 d_id, c_id = (int(x) for x in pr.split(":"))
-                if d_id not in by_id or c_id not in by_id:
-                    sys.exit(f"--pair {pr}: unknown city id")
+                missing = [i for i in (d_id, c_id) if i not in by_id]
+                if missing:
+                    import unicodedata as _u
+                    heb = [f"#{c['id']} {c['name']} ({c['country']}, {c['venues']}v)" for c in cities
+                           if c["name"] and any("HEBREW" in _u.name(ch, "") for ch in c["name"])]
+                    sys.exit(f"--pair {pr}: city id(s) {missing} not in the cities table (already merged or deleted?). "
+                             f"Hebrew-named rows present now: {', '.join(heb) or 'none'}")
                 if by_id[c_id]["canonical_city_id"]:
                     sys.exit(f"--pair {pr}: canonical #{c_id} is itself an alias of #{by_id[c_id]['canonical_city_id']}")
                 merges.append({"country": by_id[c_id]["country"], "key": f"pair {pr}",
