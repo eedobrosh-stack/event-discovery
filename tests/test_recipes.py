@@ -973,3 +973,21 @@ def test_relay_endpoint_persists_through_the_recipe_path(tmp_path, monkeypatch):
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_save_events_fills_missing_artist_on_existing_row(db, city):
+    """A later run that learns the performer/lecturer must not be ignored
+    because the event row already exists (katedra lecturer, 2026-09-21)."""
+    from app.services.collectors.base import RawEvent
+    from app.services.collectors.registry import CollectorRegistry
+    from app.models import Event
+    reg = CollectorRegistry()
+    base = dict(name="Diana's fashion story", start_date=date.fromisoformat(NEXT_WEEK), start_time="18:00",
+                venue_name="Eretz Israel Museum", venue_city="Testville", source="katedra_co_il", source_id="diana-21")
+    assert reg._save_events([RawEvent(**base)], city, db) == 1
+    assert reg._save_events([RawEvent(**base, artist_name='ד"ר יערה קידר')], city, db) == 0
+    row = db.query(Event).filter_by(scrape_source="katedra_co_il", source_id="diana-21").one()
+    assert row.artist_name == 'ד"ר יערה קידר'
+    # an already-set artist is never overwritten
+    reg._save_events([RawEvent(**base, artist_name="Someone Else")], city, db)
+    assert db.query(Event).filter_by(source_id="diana-21").one().artist_name == 'ד"ר יערה קידר'

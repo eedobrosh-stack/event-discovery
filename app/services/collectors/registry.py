@@ -231,6 +231,11 @@ class CollectorRegistry:
                     if existing.start_time is None and raw.start_time is not None:
                         existing.start_time = raw.start_time
                         updated = True
+                    if not existing.artist_name and raw.artist_name:
+                        # a recipe learned who performs/lectures after the
+                        # row was first saved (katedra lecturer, 2026-09-21)
+                        existing.artist_name = raw.artist_name
+                        updated = True
                     # Backfill end_time if missing
                     if existing.end_time is None and raw.end_time is not None:
                         existing.end_time = raw.end_time
