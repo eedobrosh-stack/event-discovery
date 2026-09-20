@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supercaly · Stats v2</title>
+<link rel="icon" href="/favicon.png">
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --ink:#1d2333; --muted:#6b7280; --line:#e5e7eb; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --acc:#4f46e5; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:16px 24px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:2; }
+  header h1 { font-size:18px; margin:0; }
+  header .sub { color:var(--muted); font-size:12px; }
+  header .spacer { flex:1; }
+  select, button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  main { padding:16px 24px 48px; max-width:1400px; margin:0 auto; }
+  section { margin:18px 0 26px; }
+  h2 { font-size:15px; margin:0 0 10px; display:flex; align-items:center; gap:8px; }
+  h2 .hint { color:var(--muted); font-weight:normal; font-size:12px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .tile .k { color:var(--muted); font-size:12px; }
+  .tile .v { font-size:24px; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .tile .d { font-size:12px; color:var(--muted); }
+  .pos { color:var(--ok); } .neg { color:var(--bad); } .warn { color:var(--warn); }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; overflow:auto; }
+  .card h3 { margin:0 0 8px; font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .bar { height:6px; background:#e0e7ff; border-radius:3px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--acc); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; background:#eef2ff; color:var(--acc); }
+  .pill.bad { background:#fee2e2; color:var(--bad); } .pill.ok { background:#dcfce7; color:var(--ok); } .pill.warn { background:#fef3c7; color:var(--warn); }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  .err { color:var(--bad); }
+  details summary { cursor:pointer; color:var(--acc); }
+  .empty { color:var(--muted); font-style:italic; }
+  @media (max-width:640px) { main { padding:12px; } header { padding:12px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 Supercaly Stats <span class="pill">v2</span></h1>
+  <span class="sub" id="asof">loading…</span>
+  <span class="spacer"></span>
+  <label>Scope <select id="scope"><option value="Israel">Israel</option><option value="">Worldwide</option></select></label>
+  <button id="refresh">Refresh</button>
+  <a href="/stats.html" class="sub">classic stats →</a>
+</header>
+<main id="main"><p class="empty">Loading…</p></main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n == null ? '–' : Number(n).toLocaleString('en-US'));
+const pct = (n) => (n == null ? '–' : n.toFixed ? n.toFixed(1) + '%' : n + '%');
+const sign = (n) => (n > 0 ? '+' : '') + fmt(n);
+const cls = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : '');
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function tile(k, v, d, c) { return `<div class="tile"><div class="k">${esc(k)}</div><div class="v ${c || ''}">${v}</div>${d ? `<div class="d">${d}</div>` : ''}</div>`; }
+function table(cols, rows, opts = {}) {
+  if (!rows.length) return '<p class="empty">nothing here</p>';
+  const max = opts.barKey ? Math.max(...rows.map((r) => r[opts.barKey] || 0), 1) : 1;
+  return `<table><thead><tr>${cols.map((c) => `<th class="${c.n ? 'n' : ''}">${esc(c.label)}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map((r) => `<tr>${cols.map((c) => {
+      let v = c.fn ? c.fn(r) : r[c.key];
+      if (c.bar) v = `<div>${fmt(v)}</div><div class="bar"><i style="width:${Math.round(100 * (r[c.key] || 0) / max)}%"></i></div>`;
+      else if (c.n && !c.raw) v = fmt(v);
+      return `<td class="${c.n ? 'n' : ''}">${c.raw || c.bar ? v : esc(v)}</td>`;
+    }).join('')}</tr>`).join('') + '</tbody></table>';
+}
+function card(title, body) { return `<div class="card"><h3>${esc(title)}</h3>${body}</div>`; }
+
+function render(d) {
+  const scope = d.country || 'Worldwide';
+  $('asof').textContent = `${scope} · as of ${d.as_of.replace('T', ' ').slice(0, 16)} UTC`;
+  const t = d.totals, f = d.flow, e = d.enrichment, a = d.artists, ag = d.aggregation, fl = d.failures;
+  const html = [];
+
+  // a–c: totals + flow
+  html.push(`<section><h2>Upcoming events <span class="hint">${esc(scope)}</span></h2><div class="tiles">` +
+    tile('Total upcoming events', fmt(t.upcoming)) +
+    tile('Venues with upcoming events', fmt(t.venues_with_upcoming)) +
+    tile('Artists with upcoming events', fmt(t.artists_upcoming)) +
+    tile('Added last 24h', fmt(f.added_24h), `aged out ${fmt(f.aged_out_24h)} · net <b class="${cls(f.net_24h)}">${sign(f.net_24h)}</b>`) +
+    tile('Added last 7 days', fmt(f.added_7d), `aged out ${fmt(f.aged_out_7d)} · net <b class="${cls(f.net_7d)}">${sign(f.net_7d)}</b>`) +
+    '</div></section>');
+
+  // d, g, h, i: geography + artists
+  const bc = d.by_country;
+  html.push(`<section><h2>By country <span class="hint">always worldwide · ${bc.length} countries</span></h2><div class="grid2">` +
+    card('Upcoming events · venues · single-country artists', table([
+      { label: 'country', key: 'country' }, { label: 'upcoming', key: 'upcoming', n: true, bar: true },
+      { label: 'venues', key: 'venues', n: true }, { label: 'artists (only here)', key: 'artists_single_country', n: true }], bc.slice(0, 40), { barKey: 'upcoming' })) +
+    card('Artists', `<div class="tiles">` +
+      tile('Artists in one country', fmt(a.single_country)) + tile('International artists', fmt(a.international), '2+ countries with upcoming events') +
+      (d.country ? tile(`${esc(d.country)}: local`, fmt(a.in_scope_single)) + tile(`${esc(d.country)}: international`, fmt(a.in_scope_international)) : '') +
+      `</div><h3 style="margin-top:12px">Most international</h3>` +
+      table([{ label: 'artist', key: 'artist' }, { label: 'countries', key: 'countries', n: true }, { label: 'upcoming', key: 'upcoming', n: true }], a.top_international)) +
+    '</div></section>');
+
+  // j, k, l: taxonomy + enrichment
+  const tx = d.taxonomy;
+  html.push(`<section><h2>Taxonomy & enrichment <span class="hint">${esc(scope)}</span></h2><div class="tiles">` +
+    tile('Artists with a genre', pct(e.pct_genre), `${fmt(e.with_genre)} of ${fmt(e.artists_upcoming)} · classifier ${fmt(e.genre_via_classifier)} · performer tags ${fmt(e.genre_via_performer_tags)}`, e.pct_genre >= 80 ? 'pos' : 'warn') +
+    tile('Artists with a YouTube link', pct(e.pct_youtube), `${fmt(e.with_youtube)} of ${fmt(e.artists_upcoming)}`, e.pct_youtube >= 80 ? 'pos' : 'warn') +
+    tile('Events without any type', fmt(tx.untyped_events), t.upcoming ? pct(100 * tx.untyped_events / t.upcoming) + ' of upcoming' : '', tx.untyped_events / Math.max(t.upcoming, 1) > 0.2 ? 'warn' : '') +
+    `</div><div class="grid2" style="margin-top:12px">` +
+    card('Categories', table([{ label: 'category', key: 'name' }, { label: 'upcoming', key: 'upcoming', n: true, bar: true }], tx.categories, { barKey: 'upcoming' })) +
+    card('Event types (top 30)', table([{ label: 'type', key: 'name' }, { label: 'category', key: 'category' }, { label: 'upcoming', key: 'upcoming', n: true }], tx.event_types)) +
+    card('Genres (primary, top 25)', table([{ label: 'genre', key: 'genre' }, { label: 'upcoming', key: 'upcoming', n: true, bar: true }], tx.genres, { barKey: 'upcoming' })) +
+    card('Themes (non-music, top 25)', table([{ label: 'theme', key: 'theme' }, { label: 'upcoming', key: 'upcoming', n: true, bar: true }], tx.themes, { barKey: 'upcoming' })) +
+    '</div></section>');
+
+  // m: aggregation
+  const api = ag.api, rc = ag.recipes, hn = rc.health_now || {};
+  html.push(`<section><h2>Aggregation, last 24 hours <span class="hint">all channels are global</span></h2><div class="tiles">` +
+    tile('API attempts', fmt(api.total.attempts), `success ${pct(api.total.success_pct)}`) +
+    tile('API new events', fmt(api.total.new_events), `fetched ${fmt(api.total.fetched)} · already had ${fmt(api.total.already_had)}`) +
+    tile('Recipe runs', fmt(rc.attempted), `<span class="pos">${fmt(rc.ok)} ok</span> · ${fmt(rc.empty)} empty · <span class="${rc.failed ? 'neg' : ''}">${fmt(rc.failed)} failed</span>`) +
+    tile('Recipe new events', fmt(rc.saved), `fetched ${fmt(rc.fetched)} · already had ${fmt(rc.already_had)}`) +
+    tile('Recipes enabled now', fmt(Object.values(hn).reduce((s, x) => s + x, 0)), Object.entries(hn).map(([k, v]) => `${k} ${v}`).join(' · ')) +
+    `</div><div class="grid2" style="margin-top:12px">` +
+    card('API collectors', table([
+      { label: 'source', key: 'source' }, { label: 'attempts', key: 'attempts', n: true },
+      { label: 'success', key: 'success_pct', n: true, raw: true, fn: (r) => pct(r.success_pct) },
+      { label: 'fetched', key: 'fetched', n: true }, { label: 'new', key: 'new_events', n: true }, { label: 'already had', key: 'already_had', n: true }], api.by_source)) +
+    card('Other jobs', table([
+      { label: 'job', key: 'job' }, { label: 'runs', key: 'runs', n: true },
+      { label: 'ok / failed', key: 'success', n: true, raw: true, fn: (r) => `<span class="pos">${r.success}</span> / <span class="${r.failed ? 'neg' : ''}">${r.failed}</span>` },
+      { label: 'found', key: 'fetched', n: true }, { label: 'saved', key: 'saved', n: true }], ag.other_jobs)) +
+    card('New rows by source (24h, all channels)', table([{ label: 'source', key: 'source' }, { label: 'new rows', key: 'new_rows', n: true, bar: true }], ag.new_rows_by_source, { barKey: 'new_rows' })) +
+    (rc.failed_domains.length ? card('Recipe runs that failed (24h)', `<div class="mono">${rc.failed_domains.map(esc).join(', ')}</div>`) : '') +
+    '</div></section>');
+
+  // n: failures
+  html.push(`<section><h2>Fail area <span class="hint">${fmt(fl.failing_recipes)} recipes in error/drift · ${fl.failed_jobs_24h.length} failed job runs in 24h</span></h2><div class="grid2">` +
+    fl.by_class.map((c) => card(`${c.class} · ${c.count}`,
+      `<p style="margin:0 0 8px"><b>Fix:</b> ${esc(c.remedy)}</p>` +
+      table([
+        { label: 'domain', key: 'domain', raw: true, fn: (r) => `${esc(r.domain)}${r.relay ? ' <span class="pill">relay</span>' : ''}` },
+        { label: 'status', key: 'status', raw: true, fn: (r) => `<span class="pill ${r.status === 'error' ? 'bad' : 'warn'}">${esc(r.status)}</span> ×${r.consecutive_errors ?? 0}` },
+        { label: 'saved total', key: 'saved_total', n: true },
+        { label: 'last error', key: 'error', raw: true, fn: (r) => `<details><summary>show</summary><div class="mono err">${esc(r.error)}</div></details>` }], c.domains))).join('') +
+    (fl.failed_jobs_24h.length ? card('Failed job runs (24h)', table([
+      { label: 'job', key: 'job' }, { label: 'detail', key: 'detail' }, { label: 'at', key: 'at' },
+      { label: 'notes', key: 'notes', raw: true, fn: (r) => `<span class="mono">${esc(r.notes)}</span>` }], fl.failed_jobs_24h)) : '') +
+    '</div></section>');
+
+  $('main').innerHTML = html.join('');
+}
+
+async function load() {
+  const country = $('scope').value;
+  $('main').innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const r = await fetch('/api/stats/v2' + (country ? '?country=' + encodeURIComponent(country) : ''));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    render(await r.json());
+  } catch (e) {
+    $('main').innerHTML = `<p class="err">Failed to load: ${esc(e.message)}</p>`;
+  }
+}
+try { const saved = localStorage.getItem('stats_v2_scope'); if (saved !== null) $('scope').value = saved; } catch {}
+$('scope').addEventListener('change', () => { try { localStorage.setItem('stats_v2_scope', $('scope').value); } catch {} load(); });
+$('refresh').addEventListener('click', load);
+load();
+</script>
+</body>
+</html>
