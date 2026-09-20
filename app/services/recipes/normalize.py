@@ -150,9 +150,16 @@ def normalize(rows: list[dict], recipe: dict) -> NormalizeResult:
         # JSON-LD rows: delegate to the proven converter.
         if "_jsonld" in row:
             from app.services.collectors._jsonld import jsonld_to_raw_event
+            ld = row["_jsonld"]
+            # parse.id_seed "url": hash the event's own url/@id instead of the
+            # listing URL, so paginated listings (makore ?pages=N, tickchak
+            # category pages) don't mint a new id when an event shifts page.
+            seed = None
+            if parse_cfg.get("id_seed") == "url":
+                seed = ld.get("url") or ld.get("@id") or None
             try:
-                ev = jsonld_to_raw_event(row["_jsonld"], source_name=source,
-                                         source_url=page_url)
+                ev = jsonld_to_raw_event(ld, source_name=source,
+                                         source_url=page_url, tz=tz, id_seed=seed)
             except Exception as e:  # defensive: one bad block ≠ dead page
                 res.dropped["jsonld_error"] += 1
                 res.samples.setdefault("jsonld_error", str(e)[:200])
@@ -168,6 +175,16 @@ def normalize(rows: list[dict], recipe: dict) -> NormalizeResult:
             vc = _str(ev.venue_city)
             if vc and aliases:
                 ev.venue_city = aliases.get(vc, aliases.get(vc.replace("-", " "), vc))
+            # parse.prefer_offer_url: aggregators (muzi, makore) link their own
+            # event page in `url` and the ticket seller in offers.url — the
+            # outbound seller is the purchase link the user wants.
+            if parse_cfg.get("prefer_offer_url"):
+                offers = ld.get("offers")
+                if isinstance(offers, list):
+                    offers = offers[0] if offers else None
+                ou = offers.get("url") if isinstance(offers, dict) else None
+                if isinstance(ou, str) and ou.startswith(("http://", "https://")):
+                    ev.purchase_link = ou
             res.events.append(ev)
             continue
 

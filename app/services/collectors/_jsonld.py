@@ -175,7 +175,20 @@ _LOAD_MORE_RE = re.compile(
 )
 
 
-def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str):
+def _to_zone(dt, tz: str):
+    """Offset-aware datetime → wall clock in `tz` (naive). Naive input or
+    an unknown zone name → unchanged."""
+    if dt is None or dt.tzinfo is None:
+        return dt
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.astimezone(ZoneInfo(tz)).replace(tzinfo=None)
+    except Exception:
+        return dt
+
+
+def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str, *,
+                        tz: Optional[str] = None, id_seed: Optional[str] = None):
     """Convert a single schema.org Event-shaped JSON-LD dict to a RawEvent.
 
     Generic — works for any source that emits well-formed JSON-LD without
@@ -188,6 +201,17 @@ def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str):
       • are explicitly cancelled / online-only
 
     Returns ``None`` for those — caller filters with `if ev` to skip.
+
+    ``tz`` (IANA name, recipes pass recipe.timezone): when the JSON-LD
+    carries an offset-aware datetime it is converted to that zone before
+    date/time are read — makore.co.il (2026-09-20) publishes local shows as
+    UTC "…T18:30:00.000Z", i.e. a 21:30 Tel Aviv gig would land at 18:30.
+    Naive datetimes are trusted as local and left alone.
+
+    ``id_seed`` replaces ``source_url`` in the source_id hash. Paginated
+    listings move an event from ?page=1 to ?page=2 between runs, which
+    used to mint a new id (and a duplicate row) each time; recipes with
+    ``parse.id_seed: "url"`` pass the event's own url/@id instead.
     """
     from datetime import datetime, date
     from app.services.collectors.base import RawEvent
@@ -220,6 +244,9 @@ def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str):
                                              datetime.min.time()))
         except (ValueError, TypeError):
             pass
+    if tz:
+        start_dt = _to_zone(start_dt, tz)
+        end_dt = _to_zone(end_dt, tz)
 
     location = ev.get("location") or {}
     if isinstance(location, list):
@@ -283,12 +310,15 @@ def jsonld_to_raw_event(ev: dict, source_name: str, source_url: str):
         image = None
 
     name = (ev.get("name") or "Untitled").strip()
-    purchase_link = ev.get("url") or source_url
+    # Some portals (live.tickchak.co.il) put the event page only under
+    # offers.url; better than falling back to the listing page.
+    offer_url = offers.get("url") if isinstance(offers, dict) else None
+    purchase_link = ev.get("url") or offer_url or source_url
 
     # Stable source_id mirrors the architecture-doc pattern for cross-
     # collector dedup: hash(scrape_source | source_url | name | start_date).
     import hashlib
-    seed = f"{source_name}|{source_url}|{name.lower().strip()}|{start_str[:10]}"
+    seed = f"{source_name}|{id_seed or source_url}|{name.lower().strip()}|{start_str[:10]}"
     sid = source_name + "_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
 
     has_time = "T" in start_str

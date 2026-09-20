@@ -53,6 +53,19 @@ table on Render is the runtime copy. Full schema and rationale:
 | `{"const": "Barby"}` | constant |
 | api kind: `"venue.location.lat"`, `"performers[0].name"`, `"tags[*].name"` | dotted path into each item |
 
+jsonld kind knobs: `"id_seed": "url"` hashes the event's own `url`/`@id`
+into `source_id` instead of the listing URL (use on paginated listings —
+makore `?pages=N`, tickchak category pages — or an event that shifts page
+gets a new id and a duplicate row); `"prefer_offer_url": true` makes the
+seller's `offers.url` the purchase_link when the aggregator's own page is in
+`url` (muzi, makore). Offset-aware JSON-LD datetimes are converted to the
+recipe `timezone` (makore publishes 21:30 Tel Aviv as `18:30Z`).
+
+`detail.overwrite: ["purchase_link"]` lets the detail page REPLACE fields
+the listing already filled (default: detail only fills gaps) — needed when
+the listing link is the aggregator page you hop through and the detail
+page holds the outbound ticket URL.
+
 Pseudo-fields: `start_datetime` / `end_datetime` (one ISO/epoch value the
 runner splits into date + time). `source_id` is strongly recommended
 (slug or numeric id from the URL); without it the runner hashes

@@ -196,6 +196,11 @@ def validate_recipe(doc: dict) -> list[str]:
             for n, spec in fields.items():
                 errs += _field_spec_errors(n, spec, "parse.fields")
             provided = set(fields) | set((parse.get("page_fields") or {}) if isinstance(parse.get("page_fields"), dict) else {})
+            # a detail hop may supply the required fields (muzi.co.il: the
+            # listing card has no date, the event page's JSON-LD does)
+            dfields = ((doc.get("detail") or {}).get("parse") or {}).get("fields") if isinstance(doc.get("detail"), dict) else None
+            if isinstance(dfields, dict):
+                provided |= set(dfields)
             if "name" not in provided:
                 errs.append("parse.fields.name: required (or in parse.page_fields)")
             if not ({"start_date", "start_datetime"} & provided):
@@ -211,6 +216,11 @@ def validate_recipe(doc: dict) -> list[str]:
                 errs += _field_spec_errors(n, spec, "parse.page_fields")
     if kind in ("html", "api") and "ongoing_if_end_only" in parse and not isinstance(parse["ongoing_if_end_only"], bool):
         errs.append("parse.ongoing_if_end_only: true|false")
+    if kind == "jsonld":
+        if "id_seed" in parse and parse["id_seed"] not in ("page", "url"):
+            errs.append("parse.id_seed: 'page' (default, listing URL) | 'url' (event url/@id)")
+        if "prefer_offer_url" in parse and not isinstance(parse["prefer_offer_url"], bool):
+            errs.append("parse.prefer_offer_url: true|false")
 
     # detail
     detail = doc.get("detail")
@@ -228,6 +238,10 @@ def validate_recipe(doc: dict) -> list[str]:
             mpr = detail.get("max_per_run", 60)
             if not isinstance(mpr, int) or mpr < 0 or mpr > 500:
                 errs.append("detail.max_per_run: int 0..500")
+            ow = detail.get("overwrite")
+            if ow is not None and (not isinstance(ow, list)
+                                   or not all(isinstance(f, str) and f in RAW_EVENT_FIELDS for f in ow)):
+                errs.append("detail.overwrite: list of RawEvent fields the detail page may replace")
 
     ca = doc.get("city_aliases")
     if ca is not None and (not isinstance(ca, dict) or not all(isinstance(v, str) for v in ca.values())):

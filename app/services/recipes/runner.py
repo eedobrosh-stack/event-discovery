@@ -221,6 +221,11 @@ def _detail_hop(fetcher: Fetcher, rows: list[dict], doc: dict, result: RunResult
     dp = det.get("parse") or {}
     kind = dp.get("kind", "html")
     want = set((dp.get("fields") or {}).keys())
+    # detail.overwrite: fields the detail page REPLACES even when the listing
+    # filled them (muzi.co.il: the listing link is the muzi page — needed as
+    # url_field to reach the detail page — but the seller's outbound ticket
+    # URL on that page is the purchase_link we want).
+    overwrite = set(det.get("overwrite") or [])
     done = 0
     for row in rows:
         if done >= budget:
@@ -229,7 +234,8 @@ def _detail_hop(fetcher: Fetcher, rows: list[dict], doc: dict, result: RunResult
         if not isinstance(url, str) or not url.startswith("http"):
             continue
         # skip when the listing already provided every detail field
-        if want and want <= set(k for k, v in row.items() if v not in (None, "")):
+        pending = {f for f in want if f in overwrite or row.get(f) in (None, "", [])}
+        if want and not pending:
             continue
         if only_new and is_new is not None:
             sid = row.get("source_id")
@@ -265,7 +271,7 @@ def _detail_hop(fetcher: Fetcher, rows: list[dict], doc: dict, result: RunResult
             for k, v in sub_rows[0].items():
                 if k.startswith("_"):
                     continue
-                if row.get(k) in (None, "", []) and v not in (None, "", []):
+                if (k in overwrite or row.get(k) in (None, "", [])) and v not in (None, "", []):
                     row[k] = v
 
 

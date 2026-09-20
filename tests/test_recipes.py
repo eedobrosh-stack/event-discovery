@@ -1041,3 +1041,85 @@ def test_jsonld_events_get_city_aliases_too():
     rows = [{"_jsonld": ld, "_page_url": "https://example.org/events"}]
     ev = normalize(rows, doc).events[0]
     assert ev.venue_city == "Haifa"
+
+
+# ── 2026-09-20 additions: id_seed / prefer_offer_url / tz / offers.url / detail.overwrite ──
+def _ld_page(name, start, url=None, offer_url=None, at_id=None):
+    ev = {"@context": "https://schema.org", "@type": "Event", "name": name, "startDate": start,
+          "location": {"@type": "Place", "name": "Hall", "address": {"addressLocality": "חיפה"}}}
+    if url:
+        ev["url"] = url
+    if at_id:
+        ev["@id"] = at_id
+    if offer_url:
+        ev["offers"] = {"@type": "Offer", "url": offer_url, "price": 120, "priceCurrency": "ILS"}
+    return f'<html><head><script type="application/ld+json">{json.dumps(ev, ensure_ascii=False)}</script></head><body/></html>'
+
+
+def test_jsonld_id_seed_url_is_stable_across_listing_pages():
+    """The same event on ?page=1 today and ?page=2 tomorrow must keep its id."""
+    p1 = _ld_page("Show", f"{NEXT_WEEK}T20:00:00+03:00", url="https://example.org/e/42")
+    base = _base(parse={"kind": "jsonld"})
+    a = run_recipe(base, fetcher=FakeFetcher({"https://example.org/events": p1})).events[0]
+    b = run_recipe(dict(base, entry={"urls": ["https://example.org/events?page=2"]}),
+                   fetcher=FakeFetcher({"https://example.org/events?page=2": p1})).events[0]
+    assert a.source_id != b.source_id          # default: seeded with the listing URL
+    seeded = _base(parse={"kind": "jsonld", "id_seed": "url"})
+    c = run_recipe(seeded, fetcher=FakeFetcher({"https://example.org/events": p1})).events[0]
+    d = run_recipe(dict(seeded, entry={"urls": ["https://example.org/events?page=2"]}),
+                   fetcher=FakeFetcher({"https://example.org/events?page=2": p1})).events[0]
+    assert c.source_id == d.source_id
+    assert validate_recipe(_base(parse={"kind": "jsonld", "id_seed": "bogus"}))
+
+
+def test_jsonld_prefer_offer_url_and_offers_fallback():
+    # no `url` at all → offers.url beats the listing page as purchase_link
+    page = _ld_page("Show", f"{NEXT_WEEK}T20:00:00+03:00", offer_url="https://seller.test/buy/1",
+                    at_id="https://example.org/e/1#event")
+    ev = run_recipe(_base(parse={"kind": "jsonld"}),
+                    fetcher=FakeFetcher({"https://example.org/events": page})).events[0]
+    assert ev.purchase_link == "https://seller.test/buy/1"
+    # own url present → default keeps it; prefer_offer_url switches to the seller
+    page2 = _ld_page("Show", f"{NEXT_WEEK}T20:00:00+03:00", url="https://example.org/e/2",
+                     offer_url="https://seller.test/buy/2")
+    ev2 = run_recipe(_base(parse={"kind": "jsonld"}),
+                     fetcher=FakeFetcher({"https://example.org/events": page2})).events[0]
+    assert ev2.purchase_link == "https://example.org/e/2"
+    ev3 = run_recipe(_base(parse={"kind": "jsonld", "prefer_offer_url": True}),
+                     fetcher=FakeFetcher({"https://example.org/events": page2})).events[0]
+    assert ev3.purchase_link == "https://seller.test/buy/2"
+    assert ev3.venue_city == "Haifa"           # Hebrew alias map still applied
+
+
+def test_jsonld_utc_times_are_converted_to_recipe_timezone():
+    # makore.co.il publishes 21:30 Tel Aviv as 18:30Z
+    page = _ld_page("Late Show", f"{NEXT_WEEK}T18:30:00.000Z", url="https://example.org/e/3")
+    ev = run_recipe(_base(parse={"kind": "jsonld"}),
+                    fetcher=FakeFetcher({"https://example.org/events": page})).events[0]
+    assert ev.start_time == "21:30" and ev.start_date.isoformat() == NEXT_WEEK
+    # a recipe without timezone leaves the clock alone
+    doc = _base(parse={"kind": "jsonld"})
+    doc.pop("timezone")
+    ev2 = run_recipe(doc, fetcher=FakeFetcher({"https://example.org/events": page})).events[0]
+    assert ev2.start_time == "18:30"
+
+
+def test_detail_hop_overwrite_replaces_listing_value():
+    listing = f"""<div class="ev"><a class="t" href="/event/1">A</a><time datetime="{NEXT_WEEK}">x</time></div>"""
+    doc = _html_recipe(
+        entry={"urls": ["https://example.org/events"]},
+        detail={"url_field": "purchase_link", "max_per_run": 5, "only_new": False,
+                "overwrite": ["purchase_link"],
+                "parse": {"kind": "html", "fields": {
+                    "purchase_link": {"sel": "a.buy", "attr": "href"},
+                    "artist_name": ".artist"}}})
+    f = FakeFetcher({
+        "https://example.org/events": listing,
+        "https://example.org/event/1": "<a class='buy' href='https://seller.test/x'>buy</a><div class='artist'>Band</div>",
+    })
+    res = run_recipe(doc, fetcher=f)
+    assert res.detail_fetched == 1
+    ev = res.events[0]
+    assert ev.purchase_link == "https://seller.test/x" and ev.artist_name == "Band"
+    bad = dict(doc, detail=dict(doc["detail"], overwrite=["venue"]))
+    assert any("detail.overwrite" in e for e in validate_recipe(bad))
