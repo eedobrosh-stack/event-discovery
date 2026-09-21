@@ -384,6 +384,26 @@ def _run_migrations():
     from sqlalchemy import text, inspect
     insp = inspect(engine)
 
+    # City-scoped venue aliases keep confirmed spelling/language variants
+    # attached to one canonical venue so ingestion does not recreate rows
+    # after a dedupe pass (e.g. Shablul Jazz Club / מועדון שבלול).
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS venue_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue_id INTEGER NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+                city_id INTEGER NOT NULL REFERENCES cities(id) ON DELETE CASCADE,
+                alias VARCHAR(255) NOT NULL,
+                normalized_alias VARCHAR(255) NOT NULL,
+                source VARCHAR(100),
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_venue_alias_city_key UNIQUE (city_id, normalized_alias)
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_venue_alias_venue ON venue_aliases(venue_id)"))
+        conn.commit()
+
     existing_venue_cols = [c["name"] for c in insp.get_columns("venues")]
     if "default_event_type_id" not in existing_venue_cols:
         with engine.connect() as conn:

@@ -68,11 +68,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import logging
 import math
 import re
 import sys
+import unicodedata
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -148,6 +151,22 @@ def _norm_address(s: str | None) -> str:
     return re.sub(r"[,.;]+$", "", s).strip()
 
 
+def _norm_venue_name(s: str | None) -> str:
+    """Name key used by the production QA check.
+
+    Unlike the old deduper, this folds punctuation, accents, HTML-ish
+    separators, and whitespace before comparing names.  It intentionally
+    keeps non-Latin letters so Hebrew venue names remain searchable.
+    """
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = s.replace("&", " and ")
+    s = re.sub(r"[^\w\s]+", " ", s, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Distance in metres between two lat/lon points."""
     R = 6371000.0
@@ -182,12 +201,18 @@ def _populated_count(v: dict) -> int:
 # signals. Forced merges via --merge-pair bypass this guard.
 HALL_KEYWORDS = [
     "אולם", "אודיטוריום", "במה",         # he: hall, auditorium, stage
-    "Hall", "Auditorium", "Stage", "Studio",
+    "Hall", "Auditorium", "Stage", "Studio", "Room", "Saal",
+    "Warehouse", "Factory", "Upstairs", "Downstairs", "Night",
 ]
 _HALL_KW_RE = re.compile(
     r"(?:" + "|".join(re.escape(k) for k in HALL_KEYWORDS) + r")"
+    r"(?!\w)"
     r"[\s\-]*(?:ע\"ש\s+|של\s+)?"
-    r"([\w\"'\-]+)",
+    r"([\w\"'\-]+)?",
+    re.IGNORECASE,
+)
+_PRE_HALL_RE = re.compile(
+    r"([\w\"'\-]+)\s+(?:Hall|Room|Saal|Warehouse|Factory|Arena)(?!\w)",
     re.IGNORECASE,
 )
 _PARENS_RE = re.compile(r"\(([^)]+)\)")
@@ -214,9 +239,17 @@ def _extract_hall_ids(name: str | None) -> set[str]:
         if tok:
             out.add(tok)
     for m in _HALL_KW_RE.finditer(name):
-        tok = _norm_hall_token(m.group(1))
+        tok = _norm_hall_token(m.group(1) or m.group(0))
         if tok:
             out.add(tok)
+    preceding_ids = set()
+    for m in _PRE_HALL_RE.finditer(name):
+        tok = _norm_hall_token(m.group(1))
+        if tok:
+            preceding_ids.add(tok)
+    if preceding_ids:
+        out.difference_update({"hall", "room", "saal", "arena"})
+        out.update(preceding_ids)
     return out
 
 
@@ -399,6 +432,185 @@ def _build_clusters(
     return out
 
 
+def _build_name_clusters(db, venues: list[dict]) -> list[tuple[list[dict], list[dict]]]:
+    """Find same-city venue name variants with indexed candidate blocking.
+
+    Exact/near-identical normalized names are sufficient on their own.
+    Short-name containment (e.g. ``AMAMA`` vs ``AMAMA Jazz Room``) also
+    requires corroboration: shared event identity, URL, address, or geo.
+    This catches the AMAMA family without collapsing unrelated venues such
+    as ``Sphere`` and ``Life Burns Faster at Sphere``.
+    """
+    by_id = {v["id"]: v for v in venues}
+    parent = {v["id"]: v["id"] for v in venues}
+    pair_signals: dict[tuple[int, int], dict] = {}
+    signatures: dict[int, set[tuple[str, str]]] = {v["id"]: set() for v in venues}
+    rows = db.execute(text(
+        "SELECT venue_id, start_date, LOWER(COALESCE(NULLIF(artist_name, ''), name)) "
+        "FROM events WHERE venue_id IS NOT NULL"
+    )).fetchall()
+    for venue_id, start_date, ident in rows:
+        if venue_id in signatures and ident:
+            signatures[venue_id].add((str(start_date), str(ident).strip()))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    by_city: dict[int, list[dict]] = {}
+    for v in venues:
+        by_city.setdefault(v["city_id"], []).append(v)
+
+    for group in by_city.values():
+        keyed = [(v, _norm_venue_name(v["name"])) for v in group]
+        blocks: dict[str, list[tuple[dict, str]]] = {}
+        for v, name in keyed:
+            if name:
+                blocks.setdefault(name[:5], []).append((v, name))
+        for block in blocks.values():
+            if len(block) < 2 or len(block) > 500:
+                continue
+            for i, (a, na) in enumerate(block):
+                for b, nb in block[i + 1:]:
+                    if _is_sub_venue_distinction(a["name"], b["name"]):
+                        continue
+                    exact = na == nb
+                    ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+                    near = ratio >= 0.92
+                    contained = (na in nb or nb in na) and min(len(na), len(nb)) >= 4
+                    shared_events = signatures[a["id"]] & signatures[b["id"]]
+                    sig = {
+                        "name": exact or near,
+                        "name_ratio": round(ratio, 3),
+                        "shared_events": len(shared_events),
+                        "url": bool(_norm_url(a["website_url"]) and _norm_url(a["website_url"]) == _norm_url(b["website_url"])),
+                        "address": bool(_norm_address(a["street_address"]) and _norm_address(a["street_address"]) == _norm_address(b["street_address"])),
+                        "geo": False,
+                    }
+                    if all(a[c] is not None for c in ("latitude", "longitude")) and all(b[c] is not None for c in ("latitude", "longitude")):
+                        sig["geo"] = _haversine_m(a["latitude"], a["longitude"], b["latitude"], b["longitude"]) <= 60
+                    supported = bool(shared_events) or sig["url"] or sig["address"] or sig["geo"]
+                    if not (exact or near or (contained and supported)):
+                        continue
+                    pair = (a["id"], b["id"]) if a["id"] < b["id"] else (b["id"], a["id"])
+                    pair_signals[pair] = sig
+                    union(*pair)
+
+    groups: dict[int, list[dict]] = {}
+    for v in venues:
+        root = find(v["id"])
+        groups.setdefault(root, []).append(v)
+    out = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda v: (
+            0 if v["default_event_type_id"] is not None else 1,
+            -(v["event_count"] or 0),
+            -_populated_count(v),
+            v["id"],
+        ))
+        canonical, dups = members[0], members[1:]
+        for d in dups:
+            key = (canonical["id"], d["id"]) if canonical["id"] < d["id"] else (d["id"], canonical["id"])
+            d["_signals_to_canonical"] = pair_signals.get(key, {})
+        out.append(([canonical], dups))
+    return out
+
+
+def _build_cross_language_clusters(db, venues: list[dict]) -> list[tuple[list[dict], list[dict]]]:
+    """Find same-city venues whose names use different scripts.
+
+    Names are not transliterated. Instead, a cross-script pair must share
+    at least three ``(date, event identifier)`` fingerprints, or share a
+    normalized website host. This handles English/Hebrew aliases such as
+    Shablul Jazz Club / מועדון שבלול while avoiding empty venue rows and
+    unrelated same-city venues.
+    """
+    by_id = {v["id"]: v for v in venues}
+    parent = {v["id"]: v["id"] for v in venues}
+    signatures: dict[int, set[tuple[str, str]]] = {v["id"]: set() for v in venues}
+    event_venues: dict[tuple[str, str], set[int]] = defaultdict(set)
+    rows = db.execute(text(
+        "SELECT venue_id, start_date, LOWER(COALESCE(NULLIF(artist_name, ''), name)) "
+        "FROM events WHERE venue_id IS NOT NULL"
+    )).fetchall()
+    for venue_id, start_date, ident in rows:
+        if venue_id in signatures and ident:
+            key = (str(start_date), str(ident).strip())
+            signatures[venue_id].add(key)
+            event_venues[key].add(venue_id)
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    def scripts(name: str | None) -> tuple[bool, bool]:
+        s = name or ""
+        return bool(re.search(r"[A-Za-z]", s)), bool(re.search(r"[\u0590-\u05ff]", s))
+
+    by_city = {v["city_id"]: [] for v in venues}
+    for v in venues:
+        by_city[v["city_id"]].append(v["id"])
+    city_of = {v["id"]: v["city_id"] for v in venues}
+    pair_counts: dict[tuple[int, int], int] = defaultdict(int)
+    for ids in event_venues.values():
+        ids = list(ids)
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                if city_of[a] == city_of[b]:
+                    pair = (a, b) if a < b else (b, a)
+                    pair_counts[pair] += 1
+
+    for (a_id, b_id), shared_n in pair_counts.items():
+        a, b = by_id[a_id], by_id[b_id]
+        al, ah = scripts(a["name"])
+        bl, bh = scripts(b["name"])
+        cross_script = (al and bh and not ah and not bl) or (bl and ah and not bh and not al)
+        pa, pb = _norm_venue_name(a["physical_city"]), _norm_venue_name(b["physical_city"])
+        if not cross_script or _is_sub_venue_distinction(a["name"], b["name"]):
+            continue
+        if pa and pb and pa != pb:
+            continue
+        if shared_n < 3:
+            continue
+        union(a_id, b_id)
+
+    groups: dict[int, list[dict]] = {}
+    for v in venues:
+        groups.setdefault(find(v["id"]), []).append(v)
+    out = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda v: (
+            0 if v["default_event_type_id"] is not None else 1,
+            -(v["event_count"] or 0),
+            -_populated_count(v),
+            v["id"],
+        ))
+        canonical, dups = members[0], members[1:]
+        for d in dups:
+            shared = len(signatures[canonical["id"]] & signatures[d["id"]])
+            d["_signals_to_canonical"] = {"cross_script": True, "shared_events": shared}
+        out.append(([canonical], dups))
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Apply
 # ──────────────────────────────────────────────────────────────────────
@@ -460,6 +672,11 @@ def main() -> None:
                         help="Force-merge specific venue ids (colon-separated). Repeat for multiple groups. "
                              "Bypasses signal heuristic — use for known same-venue clusters the heuristic can't catch "
                              "(e.g. Hebrew/English name pairs).")
+    parser.add_argument("--name-pass", action="store_true",
+                        help="Use the indexed normalized-name/variant pass across all cities. "
+                             "Containment variants require corroborating metadata or shared events.")
+    parser.add_argument("--cross-language-pass", action="store_true",
+                        help="Merge cross-script venue aliases using shared events or website host.")
     args = parser.parse_args()
 
     forced_groups: list[list[int]] = []
@@ -474,6 +691,8 @@ def main() -> None:
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     scope = f"city_id={args.city_id}" if args.city_id else "ALL CITIES"
+    if (args.name_pass or args.cross_language_pass) and args.city_id is not None:
+        parser.error("name/cross-language passes are all-city passes; omit --city-id")
     log.info(f"mode={mode} scope={scope} min_cooccur={args.min_cooccur} forced_groups={len(forced_groups)}")
 
     db = SessionLocal()
@@ -482,7 +701,12 @@ def main() -> None:
         log.info(f"loaded {len(venues)} venue rows")
         cooccur = _cooccurrence_pairs(db, args.city_id, args.min_cooccur)
         log.info(f"co-occurrence pairs (≥{args.min_cooccur}): {len(cooccur)}")
-        clusters = _build_clusters(venues, cooccur, forced_groups=forced_groups)
+        if args.cross_language_pass:
+            clusters = _build_cross_language_clusters(db, venues)
+        elif args.name_pass:
+            clusters = _build_name_clusters(db, venues)
+        else:
+            clusters = _build_clusters(venues, cooccur, forced_groups=forced_groups)
         log.info(f"duplicate clusters: {len(clusters)}")
         if not clusters:
             log.info("nothing to do.")
@@ -506,7 +730,8 @@ def main() -> None:
             plan.append(res)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        suffix = "apply" if args.apply else "dryrun"
+        suffix = (("cross_language_" if args.cross_language_pass else "name_" if args.name_pass else "")
+                  + ("apply" if args.apply else "dryrun"))
         audit_path = ROOT / "data" / f"dedupe_venues_{ts}_{suffix}.json"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         audit_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2))

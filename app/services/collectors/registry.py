@@ -12,6 +12,7 @@ from app.services.collectors.base import BaseCollector, RawEvent, default_end_ti
 from app.services.youtube_lookup import lookup_youtube_video
 from app.services.collectors.addon_filter import ticket_addon_reason
 from app.services.dedup import find_null_venue_duplicate
+from app.services.venue_aliases import ensure_venue_alias, find_venue_alias
 
 # Reject events dated more than this far in the future. Real inventory
 # tops out around 2-3 years (far-out conferences, the occasional tour);
@@ -787,7 +788,10 @@ class CollectorRegistry:
             return None
 
         venue = db.query(Venue).filter_by(name=raw.venue_name, city_id=city.id).first()
+        if not venue:
+            venue = find_venue_alias(db, city.id, raw.venue_name)
         if venue:
+            ensure_venue_alias(db, venue, raw.venue_name)
             if raw.venue_website_url and not venue.website_url:
                 venue.website_url = raw.venue_website_url
             if raw.venue_timezone and not venue.timezone:
@@ -807,4 +811,5 @@ class CollectorRegistry:
         )
         db.add(venue)
         db.flush()
+        ensure_venue_alias(db, venue, raw.venue_name)
         return venue
