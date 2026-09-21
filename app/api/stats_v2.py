@@ -77,8 +77,21 @@ OPS_PROCESSES = [
 # that production can inspect the Mac filesystem. Update it when a crawler
 # report is promoted; the timestamp makes its freshness visible to operators.
 CRAWLER_RESULTS = {
-    "as_of": "2026-09-21T00:15:37",
-    "window": "2026-09-20 to 2026-09-21",
+    "as_of": "2026-09-21T22:52:17",
+    "window": "latest live run · 2026-09-21 22:50 IDT",
+    "latest_run": {
+        "at": "2026-09-21T22:50:10",
+        "iterations": 20,
+        "israel_iterations": 5,
+        "global_iterations": 15,
+        "domains_pinned": 34,
+        "parse_attempted": 0,
+        "new_events": 0,
+        "new_artists": 0,
+        "partial": False,
+    },
+    # Historical production output from the previous crawler handoff.
+    "previous_window": "2026-09-20 to 2026-09-21",
     "calendar_days": 2,
     "run_slices": 3,
     "iterations": 31,

@@ -155,27 +155,28 @@ function render(d) {
     '</div><p class="sub" style="margin:8px 0 0">Boot-relative jobs reset their interval after a deploy. Fixed UTC cron jobs do not. Local launchd timestamps are intentionally not claimed as production runs.</p></section>');
 
   const cr = d.crawler;
+  const lr = cr.latest_run || cr;
   html.push(`<section><h2>Crawler Agent Results <span class="hint">${esc(cr.window)} · snapshot ${esc(cr.as_of.replace('T', ' '))}</span></h2>` +
     `<div class="tiles">` +
-    tile('Artist iterations', fmt(cr.iterations), `${fmt(cr.run_slices)} run slices across ${fmt(cr.calendar_days)} days`) +
-    tile('Last run iterations', fmt(cr.last_run_iterations), 'artists searched in the latest live run') +
-    tile('Candidate domains', fmt(cr.candidate_domains), `${fmt(cr.domains_attempted)} attempted · ${fmt(cr.domains_waiting)} waiting`) +
-    tile('Current successful recipes', fmt(cr.current_successful_recipes), `${fmt(cr.logged_parse_successes)} of ${fmt(cr.logged_parse_attempts)} logged attempts succeeded`) +
-    tile('New events', fmt(cr.new_events), `${fmt(cr.events_without_artist_name)} without an artist name`) +
-    tile('New named artists', fmt(cr.distinct_new_artists)) +
+    tile('Artist iterations', fmt(lr.iterations), `${fmt(lr.israel_iterations)} Israel · ${fmt(lr.global_iterations)} Global`) +
+    tile('Domains pinned', fmt(lr.domains_pinned), 'queued for production parsing') +
+    tile('Parsed in this run', fmt(lr.parse_attempted), 'crawler discovers; Render parses later') +
+    tile('New events this run', fmt(lr.new_events), 'not yet available until queued recipes run') +
+    tile('New artists this run', fmt(lr.new_artists), 'not yet available until queued recipes run') +
+    tile('Previous parse output', fmt(cr.new_events), `${fmt(cr.distinct_new_artists)} named artists · ${fmt(cr.run_slices)} prior run slices`) +
     `</div><div class="grid2" style="margin-top:12px">` +
     card('Parse funnel', table([
       { label: 'stage', key: 'stage' }, { label: 'domains / attempts', key: 'count', n: true }, { label: 'meaning', key: 'meaning' }], [
-        { stage: 'Candidate domains', count: cr.candidate_domains, meaning: 'Found by the artist web searches' },
-        { stage: 'Attempted', count: cr.domains_attempted, meaning: 'Had a production recipe parse attempt' },
-        { stage: 'Logged successful', count: cr.logged_parse_successes, meaning: 'Individual logged attempts that succeeded' },
-        { stage: 'Currently healthy', count: cr.current_successful_recipes, meaning: 'Recipe status is currently ok' },
-        { stage: 'Waiting', count: cr.domains_waiting, meaning: 'Discovered/pinned but not parsed yet' }
+        { stage: 'Pinned this run', count: lr.domains_pinned, meaning: 'Found by the artist web searches' },
+        { stage: 'Attempted this run', count: lr.parse_attempted, meaning: 'Had a production recipe parse attempt' },
+        { stage: 'Previous logged successes', count: cr.logged_parse_successes, meaning: 'Individual attempts that succeeded in the previous handoff' },
+        { stage: 'Previous healthy recipes', count: cr.current_successful_recipes, meaning: 'Recipe status was ok in the previous handoff' },
+        { stage: 'Waiting this run', count: lr.domains_pinned - lr.parse_attempted, meaning: 'Pinned but not parsed yet' }
       ])) +
     card('Output by parsed source', table([
       { label: 'domain', key: 'domain' }, { label: 'source', key: 'source' },
       { label: 'events', key: 'events', n: true }, { label: 'named artists', key: 'artists', n: true }], cr.sources)) +
-    `</div><p class="sub" style="margin:8px 0 0">Crawler results are a handoff snapshot from the Mac crawler logs and production database, not a live read of the Mac filesystem. “New” means newly saved during the measured window; the crawler discovers and queues domains, while production parsing runs independently.</p></section>`);
+    `</div><p class="sub" style="margin:8px 0 0">The latest run is a handoff snapshot from the Mac crawler logs. It discovered and queued domains; Render parsing runs afterward, so latest-run event and artist totals are intentionally zero until the next recipe sweeps. The previous parse output is retained for comparison.</p></section>`);
 
   // n: failures
   html.push(`<section><h2>Fail area <span class="hint">${fmt(fl.failing_recipes)} recipes in error/drift · ${fl.failed_jobs_24h.length} failed job runs in 24h</span></h2><div class="grid2">` +
