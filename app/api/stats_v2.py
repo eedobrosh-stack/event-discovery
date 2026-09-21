@@ -72,6 +72,38 @@ OPS_PROCESSES = [
     ("Supercaly relay", "Daily at 06:20 and 18:20 IDT", "Fetches geo-walled sites from the Mac and relays results to the production workflow.", "Local launchd job; last run is only in the Mac log."),
 ]
 
+# Latest crawler aggregate. The crawler runs on the Mac, while stats_v2 runs
+# in production, so this is an explicit handoff snapshot rather than a claim
+# that production can inspect the Mac filesystem. Update it when a crawler
+# report is promoted; the timestamp makes its freshness visible to operators.
+CRAWLER_RESULTS = {
+    "as_of": "2026-09-21T00:15:37",
+    "window": "2026-09-20 to 2026-09-21",
+    "calendar_days": 2,
+    "run_slices": 3,
+    "iterations": 31,
+    "last_run_iterations": 20,
+    "candidate_domains": 51,
+    "domains_attempted": 7,
+    "domains_waiting": 44,
+    "logged_parse_attempts": 7,
+    "logged_parse_successes": 5,
+    "logged_parse_failures": 2,
+    "current_successful_recipes": 7,
+    "new_events": 1596,
+    "distinct_new_artists": 212,
+    "events_without_artist_name": 1287,
+    "sources": [
+        {"domain": "youticket.co.il", "source": "youticket_co_il", "events": 971, "artists": 8},
+        {"domain": "shows.firstline.org.il", "source": "firstline_shows", "events": 300, "artists": 10},
+        {"domain": "muzi.co.il", "source": "muzi_co_il", "events": 193, "artists": 124},
+        {"domain": "grayclub.co.il", "source": "grayclub_co_il", "events": 85, "artists": 79},
+        {"domain": "aticket.co.il", "source": "ics_aticket_co_il", "events": 30, "artists": 0},
+        {"domain": "noa.eventschedule.com", "source": "ics_noa_eventschedule_com", "events": 13, "artists": 0},
+        {"domain": "balikef.co.il", "source": "ld_balikef_co_il", "events": 4, "artists": 0},
+    ],
+}
+
 
 def _error_class(err: Optional[str]) -> str:
     e = (err or "").lower()
@@ -303,7 +335,8 @@ def stats_v2(country: Optional[str] = Query(None, description="scope to one coun
 
     return {"as_of": datetime.utcnow().isoformat() + "Z", "country": country, "totals": totals, "flow": flow,
             "by_country": by_country[:60], "artists": artists, "taxonomy": taxonomy, "enrichment": enrichment,
-            "aggregation": aggregation, "failures": failures, "schedule": schedule, "operations": operations}
+            "aggregation": aggregation, "failures": failures, "schedule": schedule, "operations": operations,
+            "crawler": CRAWLER_RESULTS}
 
 
 def _has(db: Session, table: str, col: str) -> bool:
