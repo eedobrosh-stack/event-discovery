@@ -61,6 +61,12 @@ def test_stats_v2_worldwide_and_scoped(client):
     assert d["enrichment"]["artists_upcoming"] == 2 and d["enrichment"]["pct_genre"] == 0.0
     for k in ("taxonomy", "aggregation", "failures"):
         assert k in d
+    assert len(d["schedule"]) >= 20
+    collect = next(row for row in d["schedule"] if row["job"] == "collect_events")
+    assert collect["cadence"] == "Every 12h, boot-relative"
+    assert "Rotates through priority cities" in collect["description"]
+    assert len(d["operations"]) == 4
+    assert d["operations"][0]["last_run"] is None
     il = client.get("/api/stats/v2", params={"country": "Israel"}).json()
     assert il["totals"]["upcoming"] == 2 and il["artists"]["in_scope_single"] == 1 and il["artists"]["in_scope_international"] == 1
     assert client.get("/stats_v2.html").status_code == 200

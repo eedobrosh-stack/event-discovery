@@ -34,6 +34,44 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 API_SOURCES = {"ticketmaster", "eventbrite", "bandsintown", "seatgeek", "predicthq", "meetup", "luma", "allevents",
                "resident_advisor", "xceed", "skiddle", "mlb_statsapi", "songkick", "dice", "tmisrael"}
 
+# Keep the operator-facing scheduler inventory next to the API that exposes it.
+# ``log_names`` bridges scheduler ids to the historical ScanLog names used by
+# individual jobs.  A null last_run means the job has no distinct ScanLog row.
+SCHEDULED_TASKS = [
+    ("collect_events", "Every 12h, boot-relative", "Rotates through priority cities and collects events from the hand-coded/API sources.", ("collect_events",)),
+    ("collect_home_market", "Daily at 03:15 UTC", "Collects the Israeli home-market cities every day in addition to the global rotation.", ()),
+    ("recipe_extract", "Every 3h at :00 UTC", "Runs due deterministic recipes to extract events from long-tail event sites.", ("recipe_extract",)),
+    ("recipe_auto_enroll", "Sundays at 00:30 UTC", "Creates generic JSON-LD recipes for eligible discovered domains.", ()),
+    ("recipe_probe", "Hourly at :30 UTC", "Probes never-recipe'd domains for JSON-LD, ICS, or WordPress event feeds.", ("recipe_probe",)),
+    ("recipe_extract_boot", "Once, 25m after deploy", "Catch-up sweep that runs recipes which became due during a deploy.", ()),
+    ("cleanup_past", "Every 24h, boot-relative", "Removes or archives events that have passed their retention window.", ("cleanup",)),
+    ("collect_venue_websites", "Every 24h, boot-relative", "Crawls known venue websites for upcoming events.", ("venue_websites",)),
+    ("dedup_events", "Sundays at 05:00 UTC", "Finds and merges duplicate event records across sources.", ("dedup",)),
+    ("collect_platform_venues", "Every 24h, boot-relative", "Discovers and refreshes venues exposed by supported event platforms.", ("platform_venues",)),
+    ("enrich_performers", "Every 24h, boot-relative", "Enriches performers with metadata used for search, classification, and display.", ("enrich_performers",)),
+    ("enrich_youtube", "Every 4h, boot-relative", "Finds or refreshes YouTube channels for artists with upcoming events.", ("enrich_youtube",)),
+    ("enrich_venue_urls", "Every 24h, boot-relative", "Fills missing canonical venue websites and URLs using free lookups.", ("enrich_venue_urls",)),
+    ("discover_venues", "Every 48h, boot-relative", "Finds candidate venues from event data and platform discovery signals.", ("discover_venues",)),
+    ("spotify_scan", "Every 24h, boot-relative", "Scans Spotify editorial surfaces to discover artists who may have events.", ("spotify_scan",)),
+    ("spotify_brave_query", "Every 2h, boot-relative", "Searches for event pages for pending Spotify-discovered artists.", ("spotify_brave_query",)),
+    ("llm_discover_sources", "Daily at 02:30 UTC", "Discovers new event-listing domains by city for the long-tail source pool.", ("llm_discover_sources",)),
+    ("seed_brave_from_zero_results", "Daily at 03:00 UTC", "Feeds user searches that returned no events into source discovery.", ("seed_brave_from_zero_results",)),
+    ("llm_extract_recurring", "Every 3h at :15 UTC", "Re-scans active LLM sources and extracts recurring event listings.", ("llm_extract_recurring",)),
+    ("recompute_popularity", "Mondays at 04:00 UTC", "Recomputes performer popularity scores and genre percentile thresholds.", ("recompute_popularity",)),
+    ("collect_bandsintown", "Every 8h, boot-relative", "Collects artist event listings from Bandsintown.", ("bandsintown",)),
+    ("collect_techconf", "Every 24h, boot-relative", "Collects technology and conference events from TechConf.Directory.", ("techconf_directory",)),
+    ("collect_mevalim", "Every 24h, boot-relative", "Collects Israeli events from Mevalim and normalizes them into Supercaly.", ("mevalim",)),
+    ("categorize_new_events", "Hourly, boot-relative", "Fills missing event categories and types on recently ingested events.", ("categorize_new_events",)),
+    ("llm_classify_conferences", "Hourly, boot-relative", "Classifies conference-like events and filters semantic false positives.", ("llm_classify_conferences",)),
+]
+
+OPS_PROCESSES = [
+    ("supercaly-qa", "On demand", "Read-only QA agent for smoke checks, duplicate detection, scheduler health, and production reports.", "Local Mac agent; last run is not in the production database."),
+    ("QA snapshot", "Daily at 05:40 IDT", "Downloads a read-only production database snapshot used by the QA agent.", "Local launchd job; last run is only in the Mac log."),
+    ("Supercaly crawler", "Daily at 07:20 IDT", "Runs the local crawler that finds candidate sites for the source pipeline.", "Local launchd job; last run is only in the Mac log."),
+    ("Supercaly relay", "Daily at 06:20 and 18:20 IDT", "Fetches geo-walled sites from the Mac and relays results to the production workflow.", "Local launchd job; last run is only in the Mac log."),
+]
+
 
 def _error_class(err: Optional[str]) -> str:
     e = (err or "").lower()
@@ -244,9 +282,28 @@ def stats_v2(country: Optional[str] = Query(None, description="scope to one coun
                              for k, v in sorted(by_class.items(), key=lambda kv: -len(kv[1]))],
                 "failed_jobs_24h": failed_jobs}
 
+    # ── operator schedule ──
+    # ScanLog is intentionally queried here rather than copied into a static
+    # frontend table, so the dashboard's last-run values stay current.
+    names = sorted({name for _id, _cadence, _description, log_names in SCHEDULED_TASKS for name in log_names})
+    last_runs = {}
+    if names:
+        binds = ", ".join(f":n{i}" for i in range(len(names)))
+        last_runs = dict(_rows(db, f"""select job_name, max(started_at)
+                                      from scan_logs where job_name in ({binds})
+                                      group by job_name""", **{f"n{i}": name for i, name in enumerate(names)}))
+    schedule = []
+    for job_id, cadence, description, log_names in SCHEDULED_TASKS:
+        last = max((last_runs.get(name) for name in log_names if last_runs.get(name)), default=None)
+        schedule.append({"job": job_id, "cadence": cadence, "description": description,
+                         "last_run": last.isoformat() if hasattr(last, "isoformat") else last,
+                         "last_run_source": "scan_logs" if log_names else "not separately logged"})
+    operations = [{"process": name, "cadence": cadence, "description": description, "last_run": None,
+                   "scope": scope} for name, cadence, description, scope in OPS_PROCESSES]
+
     return {"as_of": datetime.utcnow().isoformat() + "Z", "country": country, "totals": totals, "flow": flow,
             "by_country": by_country[:60], "artists": artists, "taxonomy": taxonomy, "enrichment": enrichment,
-            "aggregation": aggregation, "failures": failures}
+            "aggregation": aggregation, "failures": failures, "schedule": schedule, "operations": operations}
 
 
 def _has(db: Session, table: str, col: str) -> bool:

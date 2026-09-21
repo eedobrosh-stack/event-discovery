@@ -137,6 +137,23 @@ function render(d) {
     (rc.failed_domains.length ? card('Recipe runs that failed (24h)', `<div class="mono">${rc.failed_domains.map(esc).join(', ')}</div>`) : '') +
     '</div></section>');
 
+  // Operator inventory: explanations live in the API so this remains useful
+  // to other clients, while the page provides the readable tables requested.
+  html.push(`<section><h2>Agents & scheduled work <span class="hint">cadence and most recent recorded run</span></h2><div class="grid2">` +
+    card('Local agents and launchd jobs', table([
+      { label: 'process', key: 'process' },
+      { label: 'what it does', key: 'description' },
+      { label: 'cadence', key: 'cadence' },
+      { label: 'last run', key: 'last_run', raw: true, fn: (r) => '<span class="empty">local-only</span>' },
+      { label: 'scope', key: 'scope' }], d.operations)) +
+    card('Production scheduler', table([
+      { label: 'job', key: 'job' },
+      { label: 'what it does', key: 'description' },
+      { label: 'cadence', key: 'cadence' },
+      { label: 'last run (UTC)', key: 'last_run', raw: true, fn: (r) => r.last_run ? esc(String(r.last_run).replace('T', ' ').slice(0, 19)) : '<span class="empty">not separately logged</span>' }
+    ], d.schedule)) +
+    '</div><p class="sub" style="margin:8px 0 0">Boot-relative jobs reset their interval after a deploy. Fixed UTC cron jobs do not. Local launchd timestamps are intentionally not claimed as production runs.</p></section>');
+
   // n: failures
   html.push(`<section><h2>Fail area <span class="hint">${fmt(fl.failing_recipes)} recipes in error/drift · ${fl.failed_jobs_24h.length} failed job runs in 24h</span></h2><div class="grid2">` +
     fl.by_class.map((c) => card(`${c.class} · ${c.count}`,
