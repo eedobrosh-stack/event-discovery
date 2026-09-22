@@ -156,6 +156,7 @@ function render(d) {
 
   const cr = d.crawler;
   const lr = cr.latest_run || cr;
+  const ov = cr.overnight;
   html.push(`<section><h2>Crawler Agent Results <span class="hint">${esc(cr.window)} · snapshot ${esc(cr.as_of.replace('T', ' '))}</span></h2>` +
     `<div class="tiles">` +
     tile('Artist iterations', fmt(lr.iterations), `${fmt(lr.israel_iterations)} Israel · ${fmt(lr.global_iterations)} Global`) +
@@ -164,6 +165,17 @@ function render(d) {
     tile('New events this run', fmt(lr.new_events), 'not yet available until queued recipes run') +
     tile('New artists this run', fmt(lr.new_artists), 'not yet available until queued recipes run') +
     tile('Previous parse output', fmt(cr.new_events), `${fmt(cr.distinct_new_artists)} named artists · ${fmt(cr.run_slices)} prior run slices`) +
+    `</div><div class="grid2" style="margin-top:12px">` +
+    (ov ? card('Overnight scheduled handoff', table([
+      { label: 'metric', key: 'metric' }, { label: 'value', key: 'value', n: true }, { label: 'meaning', key: 'meaning' }
+    ], [
+      { metric: 'Scheduled run slices', value: ov.run_slices, meaning: `${ov.completed_runs} complete · ${ov.partial_runs} partial` },
+      { metric: 'Artist iterations', value: ov.iterations, meaning: `${ov.israel_iterations} Israel · ${ov.global_iterations} Global` },
+      { metric: 'Candidate domains', value: ov.candidate_domains, meaning: 'Observed across the overnight searches' },
+      { metric: 'Domains pinned', value: ov.domains_pinned, meaning: 'Queued for production parsing' },
+      { metric: 'Bot checks', value: ov.bot_checks, meaning: 'Partial run caused by a search-provider bot check' },
+      { metric: 'Parsed / new events', value: ov.parse_attempted, meaning: 'Render recipe sweeps still pending' }
+    ])) : '') +
     `</div><div class="grid2" style="margin-top:12px">` +
     card('Parse funnel', table([
       { label: 'stage', key: 'stage' }, { label: 'domains / attempts', key: 'count', n: true }, { label: 'meaning', key: 'meaning' }], [
@@ -176,7 +188,7 @@ function render(d) {
     card('Output by parsed source', table([
       { label: 'domain', key: 'domain' }, { label: 'source', key: 'source' },
       { label: 'events', key: 'events', n: true }, { label: 'named artists', key: 'artists', n: true }], cr.sources)) +
-    `</div><p class="sub" style="margin:8px 0 0">The latest run is a handoff snapshot from the Mac crawler logs. It discovered and queued domains; Render parsing runs afterward, so latest-run event and artist totals are intentionally zero until the next recipe sweeps. The previous parse output is retained for comparison.</p></section>`);
+    `</div><p class="sub" style="margin:8px 0 0">The crawler snapshots are handoffs from the Mac logs. It discovers and queues domains; Render parsing runs afterward, so event and artist totals are zero until the recipe sweeps complete. The previous parse output is retained for comparison.</p></section>`);
 
   // n: failures
   html.push(`<section><h2>Fail area <span class="hint">${fmt(fl.failing_recipes)} recipes in error/drift · ${fl.failed_jobs_24h.length} failed job runs in 24h</span></h2><div class="grid2">` +

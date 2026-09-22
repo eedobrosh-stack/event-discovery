@@ -90,6 +90,24 @@ CRAWLER_RESULTS = {
         "new_artists": 0,
         "partial": False,
     },
+    # Scheduled overnight handoff from the Mac crawler. These are discovery
+    # results only; production recipe parsing has not run for these domains.
+    "overnight": {
+        "as_of": "2026-09-22T08:27:20",
+        "window": "2026-09-22 overnight · scheduled 00:20–07:50 IDT",
+        "run_slices": 4,
+        "completed_runs": 3,
+        "partial_runs": 1,
+        "iterations": 62,
+        "israel_iterations": 17,
+        "global_iterations": 45,
+        "candidate_domains": 88,
+        "domains_pinned": 88,
+        "bot_checks": 1,
+        "parse_attempted": 0,
+        "new_events": 0,
+        "new_artists": 0,
+    },
     # Historical production output from the previous crawler handoff.
     "previous_window": "2026-09-20 to 2026-09-21",
     "calendar_days": 2,

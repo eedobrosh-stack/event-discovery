@@ -70,6 +70,8 @@ def test_stats_v2_worldwide_and_scoped(client):
     assert d["crawler"]["iterations"] == 31
     assert d["crawler"]["candidate_domains"] == 51
     assert sum(row["events"] for row in d["crawler"]["sources"]) == 1596
+    assert d["crawler"]["overnight"]["iterations"] == 62
+    assert d["crawler"]["overnight"]["partial_runs"] == 1
     il = client.get("/api/stats/v2", params={"country": "Israel"}).json()
     assert il["totals"]["upcoming"] == 2 and il["artists"]["in_scope_single"] == 1 and il["artists"]["in_scope_international"] == 1
     assert client.get("/stats_v2.html").status_code == 200
