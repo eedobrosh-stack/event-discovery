@@ -78,7 +78,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from dotenv import load_dotenv
 
@@ -720,6 +720,234 @@ def _build_website_clusters(db, venues: list[dict]) -> list[tuple[list[dict], li
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Site pass (2026-09-24)
+# ──────────────────────────────────────────────────────────────────────
+# The product rule, from reviewing the Israel venue report: two rows on
+# the same site ARE the same venue unless their names differ by a
+# location (another city / branch). Halls, word order, Hebrew vs English,
+# "היכל התרבות" vs "היכל הפיס לתרבות" — all the same place. The website
+# pass above is stricter (names must agree) and so left pairs like
+# betshemesh.smarticket.co.il / d-one.co.il / hotcinema.co.il/theater/2
+# unmerged.
+#
+# The site key depends on who owns the site:
+#   own site       (d-one.co.il, habima.co.il)  → the host
+#   shared site    (ticketing, municipal, cinema chains, listing sites,
+#                   and any *.smarticket.co.il-style tenant host that also
+#                   serves other venues) → host + path, the venue's own
+#                   page; a shared site's homepage identifies nothing.
+# On a shared site the names must also share one identity word, because
+# one listing page can carry several unrelated venues (govextra's
+# Rishon page lists three).
+
+# Maps, video and link-in-bio hosts: a collector put the wrong link in
+# website_url. Cleared, never used as a site key.
+JUNK_URL_RE = re.compile(
+    r"(^|\.)(waze\.com|youtube\.com|youtu\.be|google\.[a-z.]+|goo\.gl|"
+    r"maps\.apple\.com|linktr\.ee|facebook\.com|fb\.com|instagram\.com|"
+    r"wikipedia\.org|tripadvisor\.[a-z.]+|bit\.ly|tinyurl\.com)$"
+)
+SHARED_SITE_HOSTS = AGGREGATOR_HOSTS | {
+    "hotcinema.co.il", "cinema-city.co.il", "yesplanet.co.il", "lev.co.il",
+    "rav-hen.co.il", "makore.co.il", "itraveljerusalem.com", "hilton.com",
+    "marriott.com", "hamatnas.co.il", "kehilatayim.org.il", "park.co.il",
+    "makefet.com", "modiinapp.com", "imj.org.il", "ethos.co.il",
+    # one operator, several venues on one site
+    "sportpalace.co.il", "atlas.co.il", "zofim.org.il", "eilatport.co.il",
+    "lunapark.co.il", "fattal.co.il", "isrotel.com", "ihg.com",
+}
+_HOMEPAGE_PATH_RE = re.compile(
+    r"^(/(he|en|ar|ru|heb|eng))?(/(pages/)?(home|homepage|index|default|main)(\.aspx|\.php|\.html?)?)?$"
+)
+# Words that say what kind of place a row is, not which one. Dropped
+# before two shared-site names are compared for a common identity word.
+SITE_GENERIC_WORDS = GENERIC_PREFIXES | {
+    "היכל", "התרבות", "תרבות", "לתרבות", "אולם", "האולם", "אודיטוריום",
+    "משכן", "המשכן", "לאמנויות", "אמנויות", "אומנויות", "הבמה", "במה",
+    "העירוני", "עירוני", "המופעים", "מופעים", "קהילתי", "מתנ", "ס", "ע", "ש",
+    "hall", "center", "centre", "auditorium", "arts", "of", "and",
+}
+
+
+def _is_junk_url(url: str | None) -> bool:
+    host = _norm_url(url)
+    return bool(host) and bool(JUNK_URL_RE.search(host))
+
+
+def _site_key(url: str | None) -> tuple[str, bool]:
+    """(key, shared). Empty key = the URL identifies no venue."""
+    host = _norm_url(url)
+    if not host or JUNK_URL_RE.search(host):
+        return "", False
+    s = url.strip() if "://" in url else "http://" + url.strip()
+    try:
+        p = urlparse(s)
+    except Exception:
+        return "", False
+    path = unquote(p.path).rstrip("/").lower()
+    shared = _is_aggregator_host(host) or host in SHARED_SITE_HOSTS
+    if not shared:
+        return host, False
+    if _HOMEPAGE_PATH_RE.match(path) and not p.query:
+        return "", True
+    return host + path + ("?" + p.query if p.query else ""), True
+
+
+_PLACE_TOKS: set[str] | None = None
+
+
+def _identity_words(name: str | None) -> set[str]:
+    """Words that say WHICH place a row is: venue-kind words, place names
+    and region noise dropped, Hebrew definite article folded on both
+    sides of the comparison ("היכל" → "יכל" is still a kind word)."""
+    global _PLACE_TOKS
+    if _PLACE_TOKS is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from _il_places import PLACES  # noqa: E402  (sibling module)
+        _PLACE_TOKS = {_he_fold(t) for k in PLACES for t in _norm_venue_name(k).split()}
+    drop = {_he_fold(w) for w in SITE_GENERIC_WORDS | GEO_NOISE_TOKENS} | _PLACE_TOKS
+    toks = {_he_fold(t) for t in _norm_venue_name(name).split()}
+    return {t for t in toks if t not in drop and len(t) > 1}
+
+
+def _page_key(url: str | None) -> str:
+    """host + path with language / homepage / about segments folded, so
+    habima.co.il/en/homepage and habima.co.il/ are one page."""
+    host = _norm_url(url)
+    if not host:
+        return ""
+    s = url.strip() if "://" in url else "http://" + url.strip()
+    path = unquote(urlparse(s).path).rstrip("/").lower()
+    path = re.sub(r"^/(he|en|ar|ru|heb|eng)(?=/|$)", "", path)
+    if re.fullmatch(r"(/(pages/)?(home|homepage|index|default|main|about)(\.aspx|\.php|\.html?)?)?", path):
+        path = ""
+    return host + path
+
+
+def _script(words: set[str]) -> str:
+    heb = any(_HE_RE.match(w) for w in words)
+    lat = any(re.match(r"^[a-z0-9]+$", w) for w in words)
+    return "mixed" if heb and lat else "he" if heb else "latin"
+
+
+def _build_site_clusters(db, venues: list[dict], *, apply: bool) -> tuple[list, dict]:
+    """Clusters by the site rule above, after two clean-ups:
+
+    1. junk website_url (waze / youtube / maps …) is cleared;
+    2. a row with no website whose exact normalised name matches a
+       website-bearing row in the same real city inherits that website
+       (only when every such match agrees on one URL).
+
+    Both clean-ups are written only with ``apply``. Returns
+    (clusters, stats).
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _il_places import canon_place, name_places  # noqa: E402
+
+    stats = {"junk_urls_cleared": [], "websites_backfilled": []}
+    for v in venues:
+        v["_place"] = canon_place(v.get("physical_city"), v.get("city_name"))
+        if _is_junk_url(v["website_url"]):
+            stats["junk_urls_cleared"].append({"id": v["id"], "name": v["name"],
+                                               "url": v["website_url"]})
+            v["website_url"] = None
+
+    urls_by_name: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for v in venues:
+        if v["website_url"] and _site_key(v["website_url"])[0]:
+            urls_by_name[(v["_place"], _norm_venue_name(v["name"]))].add(v["website_url"].strip())
+    for v in venues:
+        if v["website_url"]:
+            continue
+        urls = urls_by_name.get((v["_place"], _norm_venue_name(v["name"])))
+        if urls and len(urls) == 1:
+            v["website_url"] = next(iter(urls))
+            stats["websites_backfilled"].append({"id": v["id"], "name": v["name"],
+                                                 "url": v["website_url"]})
+
+    if apply:
+        for row in stats["junk_urls_cleared"]:
+            db.execute(text("UPDATE venues SET website_url = NULL WHERE id = :id"), {"id": row["id"]})
+        for row in stats["websites_backfilled"]:
+            db.execute(text("UPDATE venues SET website_url = :u WHERE id = :id"),
+                       {"u": row["url"], "id": row["id"]})
+        db.commit()
+
+    parent = {v["id"]: v["id"] for v in venues}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for v in venues:
+        key, shared = _site_key(v["website_url"])
+        if key:
+            v["_shared_site"] = shared
+            v["_page"] = _page_key(v["website_url"])
+            buckets[(v["_place"], key)].append(v)
+
+    pair_signals: dict[tuple[int, int], dict] = {}
+    for (place, key), group in buckets.items():
+        if len(group) < 2 or place.startswith(("Outside Israel", "Online")):
+            continue
+        for i, a in enumerate(group):
+            pa = name_places(a["name"])
+            wa = _identity_words(a["name"])
+            for b in group[i + 1:]:
+                pb = name_places(b["name"])
+                if pa and pb and not (pa & pb):
+                    continue                      # names name different cities
+                if (pa ^ pb) - {place}:
+                    continue                      # one name names another city
+                wb = _identity_words(b["name"])
+                if wa and wb and not (wa & wb):
+                    # Nothing in common but the site. On a shared page that
+                    # is two venues; on an own site it is the same place when
+                    # the names are in two scripts (Hebrew/English can share
+                    # no word) or both rows point at the same page of it
+                    # ("מנחם עינן" / "היכל התרבות מודיעין" on shows.org.il).
+                    cross = _script(wa) != _script(wb) and "mixed" not in (_script(wa), _script(wb))
+                    same_page = a["_page"] == b["_page"]
+                    if a["_shared_site"]:
+                        if not (cross and same_page):
+                            continue
+                    elif not (cross or same_page):
+                        continue
+                why = "same_page" if a["_shared_site"] else "same_site"
+                pair = (min(a["id"], b["id"]), max(a["id"], b["id"]))
+                pair_signals[pair] = {"url": True, "site": key, "place": place, "match": why}
+                ra, rb = find(a["id"]), find(b["id"])
+                if ra != rb:
+                    parent[ra] = rb
+
+    groups: dict[int, list[dict]] = defaultdict(list)
+    for v in venues:
+        groups[find(v["id"])].append(v)
+    out = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        # Prefer a row whose City row IS its real city, so the survivor is
+        # not one of the default-city (Tel Aviv) fallbacks.
+        members.sort(key=lambda v: (
+            0 if _norm_venue_name(v.get("city_name")) == _norm_venue_name(v["_place"]) else 1,
+            0 if v["default_event_type_id"] is not None else 1,
+            -(v["event_count"] or 0),
+            -_populated_count(v),
+            v["id"],
+        ))
+        canonical, dups = members[0], members[1:]
+        for d in dups:
+            key = (min(canonical["id"], d["id"]), max(canonical["id"], d["id"]))
+            d["_signals_to_canonical"] = pair_signals.get(key, {"url": True, "match": "transitive"})
+        out.append(([canonical], dups))
+    return out, stats
+
+
 def _build_name_clusters(db, venues: list[dict]) -> list[tuple[list[dict], list[dict]]]:
     """Find same-city venue name variants with indexed candidate blocking.
 
@@ -1039,6 +1267,12 @@ def main() -> None:
                         help="Consolidate same-city venues that share a website host (ticketing/map "
                              "aggregators excluded) and whose names or events agree. Records every "
                              "merged spelling in venue_aliases.")
+    parser.add_argument("--site-pass", action="store_true",
+                        help="Same-site rule: rows sharing a venue's own site (or the same page on a "
+                             "ticketing/municipal/chain site) in the same real city merge unless their "
+                             "names name different cities. Also clears junk website_url values "
+                             "(waze/youtube/maps) and gives website-less rows the site of an "
+                             "exact-name twin. Use with --country.")
     parser.add_argument("--country", default=None,
                         help="Restrict to one country, e.g. --country Israel.")
     args = parser.parse_args()
@@ -1063,12 +1297,17 @@ def main() -> None:
     try:
         venues = _load_venues(db, args.city_id, args.country)
         log.info(f"loaded {len(venues)} venue rows")
-        if args.website_pass:
+        site_stats = None
+        if args.website_pass or args.site_pass:
             cooccur = {}
         else:
             cooccur = _cooccurrence_pairs(db, args.city_id, args.min_cooccur)
             log.info(f"co-occurrence pairs (≥{args.min_cooccur}): {len(cooccur)}")
-        if args.website_pass:
+        if args.site_pass:
+            clusters, site_stats = _build_site_clusters(db, venues, apply=args.apply)
+            log.info(f"junk website_url cleared: {len(site_stats['junk_urls_cleared'])}, "
+                     f"websites backfilled from exact-name twins: {len(site_stats['websites_backfilled'])}")
+        elif args.website_pass:
             clusters = _build_website_clusters(db, venues)
         elif args.cross_language_pass:
             clusters = _build_cross_language_clusters(db, venues)
@@ -1099,13 +1338,15 @@ def main() -> None:
             plan.append(res)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        suffix = (("website_" if args.website_pass else
+        suffix = (("site_" if args.site_pass else
+                   "website_" if args.website_pass else
                    "cross_language_" if args.cross_language_pass else
                    "name_" if args.name_pass else "")
                   + ("apply" if args.apply else "dryrun"))
         audit_path = ROOT / "data" / f"dedupe_venues_{ts}_{suffix}.json"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
-        audit_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+        audit = {"site_cleanup": site_stats, "clusters": plan} if site_stats is not None else plan
+        audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2))
         log.info(f"audit written: {audit_path}")
         if not args.apply:
             log.info("DRY-RUN — re-run with --apply to write.")
