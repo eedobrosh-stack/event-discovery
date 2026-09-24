@@ -22,6 +22,10 @@ from app.models.venue_alias import VenueAlias
 from app.services.il_places import canon_place
 
 
+# Collectors write the country as "Israel", "IL", "il" or "ישראל".
+_ISRAEL = {"israel", "il", "isr", "ישראל"}
+
+
 def display_venue_name(event) -> str | None:
     venue = getattr(event, "venue", None)
     if venue is not None and venue.name:
@@ -33,8 +37,8 @@ def display_venue_city(venue) -> str | None:
     if venue is None:
         return None
     city = getattr(venue, "city", None)
-    country = venue.physical_country or (city.country if city is not None else None)
-    if country == "Israel":
+    country = (venue.physical_country or (city.country if city is not None else "") or "").strip().lower()
+    if country in _ISRAEL:
         return canon_place(venue.physical_city, city.name if city is not None else None)
     return venue.physical_city
 

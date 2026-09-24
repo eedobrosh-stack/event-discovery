@@ -15,3 +15,9 @@ def test_israeli_city_is_canonical():
     assert display_venue_city(v) == "Tel Aviv"
     v = NS(physical_city="Brooklyn", physical_country="United States", city=NS(name="New York", country="United States"))
     assert display_venue_city(v) == "Brooklyn"
+
+
+def test_israel_country_code_variants():
+    for code in ("IL", "il", "ישראל"):
+        v = NS(physical_city="כפר עציון", physical_country=code, city=NS(name="Israel - Other", country="Israel"))
+        assert display_venue_city(v) == "Kfar Etzion"
