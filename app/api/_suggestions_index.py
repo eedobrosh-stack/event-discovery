@@ -241,19 +241,46 @@ def build_index(db: Session) -> SuggestionsIndex:
     #      with the canonical set so a name appearing in both columns
     #      shows up exactly once.
     seen_lower: set[str] = set()
+    # Hebrew values go through the Israeli artist rule (show titles are
+    # not artists — app/services/artist_names.py): a title that names a
+    # performer contributes that performer, any other title is dropped.
+    # Without this the Artist chips kept offering "לה בוהם מאת ג׳יאקומו
+    # פוצ׳יני - גיל שוחט" and friends, from rows scraped before the rule
+    # and from the mevalim safety net below. HTML entities are decoded.
+    import html as _html
+    import re as _re
+    from app.services.artist_names import clean_israeli_artist
+    _known = {r[0] for r in db.execute(text(
+        "SELECT normalized_name FROM performers WHERE COALESCE(mb_id,'') != '' "
+        "OR COALESCE(spotify_id,'') != ''"))}
+    _genre = dict(db.execute(text("SELECT normalized_name, primary_genre FROM artist_genre")).fetchall())
+    _hebrew = _re.compile(r"[\u0590-\u05ff]")
+
+    def _artist(value: str | None) -> str | None:
+        v = _html.unescape(value or "").strip()
+        if not v or not _hebrew.search(v):
+            return v or None
+        return clean_israeli_artist(v, known_performer=lambda k: k in _known,
+                                    sub_genre=lambda k: _genre.get(k))
+
+    def _add(value: str | None) -> None:
+        name = _artist(value)
+        if not name:
+            return
+        low = name.lower()
+        if low in seen_lower:
+            return
+        seen_lower.add(low)
+        item = (low, name)
+        idx.artists.append(item)
+        idx.artists_bucket.add(item)
+
     rows = db.execute(text("""
         SELECT DISTINCT artist_name FROM events
         WHERE artist_name IS NOT NULL AND artist_name != ''
     """)).fetchall()
     for r in rows:
-        if r[0]:
-            low = r[0].lower()
-            if low in seen_lower:
-                continue
-            seen_lower.add(low)
-            item = (low, r[0])
-            idx.artists.append(item)
-            idx.artists_bucket.add(item)
+        _add(r[0])
 
     # Safety-net branch — keep restricted to known performer-named
     # sources so we don't accidentally promote conference-event
@@ -265,14 +292,7 @@ def build_index(db: Session) -> SuggestionsIndex:
           AND scrape_source IN ('mevalim', 'techconf')
     """)).fetchall()
     for r in rows:
-        if r[0]:
-            low = r[0].lower()
-            if low in seen_lower:
-                continue
-            seen_lower.add(low)
-            item = (low, r[0])
-            idx.artists.append(item)
-            idx.artists_bucket.add(item)
+        _add(r[0])
 
     # Sport teams — combine home_team + away_team, dedupe case-insensitively.
     seen_teams: dict[str, str] = {}
@@ -410,9 +430,13 @@ def build_index(db: Session) -> SuggestionsIndex:
         WHERE name IS NOT NULL AND name != ''
           AND start_date >= DATE('now')
     """)).fetchall()
+    seen_events: set[str] = set()
     for r in rows:
-        if r[0] and " - " not in r[0]:
-            item = (r[0].lower(), r[0])
+        name = _html.unescape(r[0] or "").strip()
+        if name and " - " not in name and name.lower() not in seen_events:
+            # decoded + deduped: "ד&#039;אור" and "ד'אור" are one chip
+            seen_events.add(name.lower())
+            item = (name.lower(), name)
             idx.event_names.append(item)
             idx.event_names_bucket.add(item)
 
