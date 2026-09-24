@@ -63,7 +63,7 @@ _SPORT_LEAGUE_LABELS: frozenset[str] = _get_sport_league_labels()
 # app/api/_search_filters.py and are reused by suggestions.py too.
 
 
-def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None, tournaments=None, themes=None):
+def _build_filter_query(db: Session, query, categories, type_search, city_ids, start_date, end_date, search, country=None, artist_exact=None, genres=None, tournaments=None, themes=None, exclude_city_ids=None, exclude_country=None):
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, and_, func, select
     from app.models import City, EventTheme
@@ -74,7 +74,10 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     if type_search:
         r = resolve_typed_terms(db, type_search=type_search, genres=genres, themes=themes,
                                 tournaments=tournaments, artist_exact=artist_exact,
-                                city_ids=city_ids, country=country)
+                                city_ids=city_ids,
+                                # an excluded location still counts as "a location
+                                # is chosen": never turn a typed city into city_ids
+                                country=country or exclude_country or ("-" if exclude_city_ids else None))
         type_search, genres, themes = r["type_search"], r["genres"], r["themes"]
         tournaments, artist_exact, city_ids = r["tournaments"], r["artist_exact"], r["city_ids"]
 
@@ -302,6 +305,21 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             .filter(City.country.ilike(country))
         )
 
+    # "Display results outside of <location>" (results page): the same
+    # search minus the selected city / metro / country. A subquery, not a
+    # join, so it composes with the joins above. Venue-less (online)
+    # events are outside every location.
+    if exclude_city_ids or exclude_country:
+        conds = []
+        if exclude_city_ids:
+            from app.api._search_filters import expand_city_ids
+            ex_ids = [int(x.strip()) for x in exclude_city_ids.split(",") if x.strip().isdigit()]
+            conds.append(Venue.city_id.in_(expand_city_ids(db, ex_ids) or ex_ids))
+        if exclude_country:
+            conds.append(City.country.ilike(exclude_country))
+        excluded = select(Venue.id).join(City, Venue.city_id == City.id).where(or_(*conds))
+        query = query.filter(or_(Event.venue_id.is_(None), Event.venue_id.not_in(excluded)))
+
     # Theme filter — matches events linked to ANY of the requested
     # themes via the event_themes association table. Distinct from
     # genres (which flow through artist_genre) — themes are bound
@@ -437,6 +455,8 @@ def count_events(
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names (Rock, Electronic, …); expanded to all sub-genres' artists."),
     tournaments: Optional[str] = Query(None, description="Comma-separated tournament labels (e.g. 'FIFA World Cup'); strict equality on Event.tournament."),
     themes: Optional[str] = Query(None, description="Comma-separated theme names (AI, Cybersecurity, …); matches events via event_themes association."),
+    exclude_city_ids: Optional[str] = Query(None, description="Comma-separated city IDs to leave OUT (\"results outside of <location>\")."),
+    exclude_country: Optional[str] = Query(None, description="Country to leave out."),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import func, case as _case, exists, select
@@ -510,7 +530,7 @@ def count_events(
         db, base,
         categories, type_search, city_ids, start_date, end_date, search, country,
         artist_exact=artist_exact, genres=genres, tournaments=tournaments,
-        themes=themes,
+        themes=themes, exclude_city_ids=exclude_city_ids, exclude_country=exclude_country,
     )
     row = query.first()
     if not row or not row.total:
@@ -546,6 +566,8 @@ def list_events(
     genres: Optional[str] = Query(None, description="Comma-separated parent genre names; expanded to all sub-genres' artists."),
     tournaments: Optional[str] = Query(None, description="Comma-separated tournament labels (e.g. 'FIFA World Cup'); strict equality on Event.tournament."),
     themes: Optional[str] = Query(None, description="Comma-separated theme names (AI, Cybersecurity, …); matches events via event_themes association."),
+    exclude_city_ids: Optional[str] = Query(None, description="Comma-separated city IDs to leave OUT (\"results outside of <location>\")."),
+    exclude_country: Optional[str] = Query(None, description="Country to leave out."),
     anchor_artist: Optional[str] = Query(None, description="When set, events whose artist differs from this name are flagged is_peer_added=true. Used by the 'Include artists like X' UI to visually distinguish peer-expanded rows."),
     limit: int = Query(50, le=500),
     offset: int = 0,
@@ -558,7 +580,7 @@ def list_events(
     query = _build_filter_query(
         db, base_query, categories, type_search, city_ids, start_date, end_date, search, country,
         artist_exact=artist_exact, genres=genres, tournaments=tournaments,
-        themes=themes,
+        themes=themes, exclude_city_ids=exclude_city_ids, exclude_country=exclude_country,
     )
 
     events = (

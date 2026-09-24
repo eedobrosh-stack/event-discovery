@@ -1304,7 +1304,7 @@ async function copyShareableLink(btn) {
 
 const _LOOKAHEAD_YEARS = 2;
 
-async function _runLookahead({ typeSearch, artistExact, genres, tournaments, cityId, country, startDate, search, anchorArtist }) {
+async function _runLookahead({ typeSearch, artistExact, genres, themes = [], tournaments, cityId, country, startDate, search, anchorArtist }) {
     const lp = new URLSearchParams();
     if (typeSearch.length)  lp.set("type_search", typeSearch.join(","));
     if (artistExact.length) lp.set("artist_exact", artistExact.join(","));
@@ -1467,367 +1467,10 @@ function getFilters() {
     return { typeSearch: chipTerms, artistExact, genres, themes, tournaments, cityId, startDate, endDate, search };
 }
 
-let totalEvents = null; // total matching count from /api/events/count
-// Per-column presence ratios for the FULL filtered set (not just first
-// 50 rendered rows). Returned by /api/events/count; populated async
-// after the first page renders. Used by applySparseColumnHiding so
-// the decision matches the search context as a whole.
-let _serverColumnPresence = null;
-
-// Cross-page dedup registry — see renderResults below. Reset on every
-// first-page render, accumulates as Load More appends pages.
-const _renderedNameKeys = new Set();
-const _renderedArtistKeys = new Set();
-// Running count of rows filtered out by the dedup pass. Subtracted
-// from the server-reported total in updateStats so the displayed
-// total reflects what the user can actually see — otherwise the
-// gap (e.g. "Showing 40 of 44") looks like a pagination bug.
-let _dedupedDropped = 0;
-
-function _shouldOfferPeerExpansion({ typeSearch, artistExact, genres, tournaments }) {
-    // Only when exactly one performer chip is the entire active filter set.
-    // Adding a genre, free-text, or tournament chip suppresses the link
-    // (intent ambiguous — "Sting + FIFA World Cup" is not a peer-expansion query).
-    return artistExact.length === 1
-        && genres.length === 0
-        && typeSearch.length === 0
-        && (!tournaments || tournaments.length === 0);
-}
-
-async function _getPeerArtists(name) {
-    const key = (name || "").toLowerCase();
-    if (!key) return [];
-    if (_peerCache.has(key)) return _peerCache.get(key);
-    try {
-        const r = await fetch(`/api/artists/related?name=${encodeURIComponent(name)}`);
-        if (!r.ok) return [];
-        const body = await r.json();
-        const peers = (body.peers || []).map(p => p.artist_name).filter(Boolean);
-        _peerCache.set(key, peers);
-        return peers;
-    } catch (_) {
-        return [];
-    }
-}
-
-async function _renderPeerBar(anchor) {
-    const bar = document.getElementById("peer-expansion-bar");
-    if (!bar) return;
-    // Always start hidden so the bar can't "flash on" before we know
-    // whether peers exist for this anchor.
-    bar.hidden = true;
-    bar.innerHTML = "";
-    if (!anchor) return;
-
-    // Pre-check: skip the bar entirely when the anchor has no peers.
-    // Showing "Include artists like X?" for an artist with an empty
-    // peer list would land the user on a no-op click. The cache makes
-    // repeated renders for the same anchor cheap.
-    const peers = await _getPeerArtists(anchor);
-
-    // Staleness guard: a newer search may have advanced the anchor
-    // while we were awaiting. Don't paint a bar for an anchor that's
-    // no longer current.
-    if (anchor !== _peerExpansionAnchor) return;
-    if (peers.length === 0) return;
-
-    bar.hidden = false;
-    bar.innerHTML = _peerExpansionActive
-        ? `<a href="#" id="peer-toggle">Showing artists like ${esc(anchor)}</a> &middot; click to hide`
-        : `<a href="#" id="peer-toggle">Include artists like ${esc(anchor)}?</a>`;
-    document.getElementById("peer-toggle").addEventListener("click", e => {
-        e.preventDefault();
-        _peerExpansionActive = !_peerExpansionActive;
-        offset = 0;
-        document.getElementById("events-body").innerHTML = "";
-        _renderedNameKeys.clear();
-        _renderedArtistKeys.clear();
-        _dedupedDropped = 0;
-        searchEvents();
-    });
-}
-
-async function searchEvents() {
-    const isFirstPage = offset === 0;   // capture before any mutation
-    // Resolve typed-but-unclicked city input BEFORE reading filters.
-    // Otherwise getSelectedCityId() / getSelectedCountry() both return
-    // empty, and the search silently goes global despite "United States"
-    // sitting visibly in the city box. The bug was most observable on
-    // peer-expansion ("Include artists like X?") because peers tour
-    // worldwide and flood the results, but the underlying issue is the
-    // city-input lifecycle, not peer expansion itself.
-    _resolveCityInputIfNeeded();
-    const { typeSearch, artistExact, genres, themes, tournaments, cityId, startDate, endDate, search } = getFilters();
-
-    // Peer-expansion state: arm/disarm based on current filter shape.
-    // Reset _peerExpansionActive whenever the anchor changes — a fresh
-    // anchor starts in the "off" state ("Include artists like X?"), not
-    // silently inheriting a previous chip's expansion.
-    const offerPeers = _shouldOfferPeerExpansion({ typeSearch, artistExact, genres, tournaments });
-    const currentAnchor = offerPeers ? artistExact[0] : null;
-    if (currentAnchor !== _peerExpansionAnchor) {
-        _peerExpansionAnchor = currentAnchor;
-        _peerExpansionActive = false;
-    }
-    _renderPeerBar(currentAnchor);
-
-    // If the toggle is on, OR in the cached peers and pass anchor_artist
-    // so the backend can flag peer rows. We mutate a local copy of
-    // artistExact rather than the result of getFilters() — peer expansion
-    // is a per-query thing and shouldn't mutate the chip state itself.
-    let effectiveArtistExact = artistExact;
-    let anchorParam = null;
-    if (offerPeers && _peerExpansionActive) {
-        const peers = await _getPeerArtists(artistExact[0]);
-        if (peers.length) {
-            effectiveArtistExact = [artistExact[0], ...peers];
-            anchorParam = artistExact[0];
-        }
-    }
-    const country = getSelectedCountry();
-    const params = new URLSearchParams();
-    if (typeSearch.length) params.set("type_search", typeSearch.join(","));
-    // Un-expanded artist_exact first — this is what goes into the URL bar.
-    // Peer expansion swaps in the expanded list AFTER URL sync below so a
-    // refresh/shared link doesn't get rehydrated as N individual chips.
-    if (artistExact.length) params.set("artist_exact", artistExact.join(","));
-    if (genres.length) params.set("genres", genres.join(","));
-    if (themes.length) params.set("themes", themes.join(","));
-    if (tournaments.length) params.set("tournaments", tournaments.join(","));
-    if (cityId) params.set("city_ids", cityId);
-    if (country) params.set("country", country);
-    if (startDate) params.set("start_date", startDate);
-    if (endDate) params.set("end_date", endDate);
-    if (search) params.set("search", search);
-
-    // Sync the current filter set into the URL bar so the view is shareable.
-    // Only on first-page loads (pagination doesn't change filters and would
-    // be a no-op). replaceState (not push) keeps the back button going home,
-    // not stepping through every chip change.
-    // IMPORTANT: write before adding limit/offset, which don't belong in the
-    // shareable URL. ALSO before peer-expansion overwrites artist_exact —
-    // see comment above.
-    if (isFirstPage) {
-        const qs = params.toString();
-        history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
-    }
-
-    // Post-URL-sync: now overwrite artist_exact with the expanded list
-    // and set anchor_artist so the backend can flag is_peer_added.
-    if (anchorParam) {
-        params.set("artist_exact", effectiveArtistExact.join(","));
-        params.set("anchor_artist", anchorParam);
-    }
-
-    // Clear any prior empty/extended notice — fresh search starts neutral.
-    if (isFirstPage) clearSearchNotice();
-
-    // Fetch total count on the first page. The count endpoint also
-    // returns per-column presence ratios for the FULL filtered set —
-    // used to drive sparse-column hiding instead of evaluating just
-    // the first 50 rendered rows (which used to make the hidden-column
-    // set depend on which 50 events ranked highest, not the search
-    // context as a whole).
-    if (isFirstPage) {
-        totalEvents = null;
-        _serverColumnPresence = null;
-        fetch(`/api/events/count?${params}`)
-            .then(r => r.json())
-            .then(({ total, column_presence }) => {
-                totalEvents = total;
-                _serverColumnPresence = column_presence || null;
-                updateStats(document.getElementById("events-body").children.length);
-                // Re-apply hide decision now that we have full-set truth.
-                applySparseColumnHiding();
-            })
-            .catch(() => {});
-    }
-
-    params.set("limit", LIMIT);
-    params.set("offset", offset);
-
-    const resp = await fetch(`/api/events?${params}`);
-    let events = await resp.json();
-
-    // Empty-state handling — only on first page (paginated empties are
-    // just "end of results", not a missing-data signal). Two branches:
-    //   1. Lookahead succeeds → extend end_date, adopt those events.
-    //   2. Lookahead empty → log + render "no events for X" message.
-    let extendedTo = null;
-    if (isFirstPage && events.length === 0) {
-        const filterCriteria = {
-            typeSearch,
-            // When peer expansion is on, lookahead must search across
-            // the anchor + peers in the extended window — otherwise a
-            // user who clicked "Include artists like X" sees a "no
-            // events for X" message that ignores peer events that
-            // exist just past the date window.
-            artistExact: effectiveArtistExact,
-            genres,
-            tournaments,
-            cityId, country, startDate, search,
-            anchorArtist: anchorParam,
-        };
-        const lookahead = await _runLookahead(filterCriteria);
-        if (lookahead && lookahead.events.length > 0) {
-            // Found in extended window. Adopt the events and update inputs.
-            events = lookahead.events;
-            extendedTo = lookahead.events[lookahead.events.length - 1].start_date;
-            document.getElementById("end-date").value = extendedTo;
-            // URL-bar params use the un-expanded artistExact so a shared
-            // link doesn't rehydrate the chip strip with N individual
-            // peer chips (same reason as the main URL sync above).
-            const adoptedUrlParams = new URLSearchParams();
-            if (typeSearch.length)  adoptedUrlParams.set("type_search", typeSearch.join(","));
-            if (artistExact.length) adoptedUrlParams.set("artist_exact", artistExact.join(","));
-            if (genres.length)      adoptedUrlParams.set("genres", genres.join(","));
-            if (themes.length)      adoptedUrlParams.set("themes", themes.join(","));
-            if (tournaments.length) adoptedUrlParams.set("tournaments", tournaments.join(","));
-            if (cityId)             adoptedUrlParams.set("city_ids", cityId);
-            if (country)            adoptedUrlParams.set("country", country);
-            if (startDate)          adoptedUrlParams.set("start_date", startDate);
-            adoptedUrlParams.set("end_date", extendedTo);
-            if (search)             adoptedUrlParams.set("search", search);
-            // Count fetch needs the expanded artist set + anchor so the
-            // total/column_presence reflect what the user actually sees
-            // (anchor + peers). Without the split the count would only
-            // tally the anchor's events, undershooting the rendered
-            // total when peer expansion is on.
-            const adoptedCountParams = new URLSearchParams(adoptedUrlParams);
-            if (anchorParam) {
-                adoptedCountParams.set("artist_exact", effectiveArtistExact.join(","));
-                adoptedCountParams.set("anchor_artist", anchorParam);
-            }
-            // Re-fetch BOTH total + column_presence for the adopted
-            // (lookahead-extended) window. The non-lookahead path
-            // already does this — without it here, _serverColumnPresence
-            // stays null after a lookahead, applySparseColumnHiding
-            // falls back to DOM scan on the (often tiny) lookahead
-            // result set, and tiny samples can keep clearly-empty
-            // columns visible.
-            fetch(`/api/events/count?${adoptedCountParams}`)
-                .then(r => r.json())
-                .then(({ total, column_presence }) => {
-                    totalEvents = total;
-                    _serverColumnPresence = column_presence || null;
-                    updateStats(document.getElementById("events-body").children.length);
-                    applySparseColumnHiding();
-                })
-                .catch(() => {});
-            history.replaceState(null, "", `?${adoptedUrlParams.toString()}`);
-            renderSearchNotice("info",
-                `No matches in the original window — extended through ` +
-                `<span class="notice__strong">${esc(_fmtFriendlyDate(extendedTo))}</span> ` +
-                `to find events.`);
-        } else {
-            // Truly nothing — log + show empty message + bail out of render.
-            _logZeroResultSearch({
-                genres: genres.join(",") || null,
-                artists: artistExact.join(",") || null,
-                tournaments: tournaments.join(",") || null,
-                type_search: typeSearch.join(",") || null,
-                free_search: search || null,
-                city_ids: cityId || null,
-                country: country || null,
-                start_date: startDate || null,
-                end_date: endDate || null,
-            });
-            // Mirror the same signal to GA4 so it shows up alongside other
-            // funnel events. Backend log is the source of truth; this is
-            // for live dashboards / segments / audiences.
-            pushAnalytics("zero_result_search", {
-                search_chip_kinds: _chipKindsSignature(),
-                search_genres: genres.join(",") || null,
-                search_artists: artistExact.join(",") || null,
-                search_tournaments: tournaments.join(",") || null,
-                search_type: typeSearch.join(",") || null,
-                search_free: search || null,
-                search_city_id: cityId || null,
-                search_country: country || null,
-            });
-            renderEmptyStateMessage({ artistExact, genres, typeSearch, tournaments, search, startDate, endDate, peerExpansionActive: !!anchorParam });
-            // Reset paging UI so it doesn't dangle a "Load More" button.
-            const tbody = document.getElementById("events-body");
-            tbody.innerHTML = "";
-            updateStats(0);
-            document.getElementById("load-more-btn").style.display = "none";
-            if (isFirstPage) showCompactMode();
-            return;
-        }
-    }
-
-    // ── Same-name + same-moment dedup ─────────────────────────────────
-    // Backend dedup keys on (start_date, venue_id, identifier). If the
-    // same physical venue exists as two rows (Hebrew + English name,
-    // address normalization split, etc.), the venue_id differs so the
-    // backend bucket misses and the event renders twice. Frontend rule:
-    // collapse rows that share (name OR artist_name) + start_date +
-    // start_time, picking the first occurrence (already ranked by the
-    // API). Registry is cleared on first-page render and carries
-    // across Load More so pagination can't re-introduce a dup.
-    if (isFirstPage) {
-        _renderedNameKeys.clear();
-        _renderedArtistKeys.clear();
-        _dedupedDropped = 0;
-    }
-    // Capture BEFORE dedup — pagination needs the API's row count, not
-    // the post-filter count. Without this, offset stops advancing and
-    // "Load More" disappears when any rows get deduped.
-    const apiReturnedCount = events.length;
-    events = events.filter(ev => {
-        const d = ev.start_date || "";
-        const t = ev.start_time || "";
-        const nKey = ev.name ? `n|${ev.name.toLowerCase().trim()}|${d}|${t}` : null;
-        const aKey = ev.artist_name ? `a|${ev.artist_name.toLowerCase().trim()}|${d}|${t}` : null;
-        if (nKey && _renderedNameKeys.has(nKey)) return false;
-        if (aKey && _renderedArtistKeys.has(aKey)) return false;
-        if (nKey) _renderedNameKeys.add(nKey);
-        if (aKey) _renderedArtistKeys.add(aKey);
-        return true;
-    });
-    _dedupedDropped += apiReturnedCount - events.length;
-
-    // Compute the user's ISO-2 country once per render pass.
-    // Priority:
-    //   1. Selected City filter → its country.
-    //   2. navigator.language (e.g. "he-IL", "en-US") → trailing
-    //      country code. Lets a viewer browsing Global still see
-    //      their local broadcaster ("Kan" for users with he-IL).
-    //   3. null → render falls back to showing all channels.
-    const userCountryIso2 = (() => {
-        const cityId = getSelectedCityId();
-        if (cityId) {
-            if (typeof cityId === "string" && cityId.startsWith("COUNTRY:")) {
-                return _COUNTRY_NAME_TO_ISO2[cityId.slice(8)] || null;
-            }
-            const id = parseInt(cityId, 10);
-            if (Number.isFinite(id)) {
-                const city = allCities.find(c => c.id === id);
-                if (city) {
-                    const iso2 = _COUNTRY_NAME_TO_ISO2[city.country];
-                    if (iso2) return iso2;
-                }
-            }
-        }
-        // No city → fall back to the browser's locale-derived country.
-        // navigator.languages is ranked by preference; the first entry
-        // wins. Locale shape is "he-IL" / "en-US" / "pt-BR" — split on
-        // "-" and uppercase the tail.
-        const langs = (navigator.languages && navigator.languages.length)
-            ? navigator.languages
-            : (navigator.language ? [navigator.language] : []);
-        for (const l of langs) {
-            const parts = String(l || "").split("-");
-            if (parts.length >= 2) {
-                const tail = parts[parts.length - 1].toUpperCase();
-                if (tail.length === 2) return tail;
-            }
-        }
-        return null;
-    })();
-
-    const tbody = document.getElementById("events-body");
-    events.forEach(ev => {
+// One results-table row. Shared by the main results and the
+// "results outside of <location>" section (opts.showLocation forces
+// the city line, since those rows are by definition elsewhere).
+function _renderEventRow(ev, userCountryIso2, opts = {}) {
         const tr = document.createElement("tr");
         // Tag rows that came in via the "Include artists like X" peer
         // expansion. CSS in style.css applies italic + lighter grey to
@@ -1951,7 +1594,7 @@ async function searchEvents() {
               ${ev.venue_website_url
                 ? `<a href="${esc(ev.venue_website_url)}" target="_blank">${esc(ev.venue_name || "-")}</a>`
                 : esc(ev.venue_name || "-")}
-              ${(!getSelectedCityId() || isMetroSelected() || isCountrySelected()) && (ev.venue_city || ev.venue_country)
+              ${(opts.showLocation || !getSelectedCityId() || isMetroSelected() || isCountrySelected()) && (ev.venue_city || ev.venue_country)
                 ? `<div class="venue-location">${esc([ev.venue_city, ev.venue_country].filter(Boolean).join(", "))}</div>`
                 : ""}
             </td>
@@ -1966,8 +1609,373 @@ async function searchEvents() {
                     ? `<a href="${esc(ev.purchase_link)}" target="_blank" ${buyAttrs}>Buy</a>`
                     : "-")}</td>
         `;
-        tbody.appendChild(tr);
+        return tr;
+}
+
+let totalEvents = null; // total matching count from /api/events/count
+// Per-column presence ratios for the FULL filtered set (not just first
+// 50 rendered rows). Returned by /api/events/count; populated async
+// after the first page renders. Used by applySparseColumnHiding so
+// the decision matches the search context as a whole.
+let _serverColumnPresence = null;
+
+// Cross-page dedup registry — see renderResults below. Reset on every
+// first-page render, accumulates as Load More appends pages.
+const _renderedNameKeys = new Set();
+const _renderedArtistKeys = new Set();
+// Running count of rows filtered out by the dedup pass. Subtracted
+// from the server-reported total in updateStats so the displayed
+// total reflects what the user can actually see — otherwise the
+// gap (e.g. "Showing 40 of 44") looks like a pagination bug.
+let _dedupedDropped = 0;
+
+function _shouldOfferPeerExpansion({ typeSearch, artistExact, genres, tournaments }) {
+    // Only when exactly one performer chip is the entire active filter set.
+    // Adding a genre, free-text, or tournament chip suppresses the link
+    // (intent ambiguous — "Sting + FIFA World Cup" is not a peer-expansion query).
+    return artistExact.length === 1
+        && genres.length === 0
+        && typeSearch.length === 0
+        && (!tournaments || tournaments.length === 0);
+}
+
+async function _getPeerArtists(name) {
+    const key = (name || "").toLowerCase();
+    if (!key) return [];
+    if (_peerCache.has(key)) return _peerCache.get(key);
+    try {
+        const r = await fetch(`/api/artists/related?name=${encodeURIComponent(name)}`);
+        if (!r.ok) return [];
+        const body = await r.json();
+        const peers = (body.peers || []).map(p => p.artist_name).filter(Boolean);
+        _peerCache.set(key, peers);
+        return peers;
+    } catch (_) {
+        return [];
+    }
+}
+
+async function _renderPeerBar(anchor) {
+    const bar = document.getElementById("peer-expansion-bar");
+    if (!bar) return;
+    // Always start hidden so the bar can't "flash on" before we know
+    // whether peers exist for this anchor.
+    bar.hidden = true;
+    bar.innerHTML = "";
+    if (!anchor) return;
+
+    // Pre-check: skip the bar entirely when the anchor has no peers.
+    // Showing "Include artists like X?" for an artist with an empty
+    // peer list would land the user on a no-op click. The cache makes
+    // repeated renders for the same anchor cheap.
+    const peers = await _getPeerArtists(anchor);
+
+    // Staleness guard: a newer search may have advanced the anchor
+    // while we were awaiting. Don't paint a bar for an anchor that's
+    // no longer current.
+    if (anchor !== _peerExpansionAnchor) return;
+    if (peers.length === 0) return;
+
+    bar.hidden = false;
+    bar.innerHTML = _peerExpansionActive
+        ? `<a href="#" id="peer-toggle">Showing artists like ${esc(anchor)}</a> &middot; click to hide`
+        : `<a href="#" id="peer-toggle">Include artists like ${esc(anchor)}?</a>`;
+    document.getElementById("peer-toggle").addEventListener("click", e => {
+        e.preventDefault();
+        _peerExpansionActive = !_peerExpansionActive;
+        offset = 0;
+        document.getElementById("events-body").innerHTML = "";
+        _renderedNameKeys.clear();
+        _renderedArtistKeys.clear();
+        _dedupedDropped = 0;
+        searchEvents();
     });
+}
+
+async function searchEvents() {
+    const isFirstPage = offset === 0;   // capture before any mutation
+    if (isFirstPage) _outsideGen++;
+    // Resolve typed-but-unclicked city input BEFORE reading filters.
+    // Otherwise getSelectedCityId() / getSelectedCountry() both return
+    // empty, and the search silently goes global despite "United States"
+    // sitting visibly in the city box. The bug was most observable on
+    // peer-expansion ("Include artists like X?") because peers tour
+    // worldwide and flood the results, but the underlying issue is the
+    // city-input lifecycle, not peer expansion itself.
+    _resolveCityInputIfNeeded();
+    const { typeSearch, artistExact, genres, themes, tournaments, cityId, startDate, endDate, search } = getFilters();
+
+    // Peer-expansion state: arm/disarm based on current filter shape.
+    // Reset _peerExpansionActive whenever the anchor changes — a fresh
+    // anchor starts in the "off" state ("Include artists like X?"), not
+    // silently inheriting a previous chip's expansion.
+    const offerPeers = _shouldOfferPeerExpansion({ typeSearch, artistExact, genres, tournaments });
+    const currentAnchor = offerPeers ? artistExact[0] : null;
+    if (currentAnchor !== _peerExpansionAnchor) {
+        _peerExpansionAnchor = currentAnchor;
+        _peerExpansionActive = false;
+    }
+    _renderPeerBar(currentAnchor);
+
+    // If the toggle is on, OR in the cached peers and pass anchor_artist
+    // so the backend can flag peer rows. We mutate a local copy of
+    // artistExact rather than the result of getFilters() — peer expansion
+    // is a per-query thing and shouldn't mutate the chip state itself.
+    let effectiveArtistExact = artistExact;
+    let anchorParam = null;
+    if (offerPeers && _peerExpansionActive) {
+        const peers = await _getPeerArtists(artistExact[0]);
+        if (peers.length) {
+            effectiveArtistExact = [artistExact[0], ...peers];
+            anchorParam = artistExact[0];
+        }
+    }
+    const country = getSelectedCountry();
+    const params = new URLSearchParams();
+    if (typeSearch.length) params.set("type_search", typeSearch.join(","));
+    // Un-expanded artist_exact first — this is what goes into the URL bar.
+    // Peer expansion swaps in the expanded list AFTER URL sync below so a
+    // refresh/shared link doesn't get rehydrated as N individual chips.
+    if (artistExact.length) params.set("artist_exact", artistExact.join(","));
+    if (genres.length) params.set("genres", genres.join(","));
+    if (themes.length) params.set("themes", themes.join(","));
+    if (tournaments.length) params.set("tournaments", tournaments.join(","));
+    if (cityId) params.set("city_ids", cityId);
+    if (country) params.set("country", country);
+    if (startDate) params.set("start_date", startDate);
+    if (endDate) params.set("end_date", endDate);
+    if (search) params.set("search", search);
+
+    // Sync the current filter set into the URL bar so the view is shareable.
+    // Only on first-page loads (pagination doesn't change filters and would
+    // be a no-op). replaceState (not push) keeps the back button going home,
+    // not stepping through every chip change.
+    // IMPORTANT: write before adding limit/offset, which don't belong in the
+    // shareable URL. ALSO before peer-expansion overwrites artist_exact —
+    // see comment above.
+    if (isFirstPage) {
+        const qs = params.toString();
+        history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
+    }
+
+    // Post-URL-sync: now overwrite artist_exact with the expanded list
+    // and set anchor_artist so the backend can flag is_peer_added.
+    if (anchorParam) {
+        params.set("artist_exact", effectiveArtistExact.join(","));
+        params.set("anchor_artist", anchorParam);
+    }
+
+    // Clear any prior empty/extended notice — fresh search starts neutral.
+    if (isFirstPage) clearSearchNotice();
+
+    // Fetch total count on the first page. The count endpoint also
+    // returns per-column presence ratios for the FULL filtered set —
+    // used to drive sparse-column hiding instead of evaluating just
+    // the first 50 rendered rows (which used to make the hidden-column
+    // set depend on which 50 events ranked highest, not the search
+    // context as a whole).
+    if (isFirstPage) {
+        totalEvents = null;
+        _serverColumnPresence = null;
+        fetch(`/api/events/count?${params}`)
+            .then(r => r.json())
+            .then(({ total, column_presence }) => {
+                totalEvents = total;
+                _serverColumnPresence = column_presence || null;
+                updateStats(document.getElementById("events-body").children.length);
+                // Re-apply hide decision now that we have full-set truth.
+                applySparseColumnHiding();
+            })
+            .catch(() => {});
+    }
+
+    params.set("limit", LIMIT);
+    params.set("offset", offset);
+
+    const resp = await fetch(`/api/events?${params}`);
+    let events = await resp.json();
+
+    // Empty-state handling — only on first page (paginated empties are
+    // just "end of results", not a missing-data signal). Two branches:
+    //   1. Lookahead succeeds → extend end_date, adopt those events.
+    //   2. Lookahead empty → log + render "no events for X" message.
+    let extendedTo = null;
+    if (isFirstPage && events.length === 0) {
+        const filterCriteria = {
+            typeSearch,
+            // When peer expansion is on, lookahead must search across
+            // the anchor + peers in the extended window — otherwise a
+            // user who clicked "Include artists like X" sees a "no
+            // events for X" message that ignores peer events that
+            // exist just past the date window.
+            artistExact: effectiveArtistExact,
+            genres,
+            themes,
+            tournaments,
+            cityId, country, startDate, search,
+            anchorArtist: anchorParam,
+        };
+        const lookahead = await _runLookahead(filterCriteria);
+        if (lookahead && lookahead.events.length > 0) {
+            // Found in extended window. Adopt the events and update inputs.
+            events = lookahead.events;
+            extendedTo = lookahead.events[lookahead.events.length - 1].start_date;
+            document.getElementById("end-date").value = extendedTo;
+            // URL-bar params use the un-expanded artistExact so a shared
+            // link doesn't rehydrate the chip strip with N individual
+            // peer chips (same reason as the main URL sync above).
+            const adoptedUrlParams = new URLSearchParams();
+            if (typeSearch.length)  adoptedUrlParams.set("type_search", typeSearch.join(","));
+            if (artistExact.length) adoptedUrlParams.set("artist_exact", artistExact.join(","));
+            if (genres.length)      adoptedUrlParams.set("genres", genres.join(","));
+            if (themes.length)      adoptedUrlParams.set("themes", themes.join(","));
+            if (tournaments.length) adoptedUrlParams.set("tournaments", tournaments.join(","));
+            if (cityId)             adoptedUrlParams.set("city_ids", cityId);
+            if (country)            adoptedUrlParams.set("country", country);
+            if (startDate)          adoptedUrlParams.set("start_date", startDate);
+            adoptedUrlParams.set("end_date", extendedTo);
+            if (search)             adoptedUrlParams.set("search", search);
+            // Count fetch needs the expanded artist set + anchor so the
+            // total/column_presence reflect what the user actually sees
+            // (anchor + peers). Without the split the count would only
+            // tally the anchor's events, undershooting the rendered
+            // total when peer expansion is on.
+            const adoptedCountParams = new URLSearchParams(adoptedUrlParams);
+            if (anchorParam) {
+                adoptedCountParams.set("artist_exact", effectiveArtistExact.join(","));
+                adoptedCountParams.set("anchor_artist", anchorParam);
+            }
+            // Re-fetch BOTH total + column_presence for the adopted
+            // (lookahead-extended) window. The non-lookahead path
+            // already does this — without it here, _serverColumnPresence
+            // stays null after a lookahead, applySparseColumnHiding
+            // falls back to DOM scan on the (often tiny) lookahead
+            // result set, and tiny samples can keep clearly-empty
+            // columns visible.
+            fetch(`/api/events/count?${adoptedCountParams}`)
+                .then(r => r.json())
+                .then(({ total, column_presence }) => {
+                    totalEvents = total;
+                    _serverColumnPresence = column_presence || null;
+                    updateStats(document.getElementById("events-body").children.length);
+                    applySparseColumnHiding();
+                })
+                .catch(() => {});
+            history.replaceState(null, "", `?${adoptedUrlParams.toString()}`);
+            renderSearchNotice("info",
+                `No matches in the original window — extended through ` +
+                `<span class="notice__strong">${esc(_fmtFriendlyDate(extendedTo))}</span> ` +
+                `to find events.`);
+        } else {
+            // Truly nothing — log + show empty message + bail out of render.
+            _logZeroResultSearch({
+                genres: genres.join(",") || null,
+                artists: artistExact.join(",") || null,
+                tournaments: tournaments.join(",") || null,
+                type_search: typeSearch.join(",") || null,
+                free_search: search || null,
+                city_ids: cityId || null,
+                country: country || null,
+                start_date: startDate || null,
+                end_date: endDate || null,
+            });
+            // Mirror the same signal to GA4 so it shows up alongside other
+            // funnel events. Backend log is the source of truth; this is
+            // for live dashboards / segments / audiences.
+            pushAnalytics("zero_result_search", {
+                search_chip_kinds: _chipKindsSignature(),
+                search_genres: genres.join(",") || null,
+                search_artists: artistExact.join(",") || null,
+                search_tournaments: tournaments.join(",") || null,
+                search_type: typeSearch.join(",") || null,
+                search_free: search || null,
+                search_city_id: cityId || null,
+                search_country: country || null,
+            });
+            renderEmptyStateMessage({ artistExact, genres, typeSearch, tournaments, search, startDate, endDate, peerExpansionActive: !!anchorParam });
+            // Reset paging UI so it doesn't dangle a "Load More" button.
+            const tbody = document.getElementById("events-body");
+            tbody.innerHTML = "";
+            updateStats(0);
+            document.getElementById("load-more-btn").style.display = "none";
+            _offerOutsideResults({ typeSearch, artistExact, genres, themes, tournaments, cityId, country, startDate, endDate, search });
+            if (isFirstPage) showCompactMode();
+            return;
+        }
+    }
+
+    // ── Same-name + same-moment dedup ─────────────────────────────────
+    // Backend dedup keys on (start_date, venue_id, identifier). If the
+    // same physical venue exists as two rows (Hebrew + English name,
+    // address normalization split, etc.), the venue_id differs so the
+    // backend bucket misses and the event renders twice. Frontend rule:
+    // collapse rows that share (name OR artist_name) + start_date +
+    // start_time, picking the first occurrence (already ranked by the
+    // API). Registry is cleared on first-page render and carries
+    // across Load More so pagination can't re-introduce a dup.
+    if (isFirstPage) {
+        _renderedNameKeys.clear();
+        _renderedArtistKeys.clear();
+        _dedupedDropped = 0;
+    }
+    // Capture BEFORE dedup — pagination needs the API's row count, not
+    // the post-filter count. Without this, offset stops advancing and
+    // "Load More" disappears when any rows get deduped.
+    const apiReturnedCount = events.length;
+    events = events.filter(ev => {
+        const d = ev.start_date || "";
+        const t = ev.start_time || "";
+        const nKey = ev.name ? `n|${ev.name.toLowerCase().trim()}|${d}|${t}` : null;
+        const aKey = ev.artist_name ? `a|${ev.artist_name.toLowerCase().trim()}|${d}|${t}` : null;
+        if (nKey && _renderedNameKeys.has(nKey)) return false;
+        if (aKey && _renderedArtistKeys.has(aKey)) return false;
+        if (nKey) _renderedNameKeys.add(nKey);
+        if (aKey) _renderedArtistKeys.add(aKey);
+        return true;
+    });
+    _dedupedDropped += apiReturnedCount - events.length;
+
+    // Compute the user's ISO-2 country once per render pass.
+    // Priority:
+    //   1. Selected City filter → its country.
+    //   2. navigator.language (e.g. "he-IL", "en-US") → trailing
+    //      country code. Lets a viewer browsing Global still see
+    //      their local broadcaster ("Kan" for users with he-IL).
+    //   3. null → render falls back to showing all channels.
+    const userCountryIso2 = (() => {
+        const cityId = getSelectedCityId();
+        if (cityId) {
+            if (typeof cityId === "string" && cityId.startsWith("COUNTRY:")) {
+                return _COUNTRY_NAME_TO_ISO2[cityId.slice(8)] || null;
+            }
+            const id = parseInt(cityId, 10);
+            if (Number.isFinite(id)) {
+                const city = allCities.find(c => c.id === id);
+                if (city) {
+                    const iso2 = _COUNTRY_NAME_TO_ISO2[city.country];
+                    if (iso2) return iso2;
+                }
+            }
+        }
+        // No city → fall back to the browser's locale-derived country.
+        // navigator.languages is ranked by preference; the first entry
+        // wins. Locale shape is "he-IL" / "en-US" / "pt-BR" — split on
+        // "-" and uppercase the tail.
+        const langs = (navigator.languages && navigator.languages.length)
+            ? navigator.languages
+            : (navigator.language ? [navigator.language] : []);
+        for (const l of langs) {
+            const parts = String(l || "").split("-");
+            if (parts.length >= 2) {
+                const tail = parts[parts.length - 1].toUpperCase();
+                if (tail.length === 2) return tail;
+            }
+        }
+        return null;
+    })();
+
+    const tbody = document.getElementById("events-body");
+    events.forEach(ev => tbody.appendChild(_renderEventRow(ev, userCountryIso2)));
 
     offset += apiReturnedCount;
     updateStats(tbody.children.length);
@@ -2015,11 +2023,94 @@ async function searchEvents() {
     const hasMore = apiReturnedCount === LIMIT;
     const btn = document.getElementById("load-more-btn");
     btn.style.display = hasMore ? "" : "none";
+    if (!hasMore) _offerOutsideResults({ typeSearch, artistExact, genres, themes, tournaments, cityId, country, startDate, endDate, search });
     if (hasMore && totalEvents !== null) {
         const remaining = Math.min(totalEvents - offset, LIMIT);
         btn.textContent = `Load Next ${remaining} Events`;
     } else {
         btn.textContent = "Load More";
+    }
+}
+
+// ── "Display results outside of <location>" ─────────────────────────
+// A genre / format / artist (or any typed) search inside a city, metro or
+// country: once the local results run out (or there are none), check the
+// same search everywhere else and, if it finds anything, add a row
+// offering it. Clicking loads those events below, with their city shown,
+// 50 at a time. The server leaves the selected location out
+// (exclude_city_ids / exclude_country), so nothing repeats.
+let _outsideGen = 0;
+
+function _outsideParams(f) {
+    const p = new URLSearchParams();
+    if (f.typeSearch.length)  p.set("type_search", f.typeSearch.join(","));
+    if (f.artistExact.length) p.set("artist_exact", f.artistExact.join(","));
+    if (f.genres.length)      p.set("genres", f.genres.join(","));
+    if (f.themes.length)      p.set("themes", f.themes.join(","));
+    if (f.tournaments.length) p.set("tournaments", f.tournaments.join(","));
+    if (f.cityId)             p.set("exclude_city_ids", f.cityId);
+    else if (f.country)       p.set("exclude_country", f.country);
+    if (f.startDate)          p.set("start_date", f.startDate);
+    if (f.endDate)            p.set("end_date", f.endDate);
+    if (f.search)             p.set("search", f.search);
+    return p;
+}
+
+function _tableColspan() {
+    return document.querySelectorAll("#events-table thead th").length + 1;
+}
+
+async function _offerOutsideResults(f) {
+    const hasTerms = f.typeSearch.length || f.artistExact.length || f.genres.length
+        || f.themes.length || f.tournaments.length;
+    if (!hasTerms || !(f.cityId || f.country)) return;
+    const gen = _outsideGen;
+    const params = _outsideParams(f);
+    let total = 0;
+    try {
+        const r = await fetch(`/api/events/count?${params}`);
+        total = (await r.json()).total || 0;
+    } catch (_) { return; }
+    if (!total || gen !== _outsideGen) return;
+    const place = (document.getElementById("city-input").value || "").trim() || "this location";
+    const tbody = document.getElementById("events-body");
+    tbody.querySelectorAll("tr.outside-offer").forEach(r => r.remove());
+    const tr = document.createElement("tr");
+    tr.className = "outside-offer";
+    tr.innerHTML = `<td colspan="${_tableColspan()}"><button type="button" class="outside-btn">`
+        + `Display results outside of ${esc(place)} (${total.toLocaleString()})</button></td>`;
+    tr.querySelector("button").addEventListener("click", () => {
+        tr.className = "outside-header";
+        tr.innerHTML = `<td colspan="${_tableColspan()}">Outside ${esc(place)}</td>`;
+        _loadOutsideResults(params, 0, gen);
+    }, { once: true });
+    tbody.appendChild(tr);
+}
+
+async function _loadOutsideResults(params, outsideOffset, gen) {
+    const p = new URLSearchParams(params);
+    p.set("limit", LIMIT);
+    p.set("offset", outsideOffset);
+    let events = [];
+    try {
+        events = await (await fetch(`/api/events?${p}`)).json();
+    } catch (_) { return; }
+    if (gen !== _outsideGen) return;
+    const tbody = document.getElementById("events-body");
+    tbody.querySelectorAll("tr.outside-more").forEach(r => r.remove());
+    events.forEach(ev => {
+        const tr = _renderEventRow(ev, null, { showLocation: true });
+        tr.classList.add("outside-row");
+        tbody.appendChild(tr);
+    });
+    applySparseColumnHiding();
+    if (events.length === LIMIT) {
+        const more = document.createElement("tr");
+        more.className = "outside-more";
+        more.innerHTML = `<td colspan="${_tableColspan()}"><button type="button" class="outside-btn">More results outside</button></td>`;
+        more.querySelector("button").addEventListener("click",
+            () => _loadOutsideResults(params, outsideOffset + LIMIT, gen), { once: true });
+        tbody.appendChild(more);
     }
 }
 

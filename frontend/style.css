@@ -548,6 +548,20 @@ a:hover { text-decoration: underline; }
 #events-body tr.peer-row td { font-style: italic; color: #6b7280; }
 #events-body tr.peer-row .artist-link { color: #6b7280; }
 
+/* "Display results outside of <location>" row + section (app.js
+   _offerOutsideResults). Reads as part of the table, not a banner. */
+#events-body tr.outside-offer td,
+#events-body tr.outside-more td { text-align: center; padding: 14px 8px; background: #f9fafb; }
+#events-body tr.outside-header td {
+    padding: 10px 8px; font-weight: 600; color: #374151;
+    background: #f3f4f6; border-top: 2px solid #d1d5db;
+}
+#events-body .outside-btn {
+    font: inherit; font-weight: 600; color: #1d4ed8; background: transparent;
+    border: 1px solid #bfdbfe; border-radius: 999px; padding: 6px 16px; cursor: pointer;
+}
+#events-body .outside-btn:hover { background: #eff6ff; }
+
 /* Tournament rows (sport-tournament events with `tournament` set).
    .tournament-teams renders the two team names ("Mexico South Africa")
    in the Artist column slot. .tv-watch styles the per-geo TV channel
