@@ -157,6 +157,11 @@ class CollectorRegistry:
         query can run. Route 2 collectors keep passing None (default).
         """
         saved = 0
+        # Israeli artist_name hygiene (app/services/artist_names.py): show
+        # titles are not artists. Cached per batch — a listing repeats the
+        # same production dozens of times.
+        is_israel = (city.country or "") == "Israel"
+        artist_cache: dict = {}
         for i, raw in enumerate(raw_events):
             try:
                 # Decode any HTML entities that slipped through the scraper
@@ -232,6 +237,9 @@ class CollectorRegistry:
                     if existing.start_time is None and raw.start_time is not None:
                         existing.start_time = raw.start_time
                         updated = True
+                    if is_israel and raw.artist_name:
+                        # never back-fill a show title the cleanup removed
+                        raw.artist_name = self._israeli_artist(db, raw.artist_name, artist_cache)
                     if not existing.artist_name and raw.artist_name:
                         # a recipe learned who performs/lectures after the
                         # row was first saved (katedra lecturer, 2026-09-21)
@@ -349,6 +357,8 @@ class CollectorRegistry:
 
                 # Infer artist from name if not explicitly provided
                 artist_name = raw.artist_name or infer_artist_from_name(raw.name)
+                if is_israel:
+                    artist_name = self._israeli_artist(db, artist_name, artist_cache)
 
                 # If still no artist, check if the event name IS a known performer
                 matched_performer = None
@@ -366,6 +376,9 @@ class CollectorRegistry:
                 # "Bill Bailey" vs "BILL BAILEY"), reuse the known spelling
                 # so chips, genre rows and YouTube links don't split.
                 artist_name = canonical_artist_spelling(db, artist_name)
+                if is_israel and artist_name:
+                    # the Performer fallback above can re-pick a show title
+                    artist_name = self._israeli_artist(db, artist_name, artist_cache)
 
                 # Create event
                 event = Event(
@@ -782,6 +795,28 @@ class CollectorRegistry:
         db.commit()
         logger.info(f"YouTube enrichment complete: {enriched}/{len(events)} artists found")
         return enriched
+
+    @staticmethod
+    def _israeli_artist(db: Session, name: str | None, cache: dict) -> str | None:
+        """``clean_israeli_artist`` with the DB lookups it needs, cached."""
+        if not name or not name.strip():
+            return name
+        key = name.strip().lower()
+        if key in cache:
+            return cache[key]
+        from app.models.genre import ArtistGenre
+        from app.services.artist_names import clean_israeli_artist
+
+        def known(n: str) -> bool:
+            p = db.query(Performer.mb_id, Performer.spotify_id).filter(Performer.normalized_name == n).first()
+            return bool(p and (p[0] or p[1]))
+
+        def sub_genre(n: str):
+            g = db.query(ArtistGenre.primary_genre).filter(ArtistGenre.normalized_name == n).first()
+            return g[0] if g else None
+
+        cache[key] = clean_israeli_artist(name, known_performer=known, sub_genre=sub_genre)
+        return cache[key]
 
     @staticmethod
     def _venue_home_city(raw: RawEvent, city: City, db: Session) -> City:
