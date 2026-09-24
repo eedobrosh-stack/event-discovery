@@ -67,6 +67,16 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
     """Shared filter logic used by both list and count endpoints."""
     from sqlalchemy import or_, and_, func, select
     from app.models import City, EventTheme
+    from app.api._chip_resolve import resolve_typed_terms
+
+    # Typed text that equals a chip runs as that chip ("jazz" → the Jazz
+    # genre filter), exactly as if the user had clicked it.
+    if type_search:
+        r = resolve_typed_terms(db, type_search=type_search, genres=genres, themes=themes,
+                                tournaments=tournaments, artist_exact=artist_exact,
+                                city_ids=city_ids, country=country)
+        type_search, genres, themes = r["type_search"], r["genres"], r["themes"]
+        tournaments, artist_exact, city_ids = r["tournaments"], r["artist_exact"], r["city_ids"]
 
     # Tournament filter — set when the user clicked a Tournament chip
     # in autocomplete (slot 0). Strict equality on the indexed

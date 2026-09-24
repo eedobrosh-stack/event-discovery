@@ -52,6 +52,22 @@ router = APIRouter(prefix="/api/export", tags=["export"])
 
 
 def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
+    # Typed text that equals a chip exports as that chip, matching what
+    # /api/events showed (app/api/_chip_resolve.py).
+    if req.type_search:
+        from app.api._chip_resolve import resolve_typed_terms
+        r = resolve_typed_terms(
+            db, type_search=req.type_search, genres=req.genres,
+            themes=getattr(req, "themes", None), tournaments=req.tournaments,
+            artist_exact=req.artist_exact,
+            city_ids=",".join(str(c) for c in req.city_ids) or None,
+            country=getattr(req, "country", None))
+        update = {"type_search": r["type_search"], "genres": r["genres"],
+                  "tournaments": r["tournaments"], "artist_exact": r["artist_exact"],
+                  "city_ids": [int(c) for c in (r["city_ids"] or "").split(",") if c]}
+        if hasattr(req, "themes"):
+            update["themes"] = r["themes"]
+        req = req.model_copy(update=update)
     query = db.query(Event).options(
         joinedload(Event.venue).joinedload(Venue.city),
         selectinload(Event.event_types),
