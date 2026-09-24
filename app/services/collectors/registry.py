@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from app.models import Event, Venue, City, EventType, Performer, event_event_types
 from app.services.collectors.base import BaseCollector, RawEvent, default_end_time, infer_artist_from_name, CollectorAuthError
@@ -783,9 +783,40 @@ class CollectorRegistry:
         logger.info(f"YouTube enrichment complete: {enriched}/{len(events)} artists found")
         return enriched
 
+    @staticmethod
+    def _venue_home_city(raw: RawEvent, city: City, db: Session) -> City:
+        """The City a venue belongs to, not the city the collector ran for.
+
+        Israeli recipes and collectors are scoped to one city (mostly Tel
+        Aviv) but list venues all over the country; filing every one of
+        them under the collector's city put ~340 venues in the wrong City
+        (Kfar Etzion, Kiryat Shmona, kibbutzim under Tel Aviv). When the
+        raw venue_city canonicalises to another Israeli city, use that
+        City row, or "Israel - Other" for a place without one.
+        scripts/rehome_israel_venues.py fixed the rows already filed.
+        """
+        if city.country != "Israel" or not raw.venue_city:
+            return city
+        from app.services.il_places import PLACES, canon_place
+        place = canon_place(raw.venue_city, city.name)
+        if place.lower() == (city.name or "").lower() or place.startswith(("Outside Israel", "Online")):
+            return city
+        target = (db.query(City)
+                  .filter(City.country == "Israel", func.lower(City.name) == place.lower())
+                  .first())
+        if target is None and place in set(PLACES.values()):
+            target = (db.query(City)
+                      .filter(City.country == "Israel", City.name == "Israel - Other").first())
+        if target is None:
+            return city
+        if target.canonical_city_id:
+            target = db.get(City, target.canonical_city_id) or target
+        return target
+
     def _find_or_create_venue(self, raw: RawEvent, city: City, db: Session) -> Venue | None:
         if not raw.venue_name:
             return None
+        city = self._venue_home_city(raw, city, db)
 
         venue = db.query(Venue).filter_by(name=raw.venue_name, city_id=city.id).first()
         if not venue:

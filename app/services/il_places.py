@@ -24,6 +24,28 @@ from __future__ import annotations
 import re
 
 PLACES: dict[str, str] = {
+    "Be'er Sheva": 'Beersheba',
+    'Beer Sheva': 'Beersheba',
+    'Hertsliya': 'Herzliya',
+    'Herzeliya': 'Herzliya',
+    'Тель-Авив': 'Tel Aviv',
+    'Тель-Авив-Яффо': 'Tel Aviv',
+    "Modi'in-Maccabim-Re'ut": 'Modiin',
+    'Modiin-Maccabim-Reut': 'Modiin',
+    "Binyamina-Giv'at Ada": 'Binyamina',
+    'Pardes Hanna-Karkur': 'Pardes Hanna',
+    'Glil Yam': 'Glil Yam',
+    'Tel-Aviv': 'Tel Aviv',
+    'Jaffa': 'Tel Aviv',
+    'Yafo': 'Tel Aviv',
+    'Rosh Haayin': 'Rosh HaAyin',
+    'Ramat-Gan': 'Ramat Gan',
+    'Petach Tikva': 'Petah Tikva',
+    'Kfar-Saba': 'Kfar Saba',
+    'Raanana': 'Raanana',
+    "Ra'anana": 'Raanana',
+    'Netania': 'Netanya',
+    'Haifa, Israel': 'Haifa',
     'Ashqelon': 'Ashkelon',
     'Boston': 'Outside Israel (US)',
     'Caesarea': 'Caesarea',
@@ -282,6 +304,9 @@ def canon_place(physical_city: str | None, city_name: str | None = None) -> str:
     """The venue's real city: ``physical_city`` canonicalised, else the
     attached City row's name, else "Israel - Other"."""
     p = _fold(physical_city)
+    p = re.sub(r",\s*(Israel|ישראל)$", "", p, flags=re.IGNORECASE).strip() or p
+    if p.lower() in ("israel", "ישראל"):
+        p = ""                                 # the country says nothing
     if p:
         return _FOLDED.get(p, _WS.sub(" ", physical_city).strip())
     c = _fold(city_name)
