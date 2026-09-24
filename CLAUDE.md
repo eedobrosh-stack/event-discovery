@@ -287,7 +287,7 @@ shows Tel Aviv before Gush Dan).
 | `scripts/improve_genre_via_brave.py` | Lever C (Brave-augmented retry) — supports `--country` |
 | `scripts/dump_classifications_seed.py` | Dump local artist_genre + taxonomy → seed bundle |
 | `scripts/dedupe_us_cities.py` | Idempotent city-row deduper |
-| `scripts/dedupe_venues.py` | Venue-row deduper — ≥2-of-5 signals (geo / events / phone / url / address), name-based sub-venue (hall) veto, `--merge-pair` override for known cross-language clusters |
+| `scripts/dedupe_venues.py` | Venue-row deduper — ≥2-of-5 signals (geo / events / phone / url / address), name-based sub-venue (hall) veto, `--merge-pair` override for known cross-language clusters. `--website-pass [--country X]` consolidates same-city rows sharing a website host (ticketing/map/municipal aggregators excluded) whose names also agree, and records every merged spelling in `venue_aliases` so the next scrape re-lands on the survivor |
 | `scripts/dedupe_events.py` | Cross-source event-row deduper — buckets on (start_date, venue_id, primary identifier), unions event_types onto canonical, ORM-driven so m2m cascades |
 | `scripts/backfill_mevalim_artist_name.py` | One-off SQL: name → artist_name for mevalim rows |
 | `scripts/seed_llm_sources.py` | Manual seed of LLMSource trial pool |

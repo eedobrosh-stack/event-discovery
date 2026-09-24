@@ -75,7 +75,7 @@ import math
 import re
 import sys
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -200,7 +200,7 @@ def _populated_count(v: dict) -> int:
 # In either case we VETO the heuristic merge regardless of other
 # signals. Forced merges via --merge-pair bypass this guard.
 HALL_KEYWORDS = [
-    "אולם", "אודיטוריום", "במה",         # he: hall, auditorium, stage
+    "אולם", "אודיטוריום", "במה", "אמפי", "מרפסת",   # he: hall, auditorium, stage, amphi, terrace
     "Hall", "Auditorium", "Stage", "Studio", "Room", "Saal",
     "Warehouse", "Factory", "Upstairs", "Downstairs", "Night",
 ]
@@ -265,19 +265,24 @@ def _is_sub_venue_distinction(a: str | None, b: str | None) -> bool:
 # ──────────────────────────────────────────────────────────────────────
 # Detection
 # ──────────────────────────────────────────────────────────────────────
-def _load_venues(db, city_id: int | None) -> list[dict]:
+def _load_venues(db, city_id: int | None, country: str | None = None) -> list[dict]:
     sql = """
         SELECT v.id, v.name, v.city_id, v.latitude, v.longitude, v.phone,
                v.website_url, v.street_address, v.physical_city,
                v.physical_country, v.timezone, v.venue_type,
-               v.default_event_type_id,
+               v.default_event_type_id, c.name AS city_name,
                (SELECT COUNT(*) FROM events e WHERE e.venue_id = v.id) AS event_count
-        FROM venues v
+        FROM venues v JOIN cities c ON c.id = v.city_id
     """
-    params = {}
+    where, params = [], {}
     if city_id is not None:
-        sql += " WHERE v.city_id = :cid"
+        where.append("v.city_id = :cid")
         params["cid"] = city_id
+    if country:
+        where.append("c.country = :country")
+        params["country"] = country
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     rows = db.execute(text(sql), params).fetchall()
     return [dict(r._mapping) for r in rows]
 
@@ -428,6 +433,289 @@ def _build_clusters(
         for d in dups:
             key = (canonical["id"], d["id"]) if canonical["id"] < d["id"] else (d["id"], canonical["id"])
             d["_signals_to_canonical"] = pair_signals.get(key, {})
+        out.append(([canonical], dups))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Website pass
+# ──────────────────────────────────────────────────────────────────────
+# Hosts that sell tickets, map, or list MANY unrelated venues. A shared
+# host on one of these says nothing about two rows being the same place
+# (leaan.co.il alone covers Beit Zioni America, the Eri Geller Museum and
+# Heichal HaTarbut), so the website pass ignores them outright. The
+# name-relatedness requirement below would already block those merges;
+# this list is the second belt.
+AGGREGATOR_HOSTS = {
+    # ticketing / listing platforms
+    "leaan.co.il", "mevalim.co.il", "habama.co.il", "smarticket.co.il",
+    "live.tickchak.co.il", "tickchak.co.il", "kupatbravo.co.il",
+    "ticketmaster.co.il", "ticketmaster.com", "eventbuzz.co.il",
+    "ontopo.com", "secrettelaviv.com", "concerts50.com", "haifa.events",
+    "bandsintown.com", "songkick.com", "eventbrite.com", "dice.fm",
+    "ra.co", "residentadvisor.net", "meetup.com", "lu.ma", "luma.com",
+    # maps / social / media — never identify a venue on their own
+    "waze.com", "maps.apple.com", "maps.google.com", "google.com",
+    "youtube.com", "shazam.com", "facebook.com", "instagram.com",
+    "spotify.com", "wikipedia.org",
+}
+# Suffixes whose hosts are shared by many municipal venues.
+AGGREGATOR_SUFFIXES = ("gov.il", "muni.il")
+
+# Tokens that carry no venue identity — region names, country names.
+# Stripped before two names are compared so that "גריי, יהוד-מונוסון"
+# and "מועדון הגריי יהוד, אזור המרכז" both reduce to the brand core.
+# The city's OWN name is stripped per city instead (see
+# ``_city_noise_tokens``) because ``cities.name`` is English while the
+# venue names are usually Hebrew.
+GEO_NOISE_TOKENS = {
+    "אזור", "המרכז", "הצפון", "הדרום", "מחוז", "ישראל", "השרון",
+    "israel", "il", "district",
+}
+
+# Venue-kind words that may prefix a name without changing which place
+# it is ("תיאטרון בית ליסין" is "בית ליסין"). Only stripped as a LEADING
+# token: mid-name they distinguish rooms inside a complex, which is why
+# "תיאטרון הפארק, פארק הירקון" must not collapse into "פארק הירקון".
+GENERIC_PREFIXES = {
+    "תיאטרון", "תאטרון", "מועדון", "היכל", "מוזיאון", "בית", "מרכז",
+    "theatre", "theater", "club", "museum", "the", "cafe", "bar", "pub",
+}
+
+# Hebrew has no case, so the definite article is the main spelling
+# wobble between collectors: "מדיטק" / "המדיטק", "גריי" / "הגריי".
+_HE_RE = re.compile(r"^[֐-׿]+$")
+
+
+def _is_aggregator_host(host: str) -> bool:
+    return bool(host) and (host in AGGREGATOR_HOSTS
+                           or host.endswith(AGGREGATOR_SUFFIXES))
+
+
+def _host_brand(host: str) -> str:
+    """Registrable label of a host, letters/digits only. ``grayclub.co.il``
+    → ``grayclub``; used to recognise a venue named after its own site."""
+    if not host:
+        return ""
+    parts = [p for p in host.split(".") if p]
+    # Drop public-suffix-ish tail labels (co/org/ac/com/net/il/us/…).
+    while len(parts) > 1 and len(parts[-1]) <= 3:
+        parts.pop()
+    return re.sub(r"[^a-z0-9]", "", parts[-1].lower()) if parts else ""
+
+
+def _he_fold(tok: str) -> str:
+    """Drop a leading Hebrew definite article so "הגריי" keys as "גריי"."""
+    if len(tok) >= 4 and tok.startswith("ה") and _HE_RE.match(tok):
+        return tok[1:]
+    return tok
+
+
+def _city_noise_tokens(venues: list[dict]) -> dict[int, set[str]]:
+    """Per city, the tokens that are city qualifiers rather than venue
+    identity.
+
+    ``cities.name`` is English ("Yehud", "Jerusalem") while most venue
+    names are Hebrew, so the city's own spelling can't be read off the
+    city row. It can be read off the data: a token carried by a quarter
+    of a city's venue names is the city, its district or its region —
+    "יהוד", "מונוסון", "אביב", "יפו" — never a venue's identity. Only
+    computed for cities with enough rows for the ratio to mean anything.
+    """
+    by_city: dict[int, list[dict]] = defaultdict(list)
+    for v in venues:
+        by_city[v["city_id"]].append(v)
+    out: dict[int, set[str]] = {}
+    for city_id, group in by_city.items():
+        noise: set[str] = set()
+        for src in (group[0].get("city_name"),):
+            noise.update(t for t in _norm_venue_name(src).split() if len(t) >= 3)
+        if len(group) >= 8:
+            counts: Counter[str] = Counter()
+            for v in group:
+                counts.update(set(_norm_venue_name(v["name"]).split()))
+            for tok, n in counts.items():
+                if n >= 3 and n / len(group) >= 0.25 and tok not in GENERIC_PREFIXES:
+                    noise.add(tok)
+        out[city_id] = noise
+    return out
+
+
+def _name_tokens(venue: dict, city_noise: set[str]) -> list[str]:
+    """Identity tokens of a venue name: city/region qualifiers removed,
+    definite articles folded, order preserved."""
+    toks = [_he_fold(t) for t in _norm_venue_name(venue["name"]).split()]
+    drop = {_he_fold(t) for t in city_noise} | GEO_NOISE_TOKENS
+    for src in (venue.get("physical_city"),):
+        drop.update(_he_fold(t) for t in _norm_venue_name(src).split() if len(t) >= 3)
+    kept = [t for t in toks if t not in drop]
+    return kept or toks
+
+
+def _strip_generic_prefix(toks: list[str]) -> list[str]:
+    while len(toks) > 1 and toks[0] in GENERIC_PREFIXES:
+        toks = toks[1:]
+    return toks
+
+
+def _name_core(venue: dict, city_noise: set[str] | None = None) -> str:
+    """Identity tokens as one string, with a generic leading venue-kind
+    word ("תיאטרון", "מועדון") dropped and the rest sorted — collectors
+    disagree on word order ("הקאמרי - תיאטרון" vs "תיאטרון הקאמרי")
+    far more often than on the words themselves."""
+    toks = _strip_generic_prefix(_name_tokens(venue, city_noise or set()))
+    return " ".join(sorted(toks))
+
+
+def _brand_match(core: str, brand: str) -> bool:
+    """True when a name core looks like the host's own brand label."""
+    if not core or not brand or len(brand) < 4:
+        return False
+    flat = re.sub(r"[^a-z0-9]", "", core)
+    return bool(flat) and (flat in brand or brand in flat)
+
+
+def _digit_tokens(toks: list[str]) -> set[str]:
+    return {t for t in toks if any(ch.isdigit() for ch in t)}
+
+
+def _website_relation(a: dict, b: dict, brand: str, shared_events: int,
+                      city_noise: set[str]) -> str | None:
+    """Why ``a`` and ``b`` (same city, same non-aggregator host) are the
+    same venue — or None when the shared host is not enough.
+
+    Sharing a website makes two rows *candidates*; the name has to agree
+    before they are folded, because one venue's site legitimately hosts
+    several rooms. The ladder, strictest first:
+
+    ``core_equal``   identical once city qualifiers, definite articles
+                     and a leading venue-kind word are removed.
+    ``core_ratio``   near-identical spelling ("פקטורי" / "פאקטורי").
+    ``host_brand``   both names are the site's own brand — the
+                     English/Hebrew pair "Gray Club" / "מועדון Gray".
+    ``shared_events`` names share no token at all (cross-script rows
+                     like "GRAY מודיעין" / "גריי מודיעין") but the two
+                     rows already hold the same show on the same date.
+
+    A number token present on one side only ("הבימה 4") means a numbered
+    hall, never a spelling variant, and vetoes the pair outright.
+    """
+    ta, tb = _name_tokens(a, city_noise), _name_tokens(b, city_noise)
+    if _digit_tokens(ta) != _digit_tokens(tb):
+        return None
+    ca, cb = _name_core(a, city_noise), _name_core(b, city_noise)
+    if ca and cb:
+        if sorted(ta) == sorted(tb) or ca == cb:
+            return "core_equal"
+        ratio = difflib.SequenceMatcher(None, ca, cb).ratio()
+        if ratio >= 0.86:
+            return f"core_ratio={ratio:.2f}"
+        # Brand match reads the tokens in their written order: it is the
+        # concatenation ("Gray" + "Club") that has to equal the host label.
+        if (_brand_match(" ".join(_strip_generic_prefix(ta)), brand)
+                and _brand_match(" ".join(_strip_generic_prefix(tb)), brand)):
+            return "host_brand"
+        # Any shared identity token means these are two names for places
+        # in the same complex — and the part that differs is what tells
+        # the rooms apart. Only wholly disjoint names fall through to the
+        # event bridge.
+        if set(ta) & set(tb):
+            return None
+    if shared_events >= 2:
+        return f"shared_events={shared_events}"
+    return None
+
+
+def _build_website_clusters(db, venues: list[dict]) -> list[tuple[list[dict], list[dict]]]:
+    """Consolidate venues that share a website AND a city.
+
+    The shared host is the entry ticket, not the verdict: rows only merge
+    when their names also agree (equal / near / contained core, or both
+    matching the host's own brand) or when they already hold the same
+    event on the same date. Without that second condition a ticketing
+    host would collapse every venue it sells for into one row.
+
+    Sub-room names (``אולם ע"ש לאוי`` vs ``אולם צוקר``) and rows whose
+    ``physical_city`` disagrees are vetoed, exactly as in the other passes.
+    """
+    by_id = {v["id"]: v for v in venues}
+    parent = {v["id"]: v["id"] for v in venues}
+    pair_signals: dict[tuple[int, int], dict] = {}
+
+    signatures: dict[int, set[tuple[str, str]]] = {v["id"]: set() for v in venues}
+    rows = db.execute(text(
+        "SELECT venue_id, start_date, LOWER(COALESCE(NULLIF(artist_name, ''), name)) "
+        "FROM events WHERE venue_id IS NOT NULL"
+    )).fetchall()
+    for venue_id, start_date, ident in rows:
+        if venue_id in signatures and ident:
+            signatures[venue_id].add((str(start_date), str(ident).strip()))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    city_noise = _city_noise_tokens(venues)
+    buckets: dict[tuple[int, str], list[dict]] = defaultdict(list)
+    skipped_aggregator: set[str] = set()
+    for v in venues:
+        host = _norm_url(v["website_url"])
+        if not host:
+            continue
+        if _is_aggregator_host(host):
+            skipped_aggregator.add(host)
+            continue
+        buckets[(v["city_id"], host)].append(v)
+
+    for (city_id, host), group in buckets.items():
+        if len(group) < 2:
+            continue
+        brand = _host_brand(host)
+        noise = city_noise.get(city_id, set())
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if _is_sub_venue_distinction(a["name"], b["name"]):
+                    continue
+                pa, pb = _norm_venue_name(a["physical_city"]), _norm_venue_name(b["physical_city"])
+                if pa and pb and pa != pb:
+                    continue
+                shared = len(signatures[a["id"]] & signatures[b["id"]])
+                why = _website_relation(a, b, brand, shared, noise)
+                if not why:
+                    continue
+                pair = (a["id"], b["id"]) if a["id"] < b["id"] else (b["id"], a["id"])
+                pair_signals[pair] = {"url": True, "host": host, "match": why,
+                                      "shared_events": shared}
+                union(a["id"], b["id"])
+
+    if skipped_aggregator:
+        log.info(f"aggregator hosts skipped: {len(skipped_aggregator)} "
+                 f"({', '.join(sorted(skipped_aggregator)[:8])}…)")
+
+    groups: dict[int, list[dict]] = {}
+    for v in venues:
+        groups.setdefault(find(v["id"]), []).append(v)
+    out = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda v: (
+            0 if v["default_event_type_id"] is not None else 1,
+            -(v["event_count"] or 0),
+            -_populated_count(v),
+            v["id"],
+        ))
+        canonical, dups = members[0], members[1:]
+        for d in dups:
+            key = (canonical["id"], d["id"]) if canonical["id"] < d["id"] else (d["id"], canonical["id"])
+            d["_signals_to_canonical"] = pair_signals.get(key, {"url": True, "match": "transitive"})
         out.append(([canonical], dups))
     return out
 
@@ -614,9 +902,54 @@ def _build_cross_language_clusters(db, venues: list[dict]) -> list[tuple[list[di
 # ──────────────────────────────────────────────────────────────────────
 # Apply
 # ──────────────────────────────────────────────────────────────────────
-def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool) -> dict:
+def _alias_plan(db, canonical: dict, dups: list[dict]) -> list[dict]:
+    """The name permutations to record against the canonical venue.
+
+    Every dropped row's display name becomes an alias, so the ingest path
+    (``find_venue_alias``) routes the next scrape of "גריי, יהוד-מונוסון"
+    onto the surviving Gray row instead of re-creating the duplicate.
+    The canonical's own name is included so the table holds the whole
+    cluster.
+
+    Aliases the dropped rows already own are NOT listed here — they are
+    re-pointed in place by ``fold_cluster``, which keeps their key and so
+    cannot collide. Listed names are skipped when the city already has
+    that key, because it may belong to a venue outside this cluster.
+    """
+    city_id = canonical["city_id"]
+    # ids come straight from the venues table, so inlining them is safe
+    # and avoids an expanding bindparam for a list that is always short.
+    dup_list = ", ".join(str(int(d["id"])) for d in dups) or "0"
+    taken = {
+        row[0] for row in db.execute(
+            text(f"SELECT normalized_alias FROM venue_aliases "
+                 f"WHERE city_id = :cid AND venue_id NOT IN ({dup_list})"),
+            {"cid": city_id},
+        ).fetchall()
+    }
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def add(alias: str | None, source: str) -> None:
+        alias = (alias or "").strip()
+        key = _norm_venue_name(alias)
+        if not key or key in seen or key in taken:
+            return
+        seen.add(key)
+        out.append({"alias": alias, "normalized_alias": key, "source": source})
+
+    add(canonical["name"], "dedupe_venues:canonical")
+    for d in dups:
+        add(d["name"], "dedupe_venues:merged")
+    return out
+
+
+def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool,
+                 write_aliases: bool = True) -> dict:
     """Reassign events from each dup to canonical and delete the dup
     venue row. Single transaction across the cluster."""
+    aliases = _alias_plan(db, canonical, dups) if write_aliases else []
+    aliases_repointed = 0
     backfill = {}
     for col in BACKFILL_COLS:
         if canonical[col] in (None, ""):
@@ -631,6 +964,27 @@ def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool) -> dict:
             params = dict(backfill)
             params["id"] = canonical["id"]
             db.execute(text(f"UPDATE venues SET {sets} WHERE id = :id"), params)
+        # Aliases first. The dropped rows' existing aliases have to be
+        # re-pointed before the DELETE: they would otherwise be left
+        # dangling (SQLite enforces ON DELETE CASCADE only when
+        # foreign_keys is ON, and either way the spellings would stop
+        # resolving — which is how the duplicates came back last time).
+        # The update keeps (city_id, normalized_alias), so it cannot
+        # collide with the unique index.
+        dup_list = ", ".join(str(int(d["id"])) for d in dups)
+        res = db.execute(
+            text(f"UPDATE venue_aliases SET venue_id = :new WHERE venue_id IN ({dup_list})"),
+            {"new": canonical["id"]},
+        )
+        aliases_repointed = res.rowcount or 0
+        for a in aliases:
+            db.execute(text("""
+                INSERT INTO venue_aliases (venue_id, city_id, alias, normalized_alias,
+                                           source, confidence, created_at)
+                VALUES (:vid, :cid, :alias, :key, :source, 1.0, CURRENT_TIMESTAMP)
+                ON CONFLICT (city_id, normalized_alias) DO NOTHING
+            """), {"vid": canonical["id"], "cid": canonical["city_id"],
+                   "alias": a["alias"], "key": a["normalized_alias"], "source": a["source"]})
         for d in dups:
             res = db.execute(
                 text("UPDATE events SET venue_id = :new WHERE venue_id = :old"),
@@ -642,6 +996,8 @@ def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool) -> dict:
     return {
         "canonical_id": canonical["id"],
         "canonical_name": canonical["name"],
+        "city_id": canonical["city_id"],
+        "city": canonical.get("city_name"),
         "duplicates": [
             {
                 "id": d["id"],
@@ -651,6 +1007,8 @@ def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool) -> dict:
             }
             for d in dups
         ],
+        "aliases_written": [a["alias"] for a in aliases],
+        "aliases_repointed": aliases_repointed,
         "backfilled_columns": list(backfill.keys()),
         "events_moved": moved_events,
     }
@@ -677,6 +1035,12 @@ def main() -> None:
                              "Containment variants require corroborating metadata or shared events.")
     parser.add_argument("--cross-language-pass", action="store_true",
                         help="Merge cross-script venue aliases using shared events or website host.")
+    parser.add_argument("--website-pass", action="store_true",
+                        help="Consolidate same-city venues that share a website host (ticketing/map "
+                             "aggregators excluded) and whose names or events agree. Records every "
+                             "merged spelling in venue_aliases.")
+    parser.add_argument("--country", default=None,
+                        help="Restrict to one country, e.g. --country Israel.")
     args = parser.parse_args()
 
     forced_groups: list[list[int]] = []
@@ -690,18 +1054,23 @@ def main() -> None:
         forced_groups.append(ids)
 
     mode = "APPLY" if args.apply else "DRY-RUN"
-    scope = f"city_id={args.city_id}" if args.city_id else "ALL CITIES"
+    scope = f"city_id={args.city_id}" if args.city_id else (args.country or "ALL CITIES")
     if (args.name_pass or args.cross_language_pass) and args.city_id is not None:
         parser.error("name/cross-language passes are all-city passes; omit --city-id")
     log.info(f"mode={mode} scope={scope} min_cooccur={args.min_cooccur} forced_groups={len(forced_groups)}")
 
     db = SessionLocal()
     try:
-        venues = _load_venues(db, args.city_id)
+        venues = _load_venues(db, args.city_id, args.country)
         log.info(f"loaded {len(venues)} venue rows")
-        cooccur = _cooccurrence_pairs(db, args.city_id, args.min_cooccur)
-        log.info(f"co-occurrence pairs (≥{args.min_cooccur}): {len(cooccur)}")
-        if args.cross_language_pass:
+        if args.website_pass:
+            cooccur = {}
+        else:
+            cooccur = _cooccurrence_pairs(db, args.city_id, args.min_cooccur)
+            log.info(f"co-occurrence pairs (≥{args.min_cooccur}): {len(cooccur)}")
+        if args.website_pass:
+            clusters = _build_website_clusters(db, venues)
+        elif args.cross_language_pass:
             clusters = _build_cross_language_clusters(db, venues)
         elif args.name_pass:
             clusters = _build_name_clusters(db, venues)
@@ -730,7 +1099,9 @@ def main() -> None:
             plan.append(res)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        suffix = (("cross_language_" if args.cross_language_pass else "name_" if args.name_pass else "")
+        suffix = (("website_" if args.website_pass else
+                   "cross_language_" if args.cross_language_pass else
+                   "name_" if args.name_pass else "")
                   + ("apply" if args.apply else "dryrun"))
         audit_path = ROOT / "data" / f"dedupe_venues_{ts}_{suffix}.json"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
