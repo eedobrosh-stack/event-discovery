@@ -1,6 +1,8 @@
 """Israeli place names → one canonical English city.
 
-Used by ``dedupe_venues.py --site-pass`` for two things:
+Used by ``scripts/dedupe_venues.py --site-pass`` and by ``/api/cities``
+(Hebrew spellings as city aliases, so typing "תל אביב" finds Tel Aviv).
+The dedupe pass uses it for two things:
 
 * ``canon_place(physical_city, city_name)`` puts a venue in its real
   city. ``venues.physical_city`` holds every spelling collectors emit
@@ -265,7 +267,15 @@ _BY_LEN = sorted((k for k in PLACES if k not in NAME_SKIP and re.search("[\u0590
 
 
 def _fold(s: str | None) -> str:
-    return _WS.sub(" ", (s or "").replace("&quot;", '"').replace("&#039;", "'")).strip()
+    s = (s or "").replace("&quot;", '"').replace("&#039;", "'")
+    s = re.sub(r"\s*-\s*", "-", s)          # "תל אביב -יפו" → "תל אביב-יפו"
+    return _WS.sub(" ", s).strip()
+
+
+_FOLDED: dict[str, str] = {}
+for _k, _v in PLACES.items():
+    _FOLDED.setdefault(_fold(_k), _v)
+    _FOLDED.setdefault(_fold(_v), _v)
 
 
 def canon_place(physical_city: str | None, city_name: str | None = None) -> str:
@@ -273,8 +283,11 @@ def canon_place(physical_city: str | None, city_name: str | None = None) -> str:
     attached City row's name, else "Israel - Other"."""
     p = _fold(physical_city)
     if p:
-        return PLACES.get(p, p)
-    return _fold(city_name) or "Israel - Other"
+        return _FOLDED.get(p, _WS.sub(" ", physical_city).strip())
+    c = _fold(city_name)
+    if c:
+        return _FOLDED.get(c, _WS.sub(" ", city_name).strip())
+    return "Israel - Other"
 
 
 def name_places(name: str | None) -> set[str]:
@@ -288,3 +301,16 @@ def name_places(name: str | None) -> set[str]:
             found.add(PLACES[key])
             s = s.replace(pat, " | ")
     return found
+
+
+def aliases_for(city_name: str) -> list[str]:
+    """Every non-English spelling that canonicalises to ``city_name``
+    (Hebrew names, "Tel Aviv-Yafo"-style variants). Used for the location
+    autocomplete."""
+    return _ALIASES.get(city_name, [])
+
+
+_ALIASES: dict[str, list[str]] = {}
+for _k, _v in PLACES.items():
+    if _k != _v and not _v.startswith(("Outside Israel", "Online", "Israel - Other")):
+        _ALIASES.setdefault(_v, []).append(_k)

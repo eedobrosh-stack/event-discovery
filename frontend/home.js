@@ -261,10 +261,12 @@ function setupCityAutocomplete() {
         //   • other (substring matches further down the label) — stay
         //     in the normal cascade slot.
         const cityAll = allCities.filter(c =>
-            formatCityLabel(c).toLowerCase().includes(q)
+            formatCityLabel(c).toLowerCase().includes(q) ||
+            (c.aliases || []).some(a => a.toLowerCase().includes(q))
         );
         const cityExact = cityAll
-            .filter(c => c.name.toLowerCase().startsWith(q))
+            .filter(c => c.name.toLowerCase().startsWith(q) ||
+                         (c.aliases || []).some(a => a.toLowerCase().startsWith(q)))
             .slice(0, 3)
             .map(c => ({ ...c, label: formatCityLabel(c) }));
         const exactSet = new Set(cityExact.map(c => c.id));

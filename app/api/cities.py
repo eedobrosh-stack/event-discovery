@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.services.il_places import aliases_for as il_aliases_for
 from app.database import get_db, SessionLocal
 from app.models import City
 from app.schemas.city import CityOut
@@ -56,13 +57,27 @@ def _build_city_list(db: Session) -> List:
         )
         ORDER BY c.name
     """)).fetchall()
+    # Alternate spellings: consolidated alias City rows ("Tel Aviv-yafo")
+    # plus, for Israel, every Hebrew spelling in il_places — so typing
+    # "תל אביב" in the location box finds Tel Aviv.
+    alias_names: dict[int, set[str]] = {}
+    for canon_id, alias in db.execute(text(
+        "SELECT canonical_city_id, name FROM cities WHERE canonical_city_id IS NOT NULL"
+    )).fetchall():
+        alias_names.setdefault(canon_id, set()).add(alias)
     out: List = []
     for r in rows:
         state = r[3]
         if r[2] == "United States" and state:
             state = normalize_us_state(state)
-        out.append(City(id=r[0], name=r[1], country=r[2], state=state,
-                        timezone=r[4], latitude=r[5], longitude=r[6]))
+        city = City(id=r[0], name=r[1], country=r[2], state=state,
+                    timezone=r[4], latitude=r[5], longitude=r[6])
+        names = set(alias_names.get(r[0], set()))
+        if r[2] == "Israel":
+            names.update(il_aliases_for(r[1]))
+        names.discard(r[1])
+        city.aliases = sorted(names)
+        out.append(city)
     return out
 
 

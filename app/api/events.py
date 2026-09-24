@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.database import get_db
+from app.services.venue_display import display_venue_city, display_venue_name, venue_name_clause
 from app.models import Event, EventType, Venue, Performer, event_event_types, ZeroResultSearch
 from app.schemas.event import EventOut, ZeroResultSearchRequest
 from app.api._search_filters import (
@@ -237,7 +238,7 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
             venue_matched_event_ids = (
                 select(Event.id)
                 .join(Venue, Event.venue_id == Venue.id)
-                .where(name_match_ilike(Venue.name, term))
+                .where(venue_name_clause(name_match_ilike, term))
                 .scalar_subquery()
             )
             # Exact league label → strict prefix, same as `search` param
@@ -399,7 +400,7 @@ def _build_filter_query(db: Session, query, categories, type_search, city_ids, s
                 # Venues whose name matches → match all events at those venues.
                 venue_subq = (
                     db.query(Venue.id)
-                    .filter(name_match_ilike(Venue.name, term))
+                    .filter(venue_name_clause(name_match_ilike, term))
                     .scalar_subquery()
                 )
                 query = query.filter(or_(
@@ -541,7 +542,7 @@ def list_events(
     db: Session = Depends(get_db),
 ):
     base_query = db.query(Event).options(
-        joinedload(Event.venue),
+        joinedload(Event.venue).joinedload(Venue.city),
         selectinload(Event.event_types),
     )
     query = _build_filter_query(
@@ -607,8 +608,11 @@ def list_events(
             out.venue_timezone = e.venue.timezone
         if e.venue and e.venue.website_url:
             out.venue_website_url = e.venue.website_url
-        if e.venue and e.venue.physical_city:
-            out.venue_city = e.venue.physical_city
+        # One venue, one name: the linked Venue row wins over the raw
+        # string this event was scraped with (app/services/venue_display.py).
+        out.venue_name = display_venue_name(e)
+        if e.venue and (e.venue.physical_city or e.venue.city):
+            out.venue_city = display_venue_city(e.venue)
         if e.venue and e.venue.physical_country:
             out.venue_country = e.venue.physical_country
 

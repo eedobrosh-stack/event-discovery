@@ -745,7 +745,7 @@ def _build_website_clusters(db, venues: list[dict]) -> list[tuple[list[dict], li
 # website_url. Cleared, never used as a site key.
 JUNK_URL_RE = re.compile(
     r"(^|\.)(waze\.com|youtube\.com|youtu\.be|google\.[a-z.]+|goo\.gl|"
-    r"maps\.apple\.com|linktr\.ee|facebook\.com|fb\.com|instagram\.com|"
+    r"maps\.apple\.com|linktr\.ee|lnk\.bio|facebook\.com|fb\.com|instagram\.com|"
     r"wikipedia\.org|tripadvisor\.[a-z.]+|bit\.ly|tinyurl\.com)$"
 )
 SHARED_SITE_HOSTS = AGGREGATOR_HOSTS | {
@@ -757,6 +757,20 @@ SHARED_SITE_HOSTS = AGGREGATOR_HOSTS | {
     "sportpalace.co.il", "atlas.co.il", "zofim.org.il", "eilatport.co.il",
     "lunapark.co.il", "fattal.co.il", "isrotel.com", "ihg.com",
 }
+# A venue that moved its site: rows still carrying the old host are
+# re-pointed at the new URL (Shablul moved its box office to smarticket).
+SITE_MOVES = {
+    "shabluljazz.com": "https://shablul.smarticket.co.il/",
+}
+# Display name for a merged venue when the vote below would pick a
+# descriptive spelling over the brand ("מועדון שבלול" vs "שבלול ג'אז").
+# Keyed by the site key of the cluster.
+DISPLAY_NAMES = {
+    "shablul.smarticket.co.il": "שבלול ג'אז",
+}
+_HALL_WORD_RE = re.compile(r"(^|[\s,\-–])(אולם|במה|ביתן|hall|stage|studio|pavilion)(\s|$|\d)", re.IGNORECASE)
+# "אוניברסיטת חיפה", "נמל אילת": the city is part of a compound name.
+_CONSTRUCT_BEFORE_PLACE = {"אוניברסיטת", "עיריית", "נמל", "מכללת", "מוזיאון", "university", "port"}
 _HOMEPAGE_PATH_RE = re.compile(
     r"^(/(he|en|ar|ru|heb|eng))?(/(pages/)?(home|homepage|index|default|main)(\.aspx|\.php|\.html?)?)?$"
 )
@@ -804,8 +818,10 @@ def _identity_words(name: str | None) -> set[str]:
     global _PLACE_TOKS
     if _PLACE_TOKS is None:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from _il_places import PLACES  # noqa: E402  (sibling module)
-        _PLACE_TOKS = {_he_fold(t) for k in PLACES for t in _norm_venue_name(k).split()}
+        from app.services.il_places import PLACES  # noqa: E402
+        _PLACE_TOKS = {_he_fold(t) for k in (*PLACES, *PLACES.values())
+                       if not k.startswith(("Outside Israel", "Online", "Israel - Other"))
+                       for t in _norm_venue_name(k).split()}
     drop = {_he_fold(w) for w in SITE_GENERIC_WORDS | GEO_NOISE_TOKENS} | _PLACE_TOKS
     toks = {_he_fold(t) for t in _norm_venue_name(name).split()}
     return {t for t in toks if t not in drop and len(t) > 1}
@@ -843,30 +859,61 @@ def _build_site_clusters(db, venues: list[dict], *, apply: bool) -> tuple[list, 
     (clusters, stats).
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from _il_places import canon_place, name_places  # noqa: E402
+    from app.services.il_places import canon_place, name_places  # noqa: E402
 
-    stats = {"junk_urls_cleared": [], "websites_backfilled": []}
+    stats = {"junk_urls_cleared": [], "websites_backfilled": [], "site_moves": [],
+             "renamed": []}
     for v in venues:
         v["_place"] = canon_place(v.get("physical_city"), v.get("city_name"))
+        moved = SITE_MOVES.get(_norm_url(v["website_url"]))
+        if moved and v["website_url"] != moved:
+            stats["site_moves"].append({"id": v["id"], "name": v["name"],
+                                        "from": v["website_url"], "to": moved})
+            v["website_url"] = moved
         if _is_junk_url(v["website_url"]):
             stats["junk_urls_cleared"].append({"id": v["id"], "name": v["name"],
                                                "url": v["website_url"]})
             v["website_url"] = None
 
+    # Twins: a website-less row inherits the site of the website-bearing
+    # row(s) it names — by exact name or recorded alias first, else by
+    # identity words (one row's words contained in the other's, sharing a
+    # real word: "שבלול ג'אז" ⊂ "Shablul Jazz- שבלול ג'אז" / "מועדון
+    # שבלול"). Only when every candidate agrees on ONE site.
+    aliases_by_venue: dict[int, list[str]] = defaultdict(list)
+    for vid, alias in db.execute(text("SELECT venue_id, alias FROM venue_aliases")).fetchall():
+        aliases_by_venue[vid].append(alias)
     urls_by_name: dict[tuple[str, str], set[str]] = defaultdict(set)
+    words_by_place: dict[str, list[tuple[set[str], str]]] = defaultdict(list)
     for v in venues:
         if v["website_url"] and _site_key(v["website_url"])[0]:
-            urls_by_name[(v["_place"], _norm_venue_name(v["name"]))].add(v["website_url"].strip())
+            url = v["website_url"].strip()
+            for nm in [v["name"], *aliases_by_venue.get(v["id"], [])]:
+                urls_by_name[(v["_place"], _norm_venue_name(nm))].add(url)
+                w = _identity_words(nm)
+                if w:
+                    words_by_place[v["_place"]].append((w, url))
     for v in venues:
         if v["website_url"]:
             continue
         urls = urls_by_name.get((v["_place"], _norm_venue_name(v["name"])))
+        if not urls:
+            wv = _identity_words(v["name"])
+            if wv:
+                # The smaller side must carry two identity words, so a
+                # lone "סינמה" / "port" / "hotel" never picks a twin.
+                urls = {url for w, url in words_by_place.get(v["_place"], [])
+                        if (wv <= w or w <= wv) and len(wv & w) >= 2
+                        and any(len(t) >= 3 for t in wv & w)}
         if urls and len(urls) == 1:
             v["website_url"] = next(iter(urls))
             stats["websites_backfilled"].append({"id": v["id"], "name": v["name"],
                                                  "url": v["website_url"]})
 
     if apply:
+        for row in stats["site_moves"]:
+            db.execute(text("UPDATE venues SET website_url = :u WHERE id = :id"),
+                       {"u": row["to"], "id": row["id"]})
         for row in stats["junk_urls_cleared"]:
             db.execute(text("UPDATE venues SET website_url = NULL WHERE id = :id"), {"id": row["id"]})
         for row in stats["websites_backfilled"]:
@@ -944,8 +991,77 @@ def _build_site_clusters(db, venues: list[dict], *, apply: bool) -> tuple[list, 
         for d in dups:
             key = (min(canonical["id"], d["id"]), max(canonical["id"], d["id"]))
             d["_signals_to_canonical"] = pair_signals.get(key, {"url": True, "match": "transitive"})
+        display = _display_name(members, canonical["_place"],
+                                _site_key(canonical["website_url"])[0])
+        if display and display != canonical["name"]:
+            canonical["_display_name"] = display
+            stats["renamed"].append({"id": canonical["id"], "from": canonical["name"],
+                                     "to": display})
         out.append(([canonical], dups))
     return out, stats
+
+
+def _strip_place_suffix(name: str, place: str) -> str:
+    """Drop a trailing qualifier naming the venue's own city — but only
+    when the rest still says which venue it is: "תיאטרון הקאמרי, תל
+    אביב-יפו" → "תיאטרון הקאמרי", "תיאטרון חיפה חיפה" → "תיאטרון חיפה",
+    while "תיאטרון חיפה" and "היכל התרבות נתניה" keep their city (it IS
+    their name)."""
+    from app.services.il_places import PLACES  # noqa: E402
+    spellings = sorted({k for k, v in PLACES.items() if v == place} | {place},
+                       key=len, reverse=True)
+    out = (name or "").replace("&quot;", '"').replace("&#039;", "'").strip()
+    while True:
+        for sp in spellings:
+            m = re.search(r"[\s,\-–|(]*\(?" + re.escape(sp) + r"\)?[\s.]*$", out, re.IGNORECASE)
+            if m and m.start() > 0:
+                rest = out[:m.start()].rstrip(" ,-–|(.")
+                prev = rest.split()[-1].lower() if rest.split() else ""
+                if prev in _CONSTRUCT_BEFORE_PLACE and out[m.start():m.start() + 1].isspace():
+                    continue
+                if _identity_words(rest) or any(
+                        re.search(r"(^|[\s,\-–])" + re.escape(x) + r"($|[\s,\-–])", rest)
+                        for x in spellings):
+                    out = rest
+                    break
+        else:
+            return out or name
+
+
+def _display_name(members: list[dict], place: str, site_key: str) -> str | None:
+    """The one name a merged venue is shown under, on every surface.
+
+    Conservative: the survivor keeps its own name, minus a redundant
+    own-city suffix. Only when that name is Latin / mixed-script (and the
+    cluster has Hebrew spellings) or is a hall's name, is another member's
+    spelling chosen — the one whose identity words most members share,
+    and only if that is a majority. DISPLAY_NAMES overrides everything."""
+    if site_key in DISPLAY_NAMES:
+        return DISPLAY_NAMES[site_key]
+    canonical = members[0]["name"]
+
+    def is_hebrew(c: str) -> bool:
+        return bool(re.search("[\u0590-\u05ff]", c)) and not re.search("[A-Za-z]", c)
+
+    base = canonical
+    if not is_hebrew(canonical) or _HALL_WORD_RE.search(canonical):
+        any_hebrew = any(is_hebrew(m["name"]) for m in members)
+        cands: Counter[str] = Counter(
+            _strip_place_suffix(m["name"], place) for m in members
+            if (is_hebrew(m["name"]) or not any_hebrew) and not _HALL_WORD_RE.search(m["name"]))
+        if cands:
+            words = [_identity_words(m["name"]) for m in members]
+
+            def coverage(c: str) -> int:
+                w = _identity_words(c)
+                return sum(1 for mw in words if w and w <= mw)
+
+            best = min(cands, key=lambda c: (-coverage(c), -cands[c], -len(c), c))
+            # Switch only when the spelling speaks for most of the cluster
+            # ("בארבי" in 4 of 5 Barby rows), never on a 1-of-2 guess.
+            if coverage(best) * 2 > len(members):
+                base = best
+    return _strip_place_suffix(base, place)
 
 
 def _build_name_clusters(db, venues: list[dict]) -> list[tuple[list[dict], list[dict]]]:
@@ -1199,6 +1315,17 @@ def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool,
         # resolving — which is how the duplicates came back last time).
         # The update keeps (city_id, normalized_alias), so it cannot
         # collide with the unique index.
+        display = canonical.get("_display_name")
+        if display:
+            # The old canonical spelling is already in ``aliases`` (the
+            # canonical row's own name is always recorded), so search and
+            # re-ingest keep resolving it after the rename.
+            db.execute(text("UPDATE venues SET name = :n WHERE id = :id"),
+                       {"n": display, "id": canonical["id"]})
+            key = _norm_venue_name(display)
+            if key and key not in {a["normalized_alias"] for a in aliases}:
+                aliases.append({"alias": display, "normalized_alias": key,
+                                "source": "dedupe_venues:display"})
         dup_list = ", ".join(str(int(d["id"])) for d in dups)
         res = db.execute(
             text(f"UPDATE venue_aliases SET venue_id = :new WHERE venue_id IN ({dup_list})"),
@@ -1224,6 +1351,7 @@ def fold_cluster(db, canonical: dict, dups: list[dict], *, apply: bool,
     return {
         "canonical_id": canonical["id"],
         "canonical_name": canonical["name"],
+        "display_name": canonical.get("_display_name") or canonical["name"],
         "city_id": canonical["city_id"],
         "city": canonical.get("city_name"),
         "duplicates": [
@@ -1305,8 +1433,10 @@ def main() -> None:
             log.info(f"co-occurrence pairs (≥{args.min_cooccur}): {len(cooccur)}")
         if args.site_pass:
             clusters, site_stats = _build_site_clusters(db, venues, apply=args.apply)
-            log.info(f"junk website_url cleared: {len(site_stats['junk_urls_cleared'])}, "
-                     f"websites backfilled from exact-name twins: {len(site_stats['websites_backfilled'])}")
+            log.info(f"site moves: {len(site_stats['site_moves'])}, "
+                     f"junk website_url cleared: {len(site_stats['junk_urls_cleared'])}, "
+                     f"websites backfilled from twins: {len(site_stats['websites_backfilled'])}, "
+                     f"renamed to one display name: {len(site_stats['renamed'])}")
         elif args.website_pass:
             clusters = _build_website_clusters(db, venues)
         elif args.cross_language_pass:

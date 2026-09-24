@@ -8,6 +8,7 @@ from sqlalchemy import or_, func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.database import get_db
+from app.services.venue_display import display_venue_city, display_venue_name, venue_name_clause
 from app.models import Event, EventType, Venue, Performer, City, event_event_types
 from app.schemas.event import ExportRequest
 from app.api._search_filters import (
@@ -91,7 +92,7 @@ def _get_filtered_events(req: ExportRequest, db: Session) -> List[Event]:
             venue_matched_event_ids = (
                 select(Event.id)
                 .join(Venue, Event.venue_id == Venue.id)
-                .where(Venue.name.ilike(like))
+                .where(venue_name_clause(lambda col, t: col.ilike(t), like))
                 .scalar_subquery()
             )
             query = query.filter(or_(
@@ -185,7 +186,7 @@ def _get_filtered_events_from_params(
             venue_matched_event_ids = (
                 select(Event.id)
                 .join(Venue, Event.venue_id == Venue.id)
-                .where(Venue.name.ilike(like))
+                .where(venue_name_clause(lambda col, t: col.ilike(t), like))
                 .scalar_subquery()
             )
             query = query.filter(or_(
@@ -327,8 +328,8 @@ def export_csv(req: ExportRequest, db: Session = Depends(get_db)):
             str(e.start_date) if e.start_date else "",
             e.start_time or "",
             e.end_time or "",
-            e.venue_name or "",
-            (venue.physical_city if venue else "") or "",
+            display_venue_name(e) or "",
+            display_venue_city(venue) or "",
             (venue.physical_country if venue else "") or "",
             e.price if e.price is not None else "",
             e.price_currency or "",

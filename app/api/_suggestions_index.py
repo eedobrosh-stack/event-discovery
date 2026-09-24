@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -52,6 +53,7 @@ INDEX_TTL_SECONDS = 1800
 # scripts read broadcaster maps + TheSportsDB ids from, so adding a
 # tournament is a single-file change.
 from app.services.tournaments import TOURNAMENT_ALLOWLIST  # noqa: E402, F401
+from app.services.il_places import canon_place  # noqa: E402
 
 # Threshold below which we require a strict whole-word match (matches
 # _search_filters._WHOLE_WORD_BELOW exactly).
@@ -204,7 +206,7 @@ class SuggestionsIndex:
     # → only one chip emitted).
     themes: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)
     # (name_lower, name, physical_city)
-    venues: list[tuple[str, str, Optional[str]]] = field(default_factory=list)
+    venues: list[tuple[list[str], str, Optional[str]]] = field(default_factory=list)
     event_names: list[tuple[str, str]] = field(default_factory=list)
     event_names_bucket: _PrefixBucket = field(default_factory=_PrefixBucket)
     built_at: datetime = field(default_factory=datetime.utcnow)
@@ -371,12 +373,34 @@ def build_index(db: Session) -> SuggestionsIndex:
         # so the index build doesn't fail entirely.
         idx.themes = []
 
-    # Venues — name + physical_city for label hint.
+    # Venues — one entry per venue ROW, matched on its name and on every
+    # alternate spelling in venue_aliases, always displayed under the
+    # canonical name. Before this, DISTINCT name surfaced "מועדון שבלול",
+    # "מועדון שבלול תל אביב" and "Shablul Jazz- שבלול ג'אז" as three
+    # chips for one club, and an English spelling that only lives in
+    # venue_aliases found nothing.
     rows = db.execute(text("""
-        SELECT DISTINCT name, physical_city FROM venues
-        WHERE name IS NOT NULL AND name != ''
+        SELECT v.id, v.name, v.physical_city, c.name, c.country
+        FROM venues v JOIN cities c ON c.id = v.city_id
+        WHERE v.name IS NOT NULL AND v.name != ''
     """)).fetchall()
-    idx.venues = [(r[0].lower(), r[0], r[1]) for r in rows]
+    alias_rows = db.execute(text(
+        "SELECT venue_id, alias FROM venue_aliases WHERE alias IS NOT NULL AND alias != ''"
+    )).fetchall()
+    spellings: dict[int, set[str]] = defaultdict(set)
+    for vid, alias in alias_rows:
+        spellings[vid].add(alias.lower())
+    seen_labels: set[tuple[str, str]] = set()
+    idx.venues = []
+    for vid, name, physical_city, city_name, country in rows:
+        city = (canon_place(physical_city, city_name) if country == "Israel"
+                else physical_city)
+        label_key = (name.lower(), (city or "").lower())
+        if label_key in seen_labels:
+            continue          # two rows, same name + city: one chip
+        seen_labels.add(label_key)
+        keys = sorted({name.lower()} | spellings.get(vid, set()))
+        idx.venues.append((keys, name, city))
 
     # Event names — only upcoming, dedupe filter applied at match time.
     # Filter out the "League - Home vs Away" sport pattern early (it's
@@ -641,8 +665,8 @@ def filter_venues(idx: SuggestionsIndex, q: str, limit: int) -> list[dict]:
     """Venues match against name OR physical_city — same OR-logic as
     the original SQL filter."""
     out: list[dict] = []
-    for name_lower, name, city in idx.venues:
-        match = name_matches(name_lower, q)
+    for keys, name, city in idx.venues:
+        match = any(name_matches(k, q) for k in keys)
         if not match and city:
             match = name_matches(city.lower(), q)
         if match:

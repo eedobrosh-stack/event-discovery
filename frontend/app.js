@@ -977,10 +977,12 @@ function setupCityAutocomplete() {
         //     label (country, state suffix, mid-name). Stay in the
         //     normal cascade slot.
         const cityMatchesAll = allCities.filter(c =>
-            formatCityLabel(c).toLowerCase().includes(q)
+            formatCityLabel(c).toLowerCase().includes(q) ||
+            (c.aliases || []).some(a => a.toLowerCase().includes(q))
         );
         const cityMatchesExact = cityMatchesAll
-            .filter(c => c.name.toLowerCase().startsWith(q))
+            .filter(c => c.name.toLowerCase().startsWith(q) ||
+                         (c.aliases || []).some(a => a.toLowerCase().startsWith(q)))
             .slice(0, 3);
         const exactSet = new Set(cityMatchesExact);
         const cityMatchesOther = cityMatchesAll
