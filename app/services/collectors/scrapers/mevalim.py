@@ -46,6 +46,7 @@ from dateutil import parser as dateutil_parser
 
 from app.services.collectors.base import RawEvent, default_end_time
 from app.services.dedup import normalize_title
+from app.services.artist_names import clean_israeli_artist
 
 logger = logging.getLogger(__name__)
 
@@ -439,8 +440,13 @@ def _parse_event(item: dict, page_url: str, page_h1: str = "") -> Optional[RawEv
         # path coherent. Tribute / festival names (e.g. "תזמורת
         # הבימה") still get listed as artists, which is the right
         # call: clicking them returns the events that ARE for that
-        # entity.
-        artist_name=name,
+        # entity. Since 2026-09-25 the title goes through the Israeli
+        # show-title rule first (app/services/artist_names.py): "זינגר -
+        # תיאטרון הקאמרי" is a production, not an artist, and this job's
+        # own upsert (jobs._refresh_mevalim_event) bypasses the registry,
+        # so without it every daily refresh re-filled the titles that
+        # scripts/clean_israel_artist_names.py had cleared.
+        artist_name=clean_israeli_artist(name),
         start_date=start_date_,
         start_time=start_time_,
         end_date=end_date_,

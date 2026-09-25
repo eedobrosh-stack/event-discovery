@@ -88,3 +88,17 @@ def test_ingest_folds_cross_source_time_shift(db, city):
                                source="barby", source_id="barby-2")], city, db)        # same source, matinee
     rows = sorted(db.query(Event.start_time, Event.artist_name, Event.scrape_source).all())
     assert rows == [("17:00", None, "barby"), ("20:30", "Miles Tribute Band", "barby")]
+
+
+def test_propagation_guards(db):
+    _, barby, _, _ = _setup(db)
+    def row(i, name, artist=None):
+        db.add(Event(name=name, start_date=D + timedelta(days=i), start_time="20:00", venue_id=barby.id,
+                     scrape_source="mevalim", source_id=f"{name}-{i}", artist_name=artist))
+    row(1, "זינגר - תיאטרון הקאמרי", "זינגר - תיאטרון הקאמרי"); row(2, "זינגר - תיאטרון הקאמרי")
+    row(1, "LaPuta Records - TBA", "DAZA"); [row(i, "LaPuta Records - TBA") for i in range(2, 5)]
+    row(1, "Label Night", "Solo"); [row(i, "Label Night") for i in range(2, 6)]            # 1 of 5 rows
+    row(1, "L7: The Last Hurrah Tour 2026", "L7"); row(2, "L7: The Last Hurrah Tour 2026")
+    db.commit()
+    got = {p["name"]: p.get("artist_name") for p in propagate_same_title(db, apply=False) if "artist_name" in p}
+    assert got == {"L7: The Last Hurrah Tour 2026": "L7"}

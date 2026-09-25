@@ -154,6 +154,26 @@ def absorb_incoming(existing: Event, raw) -> bool:
 
 
 # ── A: propagation ──────────────────────────────────────────────────────
+import re as _re
+
+_PLACEHOLDER = _re.compile(r"\b(tba|tbc|tbd|to be announced|special guests?|secret|guest)\b|אורח(ת|ים)? מפתיע|יוכרז",
+                           _re.IGNORECASE)
+_HEBREW = _re.compile(r"[\u0590-\u05ff]")
+
+
+def _spreadable(artist: str, title: str | None) -> bool:
+    """An artist value safe to copy onto siblings."""
+    from app.services.artist_names import classify, clean_israeli_artist
+    if _re.search(r"many more|and more|ועוד|,[^,]+,", artist, _re.IGNORECASE):
+        return False                       # a lineup list, not one artist
+    if _HEBREW.search(artist):
+        return clean_israeli_artist(artist) == artist
+    if normalize_title(artist) == normalize_title(title):
+        kind, why = classify(artist)
+        return kind == "artist" or why == "more than 2 words"   # "Bonnie Prince Billy" ok, "Candlelight: …" not
+    return True
+
+
 def propagate_same_title(db: Session, *, apply: bool, since: date | None = None,
                          country: str | None = None) -> list[dict]:
     since = since or date.today()
@@ -179,6 +199,14 @@ def propagate_same_title(db: Session, *, apply: bool, since: date | None = None,
         types = Counter(r[5] for r in grp if r[5])
         yt = Counter(r[3] for r in grp if r[3])
         artist = artists.most_common(1)[0][0] if len(by_key) == 1 else None
+        # Guards (2026-09-25 prod dry run): never spread a value that is
+        # itself a show title ("זינגר - תיאטרון הקאמרי", "Candlelight:
+        # …"), never on placeholder titles ("LaPuta Records - TBA" had
+        # one row naming DAZA), and only when at least a third of the
+        # rows already carry the artist.
+        if artist and (_PLACEHOLDER.search(grp[0][1] or "") or not _spreadable(artist, grp[0][1])
+                       or sum(artists.values()) * 3 < len(grp)):
+            artist = None
         type_set = types.most_common(1)[0][0] if types else None
         for r in grp:
             ch = {}
