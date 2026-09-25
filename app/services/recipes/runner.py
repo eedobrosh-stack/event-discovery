@@ -86,7 +86,11 @@ def expand_entry_urls(entry: dict) -> list[tuple[str, dict]]:
     from app.extractors.llm_extractor import resolve_template_urls
     out: list[tuple[str, dict]] = []
     seen = set()
+    from datetime import date as _date
     for u in entry.get("urls") or []:
+        # "{today}" → ISO date, for APIs that must be filtered to upcoming
+        # events server-side (kupat.co.il pages over past rows otherwise).
+        u = u.replace("{today}", _date.today().isoformat())
         if u not in seen:
             out.append((u, {}))
             seen.add(u)

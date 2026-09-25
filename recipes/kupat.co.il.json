@@ -1,0 +1,55 @@
+{
+  "recipe_version": 1,
+  "domain": "kupat.co.il",
+  "source_name": "kupat_co_il",
+  "country": "Israel",
+  "city_name": "Tel Aviv",
+  "language": "he",
+  "timezone": "Asia/Jerusalem",
+  "priority": 60,
+  "cadence_hours": 24,
+  "entry": {
+    "urls": [
+      "https://www.kupat.co.il/api/events?filters[Date_Time][$gte]={today}&pagination[pageSize]=100&populate=Show,Show.Artists"
+    ],
+    "paginate": {
+      "mode": "page_param",
+      "param": "pagination[page]",
+      "start": 1,
+      "max_pages": 15
+    }
+  },
+  "fetch": {
+    "delay_seconds": 1.5,
+    "timeout": 60,
+    "headers": {
+      "Accept": "application/json",
+      "Accept-Language": "he,en;q=0.8"
+    }
+  },
+  "parse": {
+    "kind": "api",
+    "items": "data",
+    "fields": {
+      "source_id": "attributes.Event_ID",
+      "name": "attributes.Feature_Name",
+      "artist_name": "attributes.Show.data.attributes.Artists.data[0].attributes.Name",
+      "start_datetime": "attributes.Date_Time",
+      "venue_name": "attributes.Venue_Name",
+      "venue_city": "attributes.Venue_City",
+      "venue_country": {"const": "Israel"},
+      "price": "attributes.Min_Price",
+      "purchase_link": {
+        "path": "attributes.Show.data.attributes.Artists.data[0].attributes.Slug",
+        "template": "https://www.kupat.co.il/{}"
+      },
+      "image_url": "attributes.Show.data.attributes.Show_Image_Url",
+      "description": {"path": "attributes.Show.data.attributes.Synopsis", "strip_html": true},
+      "raw_categories": "attributes.Feature_Category_Name"
+    }
+  },
+  "defaults": {
+    "price_currency": "ILS"
+  },
+  "notes": "Kupat Tel Aviv (קופת תל אביב, kupat.co.il) — Israeli box office for major Hebrew acts (אייל גולן, פאר טסי, עומר אדם …). The site is a Next.js app that renders nothing server-side, which is why the prober found no JSON-LD / ICS (2026-09-19 probe: none). Its public Strapi API /api/events returns every scheduled event (≈650 incl. past; runner drops past) with Event_ID, Date_Time (local Asia/Jerusalem), Feature_Name, Venue_Name / Venue_City (Hebrew), Min_Price, category, and Show → Artists (Name, Slug). Ticket page = https://www.kupat.co.il/<artist slug>. robots.txt: Allow /. Authored 2026-09-25 after Eyal Golan / Peer Tasi were found missing."
+}

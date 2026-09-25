@@ -57,7 +57,7 @@ def _field_spec_errors(name: str, spec, where: str) -> list[str]:
         errs.append(f"{where}.{name}: must be a string or an object")
         return errs
     allowed = {"sel", "attr", "regex", "absolute", "all", "join", "default",
-               "index", "path", "format", "strip_html", "const"}
+               "index", "path", "format", "strip_html", "const", "template"}
     for k in spec:
         if k not in allowed:
             errs.append(f"{where}.{name}: unknown key '{k}'")

@@ -115,6 +115,11 @@ def parse_api(body: Any, cfg: dict, page_url: str) -> list[dict]:
                         val = spec["default"]
                     if spec.get("absolute") and isinstance(val, str):
                         val = urljoin(page_url, val)
+                    # "template": "https://www.kupat.co.il/{}" — build a URL
+                    # from a bare slug (urljoin against the API path would
+                    # land under /api/). Skipped when the value is empty.
+                    if spec.get("template") and val not in (None, "", []):
+                        val = spec["template"].format(val)
             if val is not None:
                 row[field] = val
         row["_page_url"] = page_url
