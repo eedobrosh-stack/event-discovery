@@ -54,6 +54,14 @@ def _decode_entities(s, max_iters: int = 5):
     return prev
 
 
+def venue_city_key(db, venue) -> int | None:
+    """The canonical City id of a venue (alias City rows resolved)."""
+    if venue is None or venue.city_id is None:
+        return None
+    c = db.get(City, venue.city_id)
+    return (c.canonical_city_id or c.id) if c is not None else venue.city_id
+
+
 def canonical_artist_spelling(db, artist_name):
     """Return the spelling we already use for this artist, if any.
 
@@ -162,6 +170,7 @@ class CollectorRegistry:
         # same production dozens of times.
         is_israel = (city.country or "") == "Israel"
         artist_cache: dict = {}
+        conflict_cache: dict = {}   # (date, city) → that day's candidate rows
         for i, raw in enumerate(raw_events):
             try:
                 # Decode any HTML entities that slipped through the scraper
@@ -333,15 +342,24 @@ class CollectorRegistry:
                         )
                         continue
 
-                # Cross-source dedup: same venue + date + similar name
+                # Cross-source dedup: same venue + date + similar name.
+                # Rule B (app/services/event_conflicts.py): another source's
+                # copy is folded into the existing row (the earlier time
+                # wins); the SAME source at another time is a second
+                # performance (matinee) and is saved, not dropped.
                 if raw.venue_name:
                     similar = db.query(Event).filter_by(
                         start_date=raw.start_date, venue_name=raw.venue_name
                     ).all()
-                    if any(
-                        SequenceMatcher(None, raw.name.lower(), s.name.lower()).ratio() > 0.85
-                        for s in similar
-                    ):
+                    match = next((
+                        s for s in similar
+                        if SequenceMatcher(None, raw.name.lower(), s.name.lower()).ratio() > 0.85
+                        and not (s.scrape_source == raw.source and (s.start_time or "") != (raw.start_time or ""))
+                    ), None)
+                    if match is not None:
+                        from app.services.event_conflicts import absorb_incoming
+                        if not raw.sport and absorb_incoming(match, raw):
+                            db.commit()
                         continue
 
                 # Find or create venue
@@ -379,6 +397,24 @@ class CollectorRegistry:
                 if is_israel and artist_name:
                     # the Performer fallback above can re-pick a show title
                     artist_name = self._israeli_artist(db, artist_name, artist_cache)
+
+                # Same show from another source at another time / venue
+                # (rule B, app/services/event_conflicts.py): enrich the
+                # existing row — moving it to the earlier time — instead
+                # of creating a second one. Also stops a row the 6-hourly
+                # sweep folded from being re-created by the next scrape.
+                if not raw.sport and venue is not None:
+                    from app.services.event_conflicts import absorb_incoming, find_time_conflict
+                    city_key = venue_city_key(db, venue)
+                    other = find_time_conflict(
+                        db, name=raw.name, artist=artist_name, start_date=raw.start_date,
+                        start_time=raw.start_time, venue_id=venue.id, city_id=city_key,
+                        scrape_source=raw.source, cache=conflict_cache)
+                    if other is not None:
+                        raw.artist_name = artist_name
+                        if absorb_incoming(other, raw):
+                            db.commit()
+                        continue
 
                 # Create event
                 event = Event(

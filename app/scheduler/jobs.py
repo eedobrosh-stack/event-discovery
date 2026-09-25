@@ -524,6 +524,39 @@ def run_dedup():
         db.close()
 
 
+def resolve_event_conflicts_job():
+    """Every 6 h: rule A (same title → one artist, category / format) then
+    rule B (same show at different times → keep the earliest). See
+    app/services/event_conflicts.py."""
+    from app.services.event_conflicts import propagate_same_title, resolve_time_conflicts
+    db = SessionLocal()
+    log = ScanLog(job_name="resolve_event_conflicts", status="running")
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    try:
+        prop = propagate_same_title(db, apply=True)
+        folds = []
+        for _ in range(3):      # a fold can move a row to the cluster's venue → new neighbours
+            more = resolve_time_conflicts(db, apply=True)
+            folds += more
+            if not more:
+                break
+        log.status = "success"
+        log.notes = (f"propagated {len(prop)} events; folded {sum(len(f['drop']) for f in folds)} "
+                     f"rows into {len(folds)} shows")
+        logger.info(f"resolve_event_conflicts: {log.notes}")
+    except Exception as e:
+        db.rollback()
+        log.status = "failed"
+        log.notes = str(e)[:500]
+        logger.exception("resolve_event_conflicts failed")
+    finally:
+        log.finished_at = datetime.utcnow()
+        db.commit()
+        db.close()
+
+
 async def collect_platform_venues():
     """Daily scrape for all active platform venues stored in the DB."""
     from app.models.platform_venue import PlatformVenue

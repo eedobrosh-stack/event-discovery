@@ -20,7 +20,7 @@ from app.api import version as version_api
 from app.api import geo as geo_api
 from app.api.cities import warm_cities_cache
 from app.api.metro_areas import warm_metro_cache
-from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job, llm_classify_conferences_job, recipe_extract_job, recipe_auto_enroll_job, recipe_probe_job, collect_home_market_events
+from app.scheduler.jobs import collect_all_events, cleanup_past_events, collect_venue_websites, run_dedup, resolve_event_conflicts_job, collect_platform_venues, enrich_youtube_job, enrich_performers_job, enrich_venue_urls_job, discover_venues_job, collect_bandsintown_job, collect_techconf_job, collect_mevalim_job, llm_extract_recurring_job, llm_discover_sources_job, seed_brave_from_zero_results_job, classify_new_artists_job, recompute_popularity_job, enrich_youtube_via_brave_job, categorize_new_events_job, spotify_scan_job, spotify_brave_query_job, llm_classify_conferences_job, recipe_extract_job, recipe_auto_enroll_job, recipe_probe_job, collect_home_market_events
 
 scheduler = AsyncIOScheduler()
 
@@ -1025,6 +1025,12 @@ async def lifespan(app: FastAPI):
         run_dedup,
         CronTrigger(day_of_week="sun", hour=5, minute=0),  # weekly Sunday 5am UTC
         id="dedup_events",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        resolve_event_conflicts_job,
+        CronTrigger(hour="1,7,13,19", minute=45),  # every 6 h, off the :00/:15/:30 heavy slots
+        id="resolve_event_conflicts",
         replace_existing=True,
     )
     scheduler.add_job(
