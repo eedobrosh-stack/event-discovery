@@ -24,6 +24,12 @@ from __future__ import annotations
 import re
 
 PLACES: dict[str, str] = {
+    'Nes Ziona': 'Ness Ziona',
+    'Nes Tziona': 'Ness Ziona',
+    "Modi'in": 'Modiin',
+    'Modi’in': 'Modiin',
+    'Kiryat Motzkin': 'Kiryat Motzkin',
+    'Petah Tiqva': 'Petah Tikva',
     "Be'er Sheva": 'Beersheba',
     'Beer Sheva': 'Beersheba',
     'Hertsliya': 'Herzliya',
