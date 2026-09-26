@@ -24,6 +24,8 @@ from __future__ import annotations
 import re
 
 PLACES: dict[str, str] = {
+    'Beit Gabriel': 'Kinneret',
+    'בית גבריאל צמח': 'Kinneret',
     'Nes Ziona': 'Ness Ziona',
     'Nes Tziona': 'Ness Ziona',
     "Modi'in": 'Modiin',
@@ -89,7 +91,7 @@ PLACES: dict[str, str] = {
     'באר יעקב': "Be'er Ya'akov",
     'באר שבע': 'Beersheba',
     'בארותיים': "Be'erotayim",
-    'בית גבריאל': 'Beit Gabriel',
+    'בית גבריאל': 'Kinneret',
     'בית שאן': "Beit She'an",
     'בית שמש': 'Beit Shemesh',
     'בני ברק': 'Bené Beraq',
