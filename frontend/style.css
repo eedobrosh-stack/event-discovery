@@ -833,3 +833,7 @@ a:hover { text-decoration: underline; }
         font-size: 0.8rem;
     }
 }
+
+/* Live lookup note (app.js _liveLookup) — shown under the empty-search notice. */
+.live-lookup-note { margin: 8px 0 12px; padding: 8px 12px; border-radius: 8px;
+    background: #eff6ff; color: #1e40af; font-size: 0.92rem; }

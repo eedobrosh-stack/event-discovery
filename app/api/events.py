@@ -661,6 +661,33 @@ def list_events(
     return results
 
 
+@router.post("/live-lookup")
+def start_live_lookup(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """A search found nothing → query the sources that can search, now
+    (app/services/live_lookup.py). Returns the job; poll GET below."""
+    from app.models import City
+    from app.services import live_lookup
+    from app.services.collectors.api.ticketmaster import COUNTRY_ISO
+    q = str(payload.get("q") or "")
+    country = payload.get("country") or None
+    city_ids = str(payload.get("city_ids") or "")
+    if not country and city_ids:
+        first = next((x for x in city_ids.split(",") if x.strip().isdigit()), None)
+        c = db.get(City, int(first)) if first else None
+        country = c.country if c else None
+    job = live_lookup.start(q, country=country, country_iso=COUNTRY_ISO.get(country) if country else None)
+    return {k: job.get(k) for k in ("id", "state", "q", "country", "sources_tried", "saved", "hits", "reason")}
+
+
+@router.get("/live-lookup/{job_id}")
+def live_lookup_status(job_id: str):
+    from app.services import live_lookup
+    job = live_lookup.status(job_id)
+    if not job:
+        return {"id": job_id, "state": "unknown"}
+    return {k: job.get(k) for k in ("id", "state", "q", "country", "sources_tried", "saved", "hits", "duration_s")}
+
+
 @router.post("/zero-result")
 def log_zero_result_search(
     payload: ZeroResultSearchRequest,

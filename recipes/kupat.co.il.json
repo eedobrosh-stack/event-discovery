@@ -17,6 +17,9 @@
       "param": "pagination[page]",
       "start": 1,
       "max_pages": 15
+    },
+    "search": {
+      "url": "https://www.kupat.co.il/api/events?filters[Date_Time][$gte]={today}&filters[$or][0][Feature_Name][$containsi]={q}&filters[$or][1][Show][Artists][Name][$containsi]={q}&pagination[pageSize]=100&populate=Show,Show.Artists"
     }
   },
   "fetch": {
@@ -37,14 +40,19 @@
       "start_datetime": "attributes.Date_Time",
       "venue_name": "attributes.Venue_Name",
       "venue_city": "attributes.Venue_City",
-      "venue_country": {"const": "Israel"},
+      "venue_country": {
+        "const": "Israel"
+      },
       "price": "attributes.Min_Price",
       "purchase_link": {
         "path": "attributes.Show.data.attributes.Artists.data[0].attributes.Slug",
         "template": "https://www.kupat.co.il/{}"
       },
       "image_url": "attributes.Show.data.attributes.Show_Image_Url",
-      "description": {"path": "attributes.Show.data.attributes.Synopsis", "strip_html": true},
+      "description": {
+        "path": "attributes.Show.data.attributes.Synopsis",
+        "strip_html": true
+      },
       "raw_categories": "attributes.Feature_Category_Name"
     }
   },

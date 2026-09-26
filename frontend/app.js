@@ -1899,6 +1899,7 @@ async function searchEvents() {
             updateStats(0);
             document.getElementById("load-more-btn").style.display = "none";
             _offerOutsideResults({ typeSearch, artistExact, genres, themes, tournaments, cityId, country, startDate, endDate, search });
+            _liveLookup({ term: artistExact[0] || typeSearch[0] || search, cityId, country });
             if (isFirstPage) showCompactMode();
             return;
         }
@@ -2111,6 +2112,53 @@ async function _loadOutsideResults(params, outsideOffset, gen) {
         more.querySelector("button").addEventListener("click",
             () => _loadOutsideResults(params, outsideOffset + LIMIT, gen), { once: true });
         tbody.appendChild(more);
+    }
+}
+
+// ── Live lookup for an empty search ─────────────────────────────────
+// Supercaly answers from its own table; a source is only there once a
+// crawl has run. When a search finds nothing, ask the server to query the
+// sources that can SEARCH (kupat.co.il, Events-Calendar sites,
+// Ticketmaster — app/services/live_lookup.py) right now, then re-run the
+// search if anything was saved. Once per term per page load.
+const _liveLookupDone = new Set();
+
+async function _liveLookup({ term, cityId, country }) {
+    term = (term || "").trim();
+    const key = `${term.toLowerCase()}|${cityId || ""}|${country || ""}`;
+    if (term.length < 2 || _liveLookupDone.has(key)) return;
+    _liveLookupDone.add(key);
+    const gen = _outsideGen;
+    const note = document.createElement("div");
+    note.className = "live-lookup-note";
+    note.textContent = `Checking ticket sites live for “${term}”…`;
+    const notice = document.getElementById("search-notice");
+    if (notice) notice.after(note); else document.getElementById("events-table").before(note);
+    let job;
+    try {
+        job = await (await fetch("/api/events/live-lookup", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ q: term, city_ids: cityId || null, country: country || null }),
+        })).json();
+    } catch (_) { note.remove(); return; }
+    const started = Date.now();
+    while (job && job.state === "running" && Date.now() - started < 40000) {
+        await new Promise(r => setTimeout(r, 2000));
+        try { job = await (await fetch(`/api/events/live-lookup/${job.id}`)).json(); } catch (_) { break; }
+        if (gen !== _outsideGen) { note.remove(); return; }       // user searched again
+    }
+    if (gen !== _outsideGen) { note.remove(); return; }
+    if (job && job.state === "done" && job.saved > 0) {
+        note.textContent = `Found ${job.saved} event${job.saved === 1 ? "" : "s"} on ${job.hits.map(h => h.source).join(", ")} — showing them now.`;
+        offset = 0;
+        document.getElementById("events-body").innerHTML = "";
+        await searchEvents();
+        setTimeout(() => note.remove(), 8000);
+    } else if (job && job.state === "done") {
+        note.textContent = `Checked ${job.sources_tried} ticket sites live — nothing for “${term}” yet.`;
+        setTimeout(() => note.remove(), 8000);
+    } else {
+        note.remove();
     }
 }
 

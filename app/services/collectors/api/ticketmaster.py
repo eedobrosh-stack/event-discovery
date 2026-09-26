@@ -184,6 +184,36 @@ class TicketmasterCollector(BaseCollector):
         )
         return events
 
+    async def search(self, keyword: str, country_code: str | None = None,
+                     size: int = 100) -> list[RawEvent]:
+        """One keyword query (live lookup for a zero-result search,
+        app/services/live_lookup.py). Upcoming events only, one request,
+        no retries beyond a single 429 back-off — the caller is waiting."""
+        if not self.is_configured() or not keyword.strip():
+            return []
+        params = {
+            "apikey": settings.TICKETMASTER_KEY, "keyword": keyword.strip()[:80], "size": size,
+            "sort": "date,asc", "includePriceRanges": "yes",
+            "startDateTime": datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        if country_code:
+            params["countryCode"] = COUNTRY_ISO.get(country_code, country_code)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(_TM_ENDPOINT, params=params)
+            if resp.status_code == 429:
+                await asyncio.sleep(2.0)
+                resp = await client.get(_TM_ENDPOINT, params=params)
+            if resp.status_code != 200:
+                logger.warning(f"ticketmaster search {keyword!r}: HTTP {resp.status_code}")
+                return []
+            items = (resp.json().get("_embedded") or {}).get("events") or []
+        out = []
+        for ev in items:
+            raw = self._transform(ev)
+            if raw is not None:
+                out.append(raw)
+        return out
+
     def _transform(self, ev: dict) -> RawEvent | None:
         start = ev.get("dates", {}).get("start", {})
         start_date_str = start.get("localDate")
